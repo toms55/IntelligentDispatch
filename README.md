@@ -16,7 +16,7 @@ nix develop
 uv sync
 ```
 
-Without Nix — [install uv](https://docs.astral.sh/uv/getting-started/installation/), then:
+Without Nix: [install uv](https://docs.astral.sh/uv/getting-started/installation/), then:
 
 ```bash
 uv sync
