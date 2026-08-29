@@ -1,0 +1,190 @@
+
+0) Setup (missing step — do first)
+   - flake.nix: add SB3 (verify it resolves against pinned gymnasium/torch;
+     fallback = CleanRL single-file PPO/SAC if the dependency fight >1 day)
+   - flake.nix: add LP solver (pulp/highspy/cvxpy), verify it resolves
+   - pin train/val/test split: train Oct2021-Dec2023, val 2024, test 2025
+     (test year touched exactly once, at the very end)
+   - pin 5 seeds + a hyperparameter config file, used everywhere from now on
+   - pin the EPISODE HORIZON H (intervals) and the episode SoC reset rule in
+     that same config. Both the RL env and the LP oracle's chunking read it —
+     if they disagree the oracle stops being a bound on the agent. See the
+     long-horizons block under step 1.
+
+1) perfect foresight benchmark  — CORE DONE, in optimisation/lp.py
+   solve(prices, model) returns a Schedule (soc/bought/sold/revenue/
+   degradationCost/profit). data/prices.py:price_series() gets clean SA1 RRP.
+   Verified end to end on 2024-01-10: 288 intervals, profit $21.67.
+   UNEXPLAINED: after the nixpkgs bump to nixos-26.05 + uv migration (2026-08-29),
+   `uv run python -m cli lp 2024-01-10 2024-01-11 --no-calendar` gives $21.9515
+   (revenue 31.8079, degradation 9.8564). Either the $21.67 run used different
+   flags, or HiGHS 1.14 lands elsewhere inside its 0.01% MIP gap. Resolve before
+   quoting either number.
+   Run it:  uv run python -m cli lp 2024-01-10 2024-01-11 --no-calendar
+   Tests:   uv run pytest optimisation/ -q   (16 tests)
+
+   Corrections to what was assumed below, found while building it:
+   - the omitted constraint is NOT S[j] <= S[j-1]. That only forces the levels
+     to be non-increasing, and the solver evades it by draining all 16 segments
+     UNIFORMLY, which still bills the cheap bottom ones. Measured: $1.07 booked
+     against $1.99 of real degradation on a full-pack discharge. The constraint
+     actually needed is a STAIRCASE — a segment may hold energy only if the one
+     below it is full — which needs a binary per segment per interval:
+         stored[s] <= cap[s]*inUse[s];  stored[s-1] >= cap[s-1]*inUse[s]
+     So step 1 is a MILP whether or not Q^CAL is included. Adding the implied
+     stored[s] <= stored[s-1] and inUse[s] <= inUse[s-1] as explicit cuts is
+     what makes it tractable at all.
+   - simultaneous charge+discharge was checked for and does NOT occur, so no
+     exclusivity binaries were added. There is a test guarding this.
+   - CBC cannot cope: it stalled past 90s on 96 intervals. highspy added to
+     flake.nix; lp.defaultSolver() prefers HiGHS, falls back to CBC.
+     HiGHS keeps its default 0.01% MIP gap — deliberate, immaterial next to the
+     degradation model's own error, and closing it costs most of the runtime.
+
+   TODO — long horizons (the remaining gap in this step)
+   - one SA1 day (288 intervals) takes 18.8s without Q^CAL, 92.5s with it, so a
+     year in ONE solve is out of reach. Needs chunking.
+
+   - DECIDED: the chunk length IS the RL episode horizon H (step 2). Not a
+     solver tuning knob — a property of the comparison. An oracle that solves a
+     whole year at once has strictly more foresight than the agent can ever
+     exploit, so its $ figure is not the bound the agent is being measured
+     against. Pin H once, in the shared config from step 0, and have both the
+     oracle and the env read it.
+   - this KILLS the overlapping-window idea that used to be written here.
+     Lookahead past the boundary exists to stop the solver dumping energy it
+     cannot value at the chunk's last interval — but if the agent also cannot
+     see past the episode end, that dumping is SHARED behaviour, not oracle
+     bias. Adding lookahead would hand the oracle information the agent does
+     not have and inflate the bound. Also saves the 2x work.
+   - matching the LENGTH is not sufficient. Both boundary conditions must
+     match too, or the bound is still wrong:
+       (a) starting SoC — either both carry the previous chunk's/episode's
+           final SoC forward, or both reset to the same fixed value. Carrying
+           forward makes chunks SEQUENTIAL (no parallelising); resetting makes
+           them independent and therefore parallelisable, at some cost in
+           optimality. This is the real reason to pick one.
+       (b) terminal SoC — if the env gives the agent any end-of-episode
+           terminal value on leftover energy, the LP needs the same term in
+           its objective. If neither does, both dump; that is consistent.
+   - so chunking is BLOCKED on step 2 pinning H and the reset rule. Do not
+     pick a chunk size on solver-speed grounds alone. If H turns out to be
+     long enough that a chunk is intractable, that is a constraint on the
+     episode design, not something to paper over in the LP.
+   - keep a separate whole-horizon "unbounded foresight" number if one is
+     wanted for the writeup, but label it as NOT the agent's bound.
+   - MIP time grows superlinearly in the number of binaries, so total time =
+     chunks x time-per-chunk gets worse as chunks get bigger. Relevant only as
+     a cost estimate for a given H now, not as a way to choose H.
+   - to keep the honesty check meaningful after stitching, have solve() return
+     degradation PER INTERVAL from the LP's own objective terms, and sum it —
+     do not rescore the stitched SoC path with schade.py, or the test that
+     compares the two becomes tautological.
+
+   DONE — CLI app for inspecting a solve. cli.py, tests in test_cli.py.
+     uv run python -m cli lp 2024-01-10 2024-01-11 --no-calendar \
+       --csv day.csv --plot day.png
+     Subcommands from the start so `rl` slots in at step 2 against the same
+     shared args. Everything below was built as specified; matplotlib added to
+     flake.nix for --plot.
+   - args: start datetime, end datetime. Also want:
+     --region       default SA1
+     --mw --mwh --replacement-cost
+                    the three SchadeDegradation ctor args, currently hardcoded
+                    to the paper's Table 2 case (0.060 / 0.100 / 150000) in
+                    the __main__ block
+     --no-calendar  passes calendar=False, dropping the Q^CAL term and with it
+                    all the SOS2 binaries. 18.8s vs 92.5s on one day, but the
+                    degradation reported then counts cycling only — fine for
+                    iterating, wrong for any number that gets quoted
+   - output the actual realised price curve alongside what the LP did with it:
+     price, SoC trajectory, charge/discharge per interval, and the running
+     revenue / degradation / profit split.
+   - decide the output form before building: a matplotlib figure (price and SoC
+     share a time axis, charge/discharge as a signed bar underneath) is the
+     useful one for eyeballing whether the oracle is behaving; a CSV dump is
+     the useful one for feeding later comparisons against the agent. Probably
+     both, with the figure behind a --plot flag.
+   - this replaces the hardcoded __main__ block in optimisation/lp.py.
+   - once chunking exists the CLI is the natural place to expose it, since an
+     arbitrary date range is exactly the case that needs it.
+
+   - pull full price history for chosen region (train+val range first)
+   - LP objective = arbitrage revenue minus Schade degradation cost, using
+     the 16 per-segment marginal costs from degradation/schade.py (Eq. 2).
+     These are constants, so they are literally an LP objective row — the LP
+     bounds the REAL degradation objective exactly, no flat-cost
+     approximation needed. Segment j capped at MWh * segment width (Eq. 5).
+   - MUST ADD a constraint the paper omits: S[j][h] <= S[j-1][h] for j >= 1.
+     Eq. 5 caps each segment but never forces them to fill bottom-up, so the
+     solver books discharges against whichever segments are CHEAPEST rather
+     than the ones physically drained. Cycling 85->100 kWh should cost $1.90
+     (segments 13-15) but the LP will report $0.15 (segments 0-2) — 12.6x
+     under. Without this the oracle comes back cheaper than physics allows
+     and is not a bound on the agent at all. One linear constraint per
+     segment per interval, ~16 per interval, stays an LP.
+   - Q^CAL is optional and makes it a MILP (SOS2, Eqs. 23-27); leave Q^SOC
+     out entirely, on the paper's own advice (§5.5)
+   - remember dt_hours = 1/12: power limits become MW * dt_hours (Eqs. 6-7),
+     and Q^CAL scales by dt_hours. Q^CD does NOT.
+   - check LP solution for simultaneous charge+discharge at negative prices
+     (price floor -$1000/MWh makes this profitable in a naive formulation);
+     only add binary exclusivity constraints on flagged intervals if found
+   - sanity check LP against a hand-computed toy case before trusting it
+   - solve full-horizon LP on train/val — this $ figure is the oracle bound
+
+2) RL environment
+   - FIRST: pin episode horizon H and the SoC reset rule (carry forward vs
+     reset to a fixed value at every episode start). Step 1's chunking is
+     blocked on this and must use the same two settings.
+   - gymnasium env: state = SoC + price + engineered temporal features
+     (hour/day sin-cos) — richer state matters more than algorithm per SLR
+   - action space: continuous vs discrete — decide based on SB3 algorithm
+     (SAC/TD3 -> continuous, DQN -> discrete)
+   - reward v1: price * energy minus Schade degradation cost — must use the
+     SAME terms as the LP objective above or the bound is meaningless
+   - train primary SB3 algorithm, 5 seeds, mean +/- SD reported throughout
+   - time one full training run's wall-clock — sizes the ablation grid below
+   - baseline heuristic (rule-based charge-low/discharge-high threshold)
+
+ degradation model (Gap 4) — DONE, in degradation/schade.py. Schade &
+ Egging-Bratseth (2024), doi:10.1002/est2.588. Q^CD (Eqs. 1, 2, 11) is
+ implemented and verified against the paper's Figure 3 money target.
+ Remaining: Q^CAL (Eq. 27, one np.interp line), then Eq. 10 to convert to $.
+
+ This is NOT post-hoc rainflow. It is the causal piecewise-linear surrogate
+ for it, which is why it works as a per-step reward AND as an LP objective.
+ So there is no v1/v2 split any more and no "oracle only bounds v1" caveat —
+ one agent, one objective, bounded exactly. Keep a post-hoc rainflow scorer
+ for reporting only; never feed it back as reward (double-counts vs Eq. 11).
+
+2b) MDP design ablation (missing as its own step — currently implicit)
+   - vary one design element at a time, same data/algorithm/seeds:
+     observation richness (price only vs +temporal vs +forecast), action
+     discretisation, reward shaping terms on/off
+   - grid size = whatever fits after the timing number from step 2
+   - report which design choices move reward more than the algorithm does
+
+3) Testing, rolling forecast
+   - clarify what "rolling forecast" means before building it — two
+     different things could be meant:
+     (a) feed an explicit price-forecast horizon into the agent's state
+         (SLR finding: multi-horizon forecasts improved reward up to 60%)
+     (b) walk-forward backtesting: retrain/re-evaluate on rolling windows
+         rather than one fixed train/val/test split
+   - multi-seed evaluation vs LP oracle + heuristic baseline on validation
+     year (2024)
+   - final frozen evaluation on 2025 test year, touched once, after all
+     design decisions (env, reward, ablation grid) are locked
+
+4) Frontend with live preds
+   - decide scope first: dashboard over saved historical test results, vs
+     genuinely live AEMO data — nemosis pulls historical archive files, so
+     a live feed needs a different data source; spike this before committing
+   - serve trained policy: load checkpoint, run inference on current/most
+     recent state
+   - visualise: SoC trajectory, cumulative profit vs oracle bound, realised
+     vs forecast price
+   - NOTE: this is new scope not costed into the original 11-week plan
+     (which allocated weeks 9-11 to writing only) — if time is tight,
+     this is the first thing to cut or shrink to a static results dashboard

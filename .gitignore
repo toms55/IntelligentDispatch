@@ -1,0 +1,23 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# --- local tooling / caches ---
+.claude/
+data_cache/
+model/
+
+# --- CLI outputs: <module>_<region>_<date>.csv/.png land in the cwd ---
+lp_*.csv
+lp_*.png
+
+# --- papers, drafts, forms: copyright / PII, never commit ---
+*.pdf
+*.doc
+*.docx
+*.odt
+*.xls
+*.xlsx
+*.zip
