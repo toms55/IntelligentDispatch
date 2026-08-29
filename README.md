@@ -1,7 +1,6 @@
 # DRL Battery Cycle Optimisation
 
-Deep reinforcement learning for battery cycle and energy-storage optimisation against
-the Australian National Electricity Market (NEM). Market data comes from AEMO via
+Deep reinforcement learning for battery cycle connected to the Australian National Electricity Market (NEM). Market data comes from AEMO via
 [`nemosis`](https://github.com/UNSW-CEEM/NEMOSIS).
 
 ## Setup
@@ -50,4 +49,4 @@ gitignored and safe to delete.
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
