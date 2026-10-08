@@ -395,6 +395,66 @@ def _reportEval(summary, results, args):
         print(f"  seed {seed}       {one['agentProfit']:12.4f}"
               f"   regret {one['regret']:9.4f}   captured {one['captured']:7.2%}")
 
+    if getattr(args, "result_file", None):
+        heading, body = _resultSection(summary, results, args, source)
+        _spliceSection(args.result_file, heading, body)
+        print(f"result file    {args.result_file}  (section: {heading})")
+
+
+def _resultSection(summary, results, args, source):
+    """One markdown section for a results file: one region, one price source."""
+    from rl import evaluate
+
+    heading = "AEMO forecast" if args.forecast else "Realised prices"
+    lines = [
+        f"- region: {args.region}",
+        f"- window: {args.start.isoformat()} .. {args.end.isoformat()}",
+        f"- algo: {args.algo}",
+        f"- seeds: {', '.join(str(s) for s in args.seeds)}",
+        f"- battery: {args.mw} MW / {args.mwh} MWh, "
+        f"replacement cost {args.replacement_cost:.0f}",
+        f"- price slots from: {source}",
+        f"- generated: {datetime.now().isoformat(timespec='seconds')}",
+        "",
+        "| metric | value |",
+        "|---|---|",
+        f"| oracle profit | {summary['lpProfit']:.4f} |",
+        f"| agent profit | {summary['agentProfit']['mean']:.4f} "
+        f"+/- {summary['agentProfit']['sd']:.4f} |",
+        f"| regret | {summary['regret']['mean']:.4f} "
+        f"+/- {summary['regret']['sd']:.4f} |",
+        f"| captured | {summary['captured']['mean']:.2%} "
+        f"+/- {summary['captured']['sd']:.2%} |",
+        "",
+        "| seed | agent profit | regret | captured |",
+        "|---|---|---|---|",
+    ]
+    for seed, records in sorted(results.items()):
+        one = evaluate.summarise(records)
+        lines.append(f"| {seed} | {one['agentProfit']:.4f} | {one['regret']:.4f} "
+                     f"| {one['captured']:.2%} |")
+    lines.append("")
+    return heading, "\n".join(lines) + "\n"
+
+
+def _spliceSection(path, heading, body):
+    """Insert or replace one `## heading` section in a markdown file; the rest of the
+    file, including any other region's or price source's section, is left untouched."""
+    target = Path(path)
+    text = target.read_text() if target.exists() else ""
+    marker = f"## {heading}\n"
+    start = text.find(marker)
+    if start == -1:
+        if text and not text.endswith("\n"):
+            text += "\n"
+        text += marker + body
+    else:
+        end = text.find("\n## ", start + len(marker))
+        end = len(text) if end == -1 else end + 1
+        text = text[:start] + marker + body + text[end:]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text)
+
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="cli", description=__doc__.splitlines()[0],
@@ -501,6 +561,10 @@ def main(argv=None):
                          metavar=("LOW", "HIGH"),
                          help="charge at or below LOW of the forward window, discharge at "
                               "or above HIGH (default: 0.15 0.85)")
+    evalCmd.add_argument("--result-file", metavar="PATH",
+                         help="write/update one markdown section at PATH, keyed by "
+                              "realised vs forecast; other sections already in the file "
+                              "are left untouched")
     evalCmd.set_defaults(run=_runEval)
 
     args = parser.parse_args(argv)
