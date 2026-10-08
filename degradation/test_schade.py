@@ -420,7 +420,6 @@ notYet = pytest.mark.xfail(raises=AttributeError, strict=True)
 notYetBehaviour = pytest.mark.xfail(strict=True)
 
 
-@notYet
 class TestCalendarDegradation:
     """Q^CAL, Eqs. 23-27.  calendarDegradation(soc, dt_hours=1.0) -> fraction."""
 

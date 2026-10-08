@@ -71,15 +71,23 @@ class SchadeDegradation:
         # cell side degradation, if you wanted meter side multiply by self.dischargeEfficiency 
         return total
 
+    def calendarDegradation(self, soc: float, dt_hours: float = 1.0) -> float:
+        "Eq. 27 capacity lost holding `soc` for `dt_hours`, doing nothing."
+        rate = np.interp(soc, self.calendarAgingBreakpointVal, self.y)  # per hour
+        return float(rate) * dt_hours
+
     def calendarAging(self, SoC: float) -> float:
-        return np.interp(SoC, self.calendarAgingBreakpointVal, self.y) * nem_interval_hours 
+        "Eq. 27 over one NEM interval. The 5-minute case of calendarDegradation."
+        return self.calendarDegradation(SoC, nem_interval_hours)
+
     
     def cost(self, Q: float) -> float:
         "Eq. 10 convert capacity loss fraction to $"
         return self.replacementCost * self.MWh * Q
 
-    def step(self, socPrev, socNew, dt_hours):
-        q_cd  = self.totalCycleDegradation(socPrev, socNew)
-        q_cal = self.calendarAging(socNew)
+    def step(self, socPrev: float, socNew: float, dt_hours: float) -> tuple:
+        "One interval of degradation: (cycling fraction, calendar fraction, $)."
+        q_cd = self.totalCycleDegradation(socPrev, socNew)
+        q_cal = self.calendarDegradation(socNew, dt_hours)
         return q_cd, q_cal, self.cost(q_cd + q_cal)
 
