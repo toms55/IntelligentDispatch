@@ -204,3 +204,144 @@ class TestFillBottomUp:
                 assert got == pytest.approx(cap)
             elif partial and n > partial[0]:
                 assert got == pytest.approx(0.0)
+
+
+MIXED_PRICES = [20.0, 15.0, -50.0, 10.0, 300.0, 25.0, 18.0, 400.0, 12.0, -80.0, 9.0, 250.0]
+
+
+class TestDiscretePower:
+    """discretePower restricts the oracle to the RL agent's three-action set, exactly."""
+
+    def test_every_flow_is_full_rate_or_nothing(self, paper):
+        s = solve(MIXED_PRICES, paper, initialSoc=0.5, calendar=False, discretePower=True)
+        for boughtMWh, soldMWh in zip(s.bought, s.sold):
+            assert boughtMWh == pytest.approx(0.0, abs=1e-9) or \
+                boughtMWh == pytest.approx(INTERVAL_LIMIT, rel=1e-9)
+            assert soldMWh == pytest.approx(0.0, abs=1e-9) or \
+                soldMWh == pytest.approx(INTERVAL_LIMIT, rel=1e-9)
+
+    def test_a_short_charge_only_happens_into_a_full_pack(self, paper):
+        s = solve([-1000.0] * 30, paper, initialSoc=0.5, calendar=False, discretePower=True)
+        for t, boughtMWh in enumerate(s.bought):
+            if 1e-9 < boughtMWh < INTERVAL_LIMIT - 1e-9:
+                assert s.soc[t] == pytest.approx(1.0, abs=1e-6)
+
+    def test_a_short_discharge_only_happens_out_of_an_empty_pack(self, paper):
+        s = solve([10_000.0] * 30, paper, initialSoc=0.5, calendar=False, discretePower=True)
+        for t, soldMWh in enumerate(s.sold):
+            if 1e-9 < soldMWh < INTERVAL_LIMIT - 1e-9:
+                assert s.soc[t] == pytest.approx(0.0, abs=1e-6)
+
+    def test_the_last_part_step_into_a_full_pack_is_exact(self, paper):
+        start = 1.0 - (0.5 * INTERVAL_LIMIT * paper.chargeEfficiency) / paper.MWh
+        s = solve([-1000.0], paper, initialSoc=start, calendar=False, discretePower=True)
+        assert s.bought[0] == pytest.approx(0.5 * INTERVAL_LIMIT, rel=1e-9)
+        assert s.soc[0] == pytest.approx(1.0, abs=1e-9)
+
+    def test_the_last_part_step_out_of_an_empty_pack_is_exact(self, paper):
+        start = (0.5 * INTERVAL_LIMIT / paper.dischargeEfficiency) / paper.MWh
+        s = solve([10_000.0], paper, initialSoc=start, calendar=False, discretePower=True)
+        assert s.sold[0] == pytest.approx(0.5 * INTERVAL_LIMIT, rel=1e-9)
+        assert s.soc[0] == pytest.approx(0.0, abs=1e-9)
+
+    def test_a_full_step_is_asymmetric_in_soc(self, paper):
+        up = solve([-1000.0], paper, initialSoc=0.5, calendar=False, discretePower=True)
+        down = solve([10_000.0], paper, initialSoc=0.5, calendar=False, discretePower=True)
+        gained = up.soc[0] - 0.5
+        lost = 0.5 - down.soc[0]
+        assert gained == pytest.approx(
+            INTERVAL_LIMIT * paper.chargeEfficiency / paper.MWh, rel=1e-9
+        )
+        assert lost == pytest.approx(
+            INTERVAL_LIMIT / paper.dischargeEfficiency / paper.MWh, rel=1e-9
+        )
+        assert gained < lost
+
+    def test_never_beats_the_continuous_oracle(self, paper):
+        loose = solve(MIXED_PRICES, paper, initialSoc=0.5, calendar=False)
+        tight = solve(MIXED_PRICES, paper, initialSoc=0.5, calendar=False,
+                      discretePower=True)
+        assert tight.profit <= loose.profit + 1e-9
+
+    def test_charge_and_discharge_are_mutually_exclusive(self, paper):
+        prices = [-1000.0, -1000.0, -900.0, 300.0, -1000.0, 50.0]
+        s = solve(prices, paper, initialSoc=0.5, calendar=False, discretePower=True)
+        for boughtMWh, soldMWh in zip(s.bought, s.sold):
+            assert min(boughtMWh, soldMWh) == pytest.approx(0.0, abs=1e-9)
+
+    def test_degradation_is_still_honest(self, paper):
+        s = solve(MIXED_PRICES, paper, initialSoc=0.8, calendar=False, discretePower=True)
+        assert s.degradationCost == pytest.approx(
+            recomputedDegradation(paper, s, calendar=False), rel=1e-6
+        )
+
+    def test_degradation_is_still_honest_with_calendar_aging(self, paper):
+        s = solve(MIXED_PRICES, paper, initialSoc=0.8, discretePower=True)
+        assert s.degradationCost == pytest.approx(
+            recomputedDegradation(paper, s, calendar=True), rel=1e-4
+        )
+
+
+class TestPerIntervalTerms:
+    """The per-interval split feeds the RL reward baseline; it comes off the LP's own
+    objective rows, never off a rescore of the SoC path."""
+
+    def test_profit_per_interval_sums_to_profit(self, paper):
+        s = solve(MIXED_PRICES, paper, initialSoc=0.5, calendar=False, discretePower=True)
+        assert sum(s.profitPerInterval) == pytest.approx(s.profit, rel=1e-9)
+
+    def test_revenue_per_interval_sums_to_revenue(self, paper):
+        s = solve(MIXED_PRICES, paper, initialSoc=0.5, calendar=False, discretePower=True)
+        assert sum(s.revenuePerInterval) == pytest.approx(s.revenue, rel=1e-9)
+
+    def test_degradation_per_interval_sums_to_degradation(self, paper):
+        s = solve(MIXED_PRICES, paper, initialSoc=0.5, calendar=False, discretePower=True)
+        assert sum(s.degradationPerInterval) == pytest.approx(s.degradationCost, rel=1e-9)
+
+    def test_the_split_is_cycling_plus_calendar(self, paper):
+        s = solve(MIXED_PRICES, paper, initialSoc=0.5)
+        for whole, cycle, cal in zip(
+            s.degradationPerInterval, s.cyclePerInterval, s.calendarPerInterval
+        ):
+            assert whole == pytest.approx(cycle + cal, rel=1e-9)
+
+    def test_calendar_terms_are_zero_when_calendar_is_off(self, paper):
+        s = solve(MIXED_PRICES, paper, initialSoc=0.5, calendar=False)
+        assert s.calendarPerInterval == [0.0] * len(MIXED_PRICES)
+
+    def test_calendar_is_charged_on_an_idle_interval(self, paper):
+        s = solve([0.0] * 6, paper, initialSoc=0.5)
+        assert sum(s.sold) == pytest.approx(0.0, abs=1e-9)
+        assert all(cal > 0 for cal in s.calendarPerInterval)
+
+    def test_reports_the_solver_status(self, paper):
+        s = solve(MIXED_PRICES, paper, initialSoc=0.5, calendar=False, discretePower=True)
+        assert s.status == "Optimal"
+
+
+class TestTheBoundIsAnUpperBound:
+    """A gap-limited solve must still bound the agent from above: quote dualBound, not
+    the incumbent, which can sit below the true optimum."""
+
+    def test_the_dual_bound_is_at_least_the_incumbent(self, paper):
+        s = solve(MIXED_PRICES * 3, paper, initialSoc=0.5, calendar=False,
+                  discretePower=True, gap=0.05)
+        assert s.dualBound >= s.profit - 1e-9
+
+    def test_a_loose_gap_does_not_lose_the_optimum(self, paper):
+        tight = solve(MIXED_PRICES, paper, initialSoc=0.5, calendar=False,
+                      discretePower=True)
+        loose = solve(MIXED_PRICES, paper, initialSoc=0.5, calendar=False,
+                      discretePower=True, gap=0.05)
+        assert loose.dualBound >= tight.profit - 1e-6
+
+    def test_a_relaxed_gap_is_reported(self, paper):
+        s = solve(MIXED_PRICES * 3, paper, initialSoc=0.5, calendar=False,
+                  discretePower=True, gap=0.05)
+        assert s.mipGap is not None
+        assert s.mipGap <= 0.05 + 1e-9
+
+    def test_the_dual_bound_defaults_to_the_objective(self, paper):
+        s = solve(MIXED_PRICES, paper, initialSoc=0.5, calendar=False)
+        assert s.dualBound is not None
+        assert s.dualBound >= s.profit - 1e-6

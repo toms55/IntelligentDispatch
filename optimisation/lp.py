@@ -1,16 +1,14 @@
 """
 Perfect-foresight oracle over a known price series (TODO.txt Step 1).
 
-The battery is 16 stacked segments. Emptying a high segment costs more than a low
-one, and those per-segment costs are constants out of schade.py, so the real
-degradation objective goes into the model exactly -- no flat-cost approximation.
+The battery is 16 stacked segments; emptying a high segment costs more than a low one,
+and those per-segment costs are constants out of schade.py.
 
-A MILP, not an LP: the staircase fill needs a binary per segment, and calendar
-aging is piecewise linear but non-convex so it needs SOS2 binaries on top.
+`stored` is cell-side, `bought`/`sold` are meter-side. Charging loses nu_C going in,
+discharging loses nu_D going out.
 
-Energy is tracked on two sides of the meter. `stored` is cell-side (what the
-battery actually holds); `bought` and `sold` are meter-side (what the market
-sees). Charging loses nu_C on the way in, discharging loses nu_D on the way out.
+`discretePower=True` restricts every interval to full rate or nothing, matching the RL
+agent's action set. See `_discretePower`.
 """
 from dataclasses import dataclass
 
@@ -22,12 +20,23 @@ from utils import nem_interval_hours
 @dataclass
 class Schedule:
     initialSoc: float
-    soc: list  # fraction, at the end of each interval
-    bought: list  # meter-side MWh bought per interval
-    sold: list  # meter-side MWh sold per interval
+    soc: list
+    bought: list
+    sold: list
     revenue: float
     degradationCost: float
     profit: float
+    # Appended with defaults: test_cli.py builds a Schedule from seven positional args.
+    revenuePerInterval: list = None
+    cyclePerInterval: list = None
+    calendarPerInterval: list = None
+    degradationPerInterval: list = None
+    profitPerInterval: list = None
+    status: str = "Optimal"
+    mipGap: float = None
+    # Use this as the oracle bound, never `profit`: a gap/time-limited solve returns an
+    # incumbent that can sit below the true optimum.
+    dualBound: float = None
 
 
 def fillBottomUp(soc, segmentCapacities):
@@ -40,29 +49,33 @@ def fillBottomUp(soc, segmentCapacities):
     return levels
 
 
-def defaultSolver(verbose=False):
+def defaultSolver(verbose=False, timeLimit=None, gap=None, threads=None):
     """HiGHS if available, else CBC.
 
-    verbose lets the solver's own branch-and-bound log through, which is the only
-    real progress signal available while a solve is running.
+    threads should be 1 when solving windows in parallel processes, or HiGHS takes
+    every core in every worker.
     """
     if "HiGHS" in pulp.listSolvers(onlyAvailable=True):
-        # msg=False alone does not silence HiGHS; it needs output_flag too.
-        return pulp.HiGHS(msg=verbose, output_flag=verbose, log_to_console=verbose)
-    return pulp.PULP_CBC_CMD(msg=verbose)
+        options = dict(msg=verbose, output_flag=verbose, log_to_console=verbose,
+                       timeLimit=timeLimit, gapRel=gap)
+        if threads is not None:
+            options["threads"] = threads
+        return pulp.HiGHS(**options)
+    return pulp.PULP_CBC_CMD(msg=verbose, timeLimit=timeLimit, gapRel=gap,
+                             threads=threads)
 
 
 def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=True,
-          solver=None):
+          solver=None, discretePower=False, timeLimit=None, gap=None, threads=None):
     """Best possible dispatch against a known price series.
 
-    prices: $/MWh per interval.  model: a SchadeDegradation.
+    prices: $/MWh per interval. model: a SchadeDegradation. discretePower restricts
+    every interval to full rate or nothing.
     """
     intervals = range(len(prices))
     segmentCapacity = model.segmentCapacities
     segments = range(len(segmentCapacity))
-    segmentCost = model.lpObjectiveCoefficients()  # $/MWh sold, meter-side
-    # Eqs. 6-7: MW is a rate, the variables are energy.
+    segmentCost = model.lpObjectiveCoefficients()
     energyLimit = model.chargePower * dtHours
     chargeEff, dischargeEff = model.chargeEfficiency, model.dischargeEfficiency
     startLevels = fillBottomUp(initialSoc, segmentCapacity)
@@ -80,13 +93,10 @@ def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=Tr
     ]
     bought = grid("bought", lowBound=0)
     sold = grid("sold", lowBound=0)
-    # Staircase fill. Eq. 5 caps each segment but never forces the pack to drain
-    # from the top, and mere ordering (stored[s] <= stored[s-1]) is not enough --
-    # the solver just drains every segment uniformly and still bills the cheap
-    # bottom ones. inUse[s][t] means "segment s may hold energy", allowed only
-    # once the segment below it is full.
+    switches = _discreteSwitches(intervals) if discretePower else None
     inUse = grid("inUse", cat="Binary")
 
+    storedEnergy = []
     for t in intervals:
         for s in segments:
             previous = stored[s][t - 1] if t else startLevels[s]
@@ -96,27 +106,35 @@ def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=Tr
             problem += stored[s][t] <= segmentCapacity[s] * inUse[s][t]
             if s:
                 problem += stored[s - 1][t] >= segmentCapacity[s - 1] * inUse[s][t]
-                # Implied by the two above, but stating them explicitly tightens
-                # the relaxation enough to matter -- without them CBC stalls.
                 problem += stored[s][t] <= stored[s - 1][t]
                 problem += inUse[s][t] <= inUse[s - 1][t]
-        problem += pulp.lpSum(bought[s][t] for s in segments) <= energyLimit
-        problem += pulp.lpSum(sold[s][t] for s in segments) <= energyLimit
-
-    storedEnergy = [pulp.lpSum(stored[s][t] for s in segments) for t in intervals]
+        totalBought = pulp.lpSum(bought[s][t] for s in segments)
+        totalSold = pulp.lpSum(sold[s][t] for s in segments)
+        storedEnergy.append(pulp.lpSum(stored[s][t] for s in segments))
+        if discretePower:
+            _discretePower(problem, switches, t, totalBought, totalSold,
+                           storedEnergy[t], energyLimit, model.MWh, inUse)
+        else:
+            problem += totalBought <= energyLimit
+            problem += totalSold <= energyLimit
 
     revenueExpr = pulp.lpSum(
         prices[t] * pulp.lpSum(sold[s][t] - bought[s][t] for s in segments)
         for t in intervals
     )
-    cycleCost = pulp.lpSum(
-        segmentCost[s] * sold[s][t] for t in intervals for s in segments
+    cycleExpr = [
+        pulp.lpSum(segmentCost[s] * sold[s][t] for s in segments) for t in intervals
+    ]
+    calendarExpr = (
+        _calendarCost(problem, storedEnergy, model, dtHours) if calendar
+        else [0.0] * len(prices)
     )
-    calendarCost = _calendarCost(problem, storedEnergy, model, dtHours) if calendar else 0.0
-    problem += revenueExpr - cycleCost - calendarCost
+    problem += revenueExpr - pulp.lpSum(cycleExpr) - pulp.lpSum(calendarExpr)
 
-    problem.solve(solver or defaultSolver())
-    assert pulp.LpStatus[problem.status] == "Optimal", pulp.LpStatus[problem.status]
+    problem.solve(solver or defaultSolver(timeLimit=timeLimit, gap=gap, threads=threads))
+    status = pulp.LpStatus[problem.status]
+    if status != "Optimal" and stored[0][0].value() is None:
+        raise AssertionError(f"solver returned {status} with no feasible solution")
 
     def perInterval(variables):
         return [sum(variables[s][t].value() for s in segments) for t in intervals]
@@ -124,11 +142,19 @@ def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=Tr
     boughtPerInterval = perInterval(bought)
     soldPerInterval = perInterval(sold)
     soc = [level / model.MWh for level in perInterval(stored)]
-    revenue = sum(
+    revenuePerInterval = [
         price * (out - inn)
         for price, out, inn in zip(prices, soldPerInterval, boughtPerInterval)
-    )
+    ]
+    cyclePerInterval = [pulp.value(term) for term in cycleExpr]
+    calendarPerInterval = [float(pulp.value(term)) for term in calendarExpr]
+    degradationPerInterval = [c + k for c, k in zip(cyclePerInterval, calendarPerInterval)]
+    profitPerInterval = [
+        r - d for r, d in zip(revenuePerInterval, degradationPerInterval)
+    ]
+    revenue = sum(revenuePerInterval)
     profit = pulp.value(problem.objective)
+    gapAchieved, dualBound = _solverInfo(problem, profit)
     return Schedule(
         initialSoc,
         soc,
@@ -137,15 +163,75 @@ def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=Tr
         revenue,
         revenue - profit,
         profit,
+        revenuePerInterval,
+        cyclePerInterval,
+        calendarPerInterval,
+        degradationPerInterval,
+        profitPerInterval,
+        status,
+        gapAchieved,
+        dualBound,
     )
 
 
-def _calendarCost(problem, storedEnergy, model, dtHours):
-    """Q^CAL via SOS2: express SoC as a blend of two *adjacent* breakpoints.
+def _discreteSwitches(intervals):
+    def column(name):
+        return [pulp.LpVariable(f"{name}_{t}", cat="Binary") for t in intervals]
 
-    The curve's slopes are not monotone, so a plain LP would interpolate across
-    the kinks and understate the cost. The binaries force adjacency.
+    return {
+        "chargeOn": column("chargeOn"),
+        "dischargeOn": column("dischargeOn"),
+        "atFull": column("atFull"),
+        "atEmpty": column("atEmpty"),
+    }
+
+
+def _discretePower(problem, switches, t, totalBought, totalSold, storedTotal,
+                   energyLimit, capacity, inUse):
+    """Restrict interval t to a full-rate charge, a full-rate discharge, or idle.
+
+    A partial top-up is allowed only where physics forces one. atFull/atEmpty must stay
+    BINARY: relaxed to [0,1] the pair admits a half-rate charge at mid SoC.
     """
+    chargeOn = switches["chargeOn"][t]
+    dischargeOn = switches["dischargeOn"][t]
+    atFull = switches["atFull"][t]
+    atEmpty = switches["atEmpty"][t]
+    top = len(inUse) - 1
+
+    problem += chargeOn + dischargeOn <= 1
+    problem += totalBought <= energyLimit * chargeOn
+    problem += energyLimit * chargeOn - totalBought <= energyLimit * atFull
+    problem += storedTotal >= capacity * atFull
+    problem += totalSold <= energyLimit * dischargeOn
+    problem += energyLimit * dischargeOn - totalSold <= energyLimit * atEmpty
+    problem += storedTotal <= capacity * (1 - atEmpty)
+
+    # Without these, atFull/atEmpty are free whenever the pack happens to be full/empty.
+    problem += atFull <= chargeOn
+    problem += atEmpty <= dischargeOn
+    problem += atFull <= inUse[top][t]
+    problem += atEmpty + inUse[1][t] <= 1
+
+
+def _solverInfo(problem, objective):
+    """(relative MIP gap, dual bound), or (None, objective) if the solver is mute.
+
+    HiGHS only minimises, so pulp negates a maximisation and mip_dual_bound comes back
+    with the opposite sign; flip it back here.
+    """
+    try:
+        info = problem.solverModel.getInfo()
+        bound = float(info.mip_dual_bound)
+        if problem.sense == pulp.LpMaximize:
+            bound = -bound
+        return float(info.mip_gap), bound
+    except Exception:
+        return None, objective
+
+
+def _calendarCost(problem, storedEnergy, model, dtHours):
+    """Q^CAL per interval via SOS2: SoC as a blend of two adjacent breakpoints."""
     breakpoints = model.calendarAgingBreakpointVal
     costAt = [model.cost(rate * dtHours) for rate in model.y]
     corners = range(len(breakpoints))
@@ -160,10 +246,8 @@ def _calendarCost(problem, storedEnergy, model, dtHours):
             soc * w for soc, w in zip(breakpoints, weight)
         ) == (1 / model.MWh) * energy
         for k in corners:
-            # A corner carries weight only if the piece on one of its sides is on.
             problem += weight[k] <= pulp.lpSum(
                 onPiece[j] for j in (k - 1, k) if j in pieces
             )
         total.append(pulp.lpSum(c * w for c, w in zip(costAt, weight)))
-    return pulp.lpSum(total)
-
+    return total
