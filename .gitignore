@@ -8,6 +8,7 @@ __pycache__/
 .claude/
 data_cache/
 model/
+runs/
 
 # --- CLI outputs: <module>_<region>_<date>.csv/.png land in the cwd ---
 lp_*.csv
