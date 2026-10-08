@@ -15,11 +15,11 @@
     in
     {
       devShells.${system}.default = pkgs.mkShell {
-        packages = [ pkgs.python313 pkgs.uv ];
+        packages = [ pkgs.python311 pkgs.uv ];
 
         shellHook = ''
           export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath wheelLibs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          export UV_PYTHON="${pkgs.python313}/bin/python3.13"
+          export UV_PYTHON="${pkgs.python311}/bin/python3.11"
           export UV_PYTHON_DOWNLOADS=never
 
           echo "Currently using:"

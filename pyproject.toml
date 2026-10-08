@@ -2,7 +2,7 @@
 name = "drl-battery-cycles"
 version = "0.1.0"
 description = "DRL for battery cycle optimisation against the Australian NEM"
-requires-python = ">=3.12"
+requires-python = ">=3.11,<3.12"
 dependencies = [
     "numpy==2.4.4",
     "pulp==3.3.0",
@@ -14,7 +14,10 @@ dependencies = [
     "torch==2.11.0",
     "nemosis==3.8.1",
     "gymnasium==1.3.0",
-    "pytest==9.0.3",
+    "pytest==8.4.2",
+    "stable-baselines3==2.9.0",
+    "sb3-contrib==2.9.0",
+    "nemseer==1.0.7",
 ]
 
 [tool.uv]
