@@ -149,6 +149,23 @@ class TestForecastSeries:
         assert len(got) == 288
         assert int(got.isna().sum()) > 0
 
+    def test_allow_partial_survives_a_run_with_no_archive_at_all(self, fakeNemseer, monkeypatch):
+        """nemseer raises ValueError itself when a whole run has no archive, distinct
+        from our own short-path check above. allowPartial must pad through that too."""
+        def missing(*args, **kwargs):
+            raise ValueError("Table(s) not available from MMS Historical Data SQL Loader")
+        monkeypatch.setattr(forecasts, "predispatchForecast", missing)
+        got = forecasts.forecastSeries(RUN, "SA1", horizon=288, allowPartial=True)
+        assert len(got) == 288
+        assert int(got.isna().sum()) == 288 - 11  # only the P5MIN run still lands
+
+    def test_without_allow_partial_a_missing_archive_still_raises(self, fakeNemseer, monkeypatch):
+        def missing(*args, **kwargs):
+            raise ValueError("Table(s) not available from MMS Historical Data SQL Loader")
+        monkeypatch.setattr(forecasts, "predispatchForecast", missing)
+        with pytest.raises(ValueError, match="MMS Historical Data SQL Loader"):
+            forecasts.forecastSeries(RUN, "SA1", horizon=288)
+
     def test_asks_for_only_the_horizon_it_needs(self, fakeNemseer):
         forecasts.forecastSeries(RUN, "SA1", horizon=288)
         predispatch = [a for a in fakeNemseer.asked if a["type"] == "PREDISPATCH"][-1]

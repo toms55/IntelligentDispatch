@@ -95,10 +95,21 @@ def forecastSeries(runTime, region="SA1", horizon=288, allowPartial=False):
         [runTime + (step + 1) * nem_interval for step in range(horizon)]
     )
 
-    coarse = _expandToFiveMinutes(
+    def _fetch(source):
+        try:
+            return source()
+        except ValueError:
+            # nemseer itself raises when a whole run has no archive at all (as opposed
+            # to our own short-path check below); with allowPartial that is just more
+            # missing coverage to pad, not a reason to give up on the other source.
+            if not allowPartial:
+                raise
+            return pd.Series(dtype=float)
+
+    coarse = _fetch(lambda: _expandToFiveMinutes(
         predispatchForecast(runTime, region, hours=horizon * nem_interval_hours)
-    )
-    fine = p5minForecast(runTime, region)
+    ))
+    fine = _fetch(lambda: p5minForecast(runTime, region))
     merged = pd.concat([coarse, fine])
     merged = merged[~merged.index.duplicated(keep="last")].sort_index()
 
