@@ -1,15 +1,24 @@
 
-0) Setup (missing step — do first)
-   - flake.nix: add SB3 (verify it resolves against pinned gymnasium/torch;
-     fallback = CleanRL single-file PPO/SAC if the dependency fight >1 day)
-   - flake.nix: add LP solver (pulp/highspy/cvxpy), verify it resolves
-   - pin train/val/test split: train Oct2021-Dec2023, val 2024, test 2025
-     (test year touched exactly once, at the very end)
-   - pin 5 seeds + a hyperparameter config file, used everywhere from now on
-   - pin the EPISODE HORIZON H (intervals) and the episode SoC reset rule in
-     that same config. Both the RL env and the LP oracle's chunking read it —
-     if they disagree the oracle stops being a bound on the agent. See the
-     long-horizons block under step 1.
+0) Setup — DONE, in config.py
+   - SB3 2.9.0 and sb3-contrib 2.9.0 resolved against the pinned gymnasium 1.3.0
+     and torch 2.11.0 with no downgrade. No flake.nix change was needed: the
+     flake only provides the interpreter and uv, and Python packages live in
+     pyproject.toml. The "add SB3 to flake.nix" note above was stale.
+   - highspy was already pinned; nothing to add for the solver.
+   - Splits CHANGED from the plan above, on request: train 2024, test 2025.
+     Jan-Oct 2024 trains, Nov-Dec 2024 validates, 2025 tests. config.full_train
+     holds the whole of 2024 for a final fit once nothing more needs choosing.
+   - 5 seeds, H = 288, SoC resets to 0.5 every episode: config.py.
+   - Every split boundary is 04:00, the NEM trading day boundary, and that is
+     LOAD-BEARING rather than cosmetic. PREDISPATCH always stops at the end of a
+     trading day, so its horizon depends on the time of day: a 04:00 run reaches
+     288 intervals, 08:00 reaches 240, 12:00 only 192, 16:00 reaches 432. 04:00
+     is the one run time where exactly one episode fits. An earlier note in this
+     file claimed H = 288 was always available; that was wrong.
+   - Python is 3.11, not 3.13. nemseer is the only maintained route to AEMO's
+     forecast tables and declares requires-python >=3.8,<3.12 plus packaging<22,
+     which rules out pytest 9 (now 8.4.2). Verified: nothing in the numerical or
+     RL stack moves, and the whole suite passes unchanged.
 
 1) perfect foresight benchmark  — CORE DONE, in optimisation/lp.py
    solve(prices, model) returns a Schedule (soc/bought/sold/revenue/
@@ -41,9 +50,50 @@
      HiGHS keeps its default 0.01% MIP gap — deliberate, immaterial next to the
      degradation model's own error, and closing it costs most of the runtime.
 
-   TODO — long horizons (the remaining gap in this step)
-   - one SA1 day (288 intervals) takes 18.8s without Q^CAL, 92.5s with it, so a
-     year in ONE solve is out of reach. Needs chunking.
+   DONE — discrete power mode, which is what makes the bound FAIR.
+     The agent has three actions, so it moves the rated throughput or nothing.
+     An unrestricted oracle picks any power and books money the agent physically
+     cannot earn, so a gap against it mixes bad policy with an unreachable power
+     setting. solve(discretePower=True) restricts every interval to the same
+     three choices, with a partial top-up allowed only where physics forces one.
+     Four binaries per interval; see _discretePower for why atFull/atEmpty
+     cannot be relaxed to continuous.
+     Measured on SA1 2024-01-10, 288 intervals, no Q^CAL:
+       continuous, default gap   25.8s   profit 21.9515
+       discrete, proven optimal 1554.9s  profit 21.8041
+       discrete, 0.5% gap         81.8s  profit 21.7269, dual bound 21.8353
+     So roughly 15 cents a day of the continuous oracle was never reachable.
+
+   DONE — quote Schedule.dualBound, never Schedule.profit, as the bound.
+     A gap-limited or time-limited solve returns an incumbent that can sit BELOW
+     the true optimum, and a bound that is too low understates the agent's
+     shortfall and flatters it. The dual bound stays valid either way, which is
+     what makes a relaxed gap affordable at all. HiGHS minimises internally, so
+     pulp negates a maximisation and the raw mip_dual_bound arrives with the
+     opposite sign; _solverInfo flips it.
+
+   DONE — chunking, in rl/baseline.py. One window is one episode, every window
+     starts from the same fixed SoC, no window sees past its own last interval.
+     Independent, therefore cacheable and parallel. Cached under data_cache/,
+     keyed on every input that changes the answer.
+
+   TODO — remaining cost problems in this step
+   - ALWAYS pass threads=1 when solving windows in parallel. HiGHS otherwise
+     takes every core in every worker and the oversubscription costs an order of
+     magnitude: four unrestricted workers ran at about 8 minutes a window
+     against 44 seconds for one solve alone. buildBaseline sets it when
+     workers > 1.
+   - solve cost is strongly DAY-DEPENDENT, which one sample hides. Continuous
+     with Q^CAL took 44s on 2024-01-10 but 187s on 2024-01-01 at a 2% gap. Do
+     not size a batch from a single day.
+   - single-threaded throughput is about 5.4 windows/min on 6 workers for the
+     continuous no-Q^CAL solve, and memory caps the worker count at 6 on 16GB
+     (480MB a worker without Q^CAL, 600-790MB with it).
+   - the discrete bound over a whole year is still unaffordable: 365 windows at
+     the 300s time limit is about 10 core-hours. The 2025 test bound currently
+     falls back to a continuous no-Q^CAL solve, which is DOUBLY LOOSE but still
+     a valid upper bound, because it has powers the agent lacks and ignores a
+     cost the agent pays. Tightening this is the main open item.
 
    - DECIDED: the chunk length IS the RL episode horizon H (step 2). Not a
      solver tuning knob — a property of the comparison. An oracle that solves a
@@ -133,19 +183,52 @@
    - sanity check LP against a hand-computed toy case before trusting it
    - solve full-horizon LP on train/val — this $ figure is the oracle bound
 
-2) RL environment
-   - FIRST: pin episode horizon H and the SoC reset rule (carry forward vs
-     reset to a fixed value at every episode start). Step 1's chunking is
-     blocked on this and must use the same two settings.
-   - gymnasium env: state = SoC + price + engineered temporal features
-     (hour/day sin-cos) — richer state matters more than algorithm per SLR
-   - action space: continuous vs discrete — decide based on SB3 algorithm
-     (SAC/TD3 -> continuous, DQN -> discrete)
-   - reward v1: price * energy minus Schade degradation cost — must use the
-     SAME terms as the LP objective above or the bound is meaningless
-   - train primary SB3 algorithm, 5 seeds, mean +/- SD reported throughout
-   - time one full training run's wall-clock — sizes the ablation grid below
-   - baseline heuristic (rule-based charge-low/discharge-high threshold)
+2) RL environment — CORE DONE, in rl/
+   - H = 288 and SoC resets to 0.5, both in config.py and read by the env and
+     the oracle chunking alike.
+   - rl/env.py: BessEnv, 3 discrete actions (charge / idle / discharge) at the
+     rated throughput. No C-rate taper in the Schade model, so SoC affects only
+     feasibility, not the rate. A full step is ASYMMETRIC in SoC: charging adds
+     nu_C * E, discharging removes E / nu_D, which is +4.75% against -5.263% for
+     the paper battery. Getting either efficiency on the wrong side is a silent
+     5% drift away from the oracle.
+   - boundary rule: mask an action only at zero headroom, otherwise clip to the
+     headroom. The discrete LP permits exactly the same partial top-up, so the
+     two stay matched. MaskablePPO reads the mask; DQN and A2C cannot be masked,
+     so clipping is their only protection, which is consistent because the
+     discrete LP also permits a zero-energy charge into a full pack.
+   - rl/features.py owns the observation and is the single definition of it.
+     64 slots: SoC, 12 five-minute prices, 46 half-hour bucket means, hour and
+     season sine-cosine pairs, intervals remaining. (288-12)/6 = 46 exactly, so
+     the layout closes with no ragged bucket.
+     Two slots are there for bound integrity, not richness. Intervals remaining
+     is required because the episode is finite-horizon and both sides dump at
+     the boundary; without it the observation is not Markov and measured regret
+     would be inflated by a modelling artefact. And the tail is PADDED, never
+     filled by reading past the episode, which would hand the agent foresight
+     the oracle lacks and let it beat its own bound.
+   - reward: per-interval profit minus the oracle's per-interval profit. The
+     baseline depends only on (window, interval), never on the agent, so it
+     cannot change which policy is best. It therefore does NOT have to share the
+     battery model it centres, which is why the training baseline can use the
+     cheap no-Q^CAL solve while the env keeps Q^CAL on.
+     gamma MUST stay 1.0. Under discounting the subtraction stops being a
+     constant shift and reweights the oracle's own spike-shaped profit profile
+     into the agent's incentives.
+   - rl/algos.py: --algo over MaskablePPO, DQN, A2C. config.algorithms lists the
+     names so the CLI can offer them without importing torch.
+   - 5 seeds, mean +/- SD, in rl/evaluate.py.
+   - THE test that everything rests on: rl/test_env.py::TestMatchesTheOracle
+     replays the oracle's own schedule through the env and holds the SoC path
+     and the degradation to 1e-9. If that ever fails, nothing downstream is
+     worth measuring.
+
+   TODO — still open in this step
+   - baseline heuristic (rule-based charge-low/discharge-high threshold). Only
+     a random-action control exists so far, in evaluate.randomPolicyProfit.
+   - wall-clock for one full training run, to size the ablation grid.
+   - reward_scale is still the placeholder 20.0. `cli baseline` prints the
+     median window profit, which is the number to set it from.
 
  degradation model (Gap 4) — DONE, in degradation/schade.py. Schade &
  Egging-Bratseth (2024), doi:10.1002/est2.588. Q^CD (Eqs. 1, 2, 11) is
