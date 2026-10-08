@@ -58,6 +58,17 @@ class TestParseSections:
         assert section.region == "NSW1"
         assert section.algo == "maskableppo"
 
+    def test_reads_the_window(self):
+        section = parseSections(REALISED)[0]
+        assert section.windowStart == "2025-01-01T04:00:00"
+        assert section.windowEnd == "2026-01-01T04:00:00"
+
+    def test_best_seed_is_the_highest_agent_profit(self):
+        section = parseSections(REALISED)[0]
+        best = section.bestSeed()
+        assert best.seed == 1
+        assert best.agentProfit == pytest.approx(2799.1074)
+
     def test_reads_the_summary_metrics(self):
         section = parseSections(REALISED)[0]
         assert section.oracleProfit == pytest.approx(15439.7117)

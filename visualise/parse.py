@@ -22,6 +22,8 @@ class Section:
     heading: str  # "Realised prices" or "AEMO forecast"
     region: str
     algo: str
+    windowStart: str  # ISO timestamp, as written -- this is the window scored on
+    windowEnd: str
     oracleProfit: float
     agentProfitMean: float
     agentProfitSd: float
@@ -31,8 +33,13 @@ class Section:
     capturedSd: float
     seeds: list[SeedResult]
 
+    def bestSeed(self):
+        """The seed with the highest agent profit."""
+        return max(self.seeds, key=lambda s: s.agentProfit)
+
 
 _KV = re.compile(r"^- ([\w ]+): (.+)$")
+_WINDOW = re.compile(r"^(\S+) \.\. (\S+)$")
 _METRIC_ROW = re.compile(r"^\| (oracle profit|agent profit|regret|captured) \| (.+) \|$")
 _SEED_ROW = re.compile(r"^\| (-?\d+) \| (-?[\d.]+) \| (-?[\d.]+) \| (-?[\d.]+)% \|$")
 _MEAN_SD = re.compile(r"^(-?[\d.]+)%? \+/- (-?[\d.]+)%?$")
@@ -54,7 +61,7 @@ def parseSections(text):
 
 
 def _parseSection(heading, body):
-    region = algo = None
+    region = algo = windowStart = windowEnd = None
     oracleProfit = agentMean = agentSd = regretMean = regretSd = None
     capturedMean = capturedSd = None
     seeds = []
@@ -67,6 +74,10 @@ def _parseSection(heading, body):
                 region = value
             elif key == "algo":
                 algo = value
+            elif key == "window":
+                match = _WINDOW.match(value)
+                if match:
+                    windowStart, windowEnd = match.groups()
             continue
 
         metric = _METRIC_ROW.match(line)
@@ -94,7 +105,8 @@ def _parseSection(heading, body):
 
     missing = [
         name for name, value in [
-            ("region", region), ("algo", algo), ("oracle profit", oracleProfit),
+            ("region", region), ("algo", algo),
+            ("window", windowStart and windowEnd), ("oracle profit", oracleProfit),
             ("agent profit", agentMean), ("regret", regretMean),
             ("captured", capturedMean),
         ] if value is None
@@ -106,7 +118,8 @@ def _parseSection(heading, body):
         )
 
     return Section(
-        heading=heading, region=region, algo=algo, oracleProfit=oracleProfit,
+        heading=heading, region=region, algo=algo,
+        windowStart=windowStart, windowEnd=windowEnd, oracleProfit=oracleProfit,
         agentProfitMean=agentMean, agentProfitSd=agentSd,
         regretMean=regretMean, regretSd=regretSd,
         capturedMean=capturedMean, capturedSd=capturedSd, seeds=seeds,

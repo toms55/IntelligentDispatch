@@ -92,3 +92,74 @@ def saveFigure(sections, region, algo, destination):
     figure.savefig(destination, dpi=120)
     import matplotlib.pyplot as plt
     plt.close(figure)
+
+
+def _bestAcrossSections(sections):
+    """The (section, seed) pair with the single highest agent profit, over every
+    section -- e.g. picks the better of a realised-price and a forecast run."""
+    candidates = [(section, section.bestSeed()) for section in sections]
+    return max(candidates, key=lambda pair: pair[1].agentProfit)
+
+
+def _shortTimestamp(isoTimestamp):
+    """'2025-01-01T04:00:00' -> '2025-01-01 04:00'."""
+    date, _, time = isoTimestamp.partition("T")
+    return f"{date} {time[:5]}" if time else date
+
+
+def plotBestSeedVsOracle(sections, ax, source=None):
+    """Two bars: the best seed's profit against the oracle's, for the same window.
+
+    `source` picks one section by a substring of its heading (e.g. "realised" or
+    "forecast"); omitted, it is the best seed across every section in the file.
+    Returns the (section, seed) it plotted, so the caller can build a title from it.
+    """
+    if source is not None:
+        section = next(s for s in sections if source.lower() in s.heading.lower())
+        seed = section.bestSeed()
+    else:
+        section, seed = _bestAcrossSections(sections)
+
+    labels = [f"seed {seed.seed}\n({section.heading})", "oracle"]
+    values = [seed.agentProfit, section.oracleProfit]
+    bars = ax.bar(labels, values, color=["tab:blue", "black"], width=0.5)
+    ax.bar_label(bars, fmt="%.0f")
+    ax.axhline(0, color="grey", linewidth=0.5)
+    ax.set_ylabel("profit")
+    ax.set_title(f"best seed captures {seed.captured:.1%} of the oracle's profit")
+    return section, seed
+
+
+def buildBestSeedFigure(sections, region, algo, trainWindow=None, source=None):
+    """One figure: the single best seed against the oracle. Titled with the test
+    window from the results file and, if given, the train window beside it -- the
+    results file itself never records what a checkpoint trained on, only what it
+    was scored on, so the caller has to supply that half."""
+    import matplotlib.pyplot as plt
+
+    figure, ax = plt.subplots(figsize=(5, 5.5))
+    section, seed = plotBestSeedVsOracle(sections, ax, source=source)
+
+    testRange = (
+        f"{_shortTimestamp(section.windowStart)} to {_shortTimestamp(section.windowEnd)}"
+    )
+    title = f"{algo} on {region}\ntest: {testRange}"
+    if trainWindow:
+        trainStart, trainEnd = trainWindow
+        title += f"\ntrain: {_shortTimestamp(trainStart)} to {_shortTimestamp(trainEnd)}"
+    figure.suptitle(title)
+    figure.tight_layout()
+    return figure
+
+
+def saveBestSeedFigure(sections, region, algo, destination, trainWindow=None, source=None):
+    """Render buildBestSeedFigure to PATH. Agg backend first, as saveFigure does."""
+    import matplotlib
+    matplotlib.use("Agg")
+
+    figure = buildBestSeedFigure(
+        sections, region, algo, trainWindow=trainWindow, source=source
+    )
+    figure.savefig(destination, dpi=120)
+    import matplotlib.pyplot as plt
+    plt.close(figure)
