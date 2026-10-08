@@ -1,10 +1,12 @@
 """Tests for cli.py. No network: price_series is monkeypatched."""
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 import pytest
 
 import cli
+import config
 from optimisation.lp import Schedule
 
 
@@ -160,3 +162,171 @@ class TestEndToEnd:
 
         assert cli.main(["lp", "2024-01-10", "2024-01-11", "--no-calendar"]) == 0
         assert "profit" in capsys.readouterr().out
+
+
+class TestWindow:
+    """A window is two dates, or a named split out of config.py."""
+
+    def test_a_split_supplies_the_dates(self, calls):
+        cli.main(["lp", "--split", "val"])
+        start, end, _ = calls["prices"]
+        assert (start, end) == config.splits["val"]
+
+    def test_full_train_is_the_whole_training_year(self, calls):
+        cli.main(["lp", "--split", "full_train"])
+        start, end, _ = calls["prices"]
+        assert (start, end) == config.full_train
+
+    def test_explicit_dates_beat_a_split(self, calls):
+        cli.main(["lp", "2024-01-10", "2024-01-11", "--split", "test"])
+        start, end, _ = calls["prices"]
+        assert start == datetime(2024, 1, 10)
+        assert end == datetime(2024, 1, 11)
+
+    def test_neither_dates_nor_split_is_refused(self):
+        with pytest.raises(SystemExit):
+            cli.main(["lp"])
+
+    def test_a_start_without_an_end_is_refused(self):
+        with pytest.raises(SystemExit):
+            cli.main(["lp", "2024-01-10"])
+
+    def test_an_unknown_split_is_refused(self):
+        with pytest.raises(SystemExit):
+            cli.main(["lp", "--split", "holdout"])
+
+
+class TestDiscretePowerFlag:
+    def test_is_off_by_default(self, calls):
+        cli.main(["lp", "2024-01-10", "2024-01-11"])
+        assert calls["solve"][2]["discretePower"] is False
+
+    def test_the_flag_turns_it_on(self, calls):
+        cli.main(["lp", "2024-01-10", "2024-01-11", "--discrete-power"])
+        assert calls["solve"][2]["discretePower"] is True
+
+    def test_the_gap_and_time_limit_reach_the_solver(self, calls):
+        cli.main(["lp", "2024-01-10", "2024-01-11", "--gap", "0.02",
+                  "--time-limit", "30"])
+        assert calls["solve"][2]["gap"] == 0.02
+        assert calls["solve"][2]["timeLimit"] == 30.0
+
+    def test_lp_leaves_the_gap_at_the_solver_default(self, calls):
+        cli.main(["lp", "2024-01-10", "2024-01-11"])
+        assert calls["solve"][2]["gap"] is None
+
+    def test_the_dual_bound_is_reported_for_a_discrete_solve(self, calls, capsys):
+        cli.main(["lp", "2024-01-10", "2024-01-11", "--discrete-power"])
+        assert "dual bound" in capsys.readouterr().out
+
+    def test_no_dual_bound_line_for_a_continuous_solve(self, calls, capsys):
+        cli.main(["lp", "2024-01-10", "2024-01-11"])
+        assert "dual bound" not in capsys.readouterr().out
+
+
+class TestRlSubcommands:
+    """Argument plumbing only. Training itself is covered in rl/test_algos.py."""
+
+    @pytest.fixture
+    def rlCalls(self, monkeypatch, series):
+        from rl import baseline, evaluate, train
+        seen = {}
+
+        def fakeBuild(prices, **kwargs):
+            seen["baseline"] = kwargs
+            return [{"profitPerInterval": [0.1] * len(prices), "profit": 1.0,
+                     "dualBound": 1.01, "mipGap": 0.001,
+                     "start": "2024-01-10T00:00:00"}]
+
+        def fakeTrain(algoName, prices, model, **kwargs):
+            seen.setdefault("train", []).append((algoName, kwargs))
+            return None, Path("runs/fake/agent")
+
+        def fakeEvaluateSeeds(checkpoints, prices, model, **kwargs):
+            seen["eval"] = (sorted(checkpoints), kwargs)
+            return {seed: [{"agentProfit": 1.0, "lpProfit": 2.0}] for seed in checkpoints}
+
+        monkeypatch.setattr(baseline, "buildBaseline", fakeBuild)
+        monkeypatch.setattr(train, "trainOne", fakeTrain)
+        monkeypatch.setattr(evaluate, "evaluateSeeds", fakeEvaluateSeeds)
+        return seen
+
+    def test_baseline_reports_a_summary(self, rlCalls, capsys):
+        cli.main(["baseline", "2024-01-10", "2024-01-11", "--horizon", "4"])
+        out = capsys.readouterr().out
+        assert "oracle profit" in out and "dual bound" in out
+
+    def test_baseline_asks_for_the_discrete_oracle(self, rlCalls):
+        cli.main(["baseline", "2024-01-10", "2024-01-11", "--horizon", "4"])
+        assert rlCalls["baseline"]["discretePower"] is True
+
+    def test_baseline_continuous_flag_relaxes_the_restriction(self, rlCalls):
+        cli.main(["baseline", "2024-01-10", "2024-01-11", "--horizon", "4",
+                  "--continuous"])
+        assert rlCalls["baseline"]["discretePower"] is False
+
+    def test_baseline_defaults_to_the_configured_gap(self, rlCalls):
+        cli.main(["baseline", "2024-01-10", "2024-01-11", "--horizon", "4"])
+        assert rlCalls["baseline"]["gap"] == config.oracle_gap
+
+    def test_baseline_passes_the_worker_count(self, rlCalls):
+        cli.main(["baseline", "2024-01-10", "2024-01-11", "--horizon", "4",
+                  "--workers", "6"])
+        assert rlCalls["baseline"]["workers"] == 6
+
+    def test_train_runs_once_per_seed(self, rlCalls):
+        cli.main(["train", "2024-01-10", "2024-01-11", "--horizon", "4",
+                  "--seeds", "0", "1", "2", "--timesteps", "10"])
+        assert len(rlCalls["train"]) == 3
+        assert [kwargs["seed"] for _, kwargs in rlCalls["train"]] == [0, 1, 2]
+
+    def test_train_defaults_to_the_configured_seeds(self, rlCalls):
+        cli.main(["train", "2024-01-10", "2024-01-11", "--horizon", "4",
+                  "--timesteps", "10"])
+        assert len(rlCalls["train"]) == len(config.seeds)
+
+    def test_train_defaults_to_maskable_ppo(self, rlCalls):
+        cli.main(["train", "2024-01-10", "2024-01-11", "--horizon", "4",
+                  "--timesteps", "10"])
+        assert rlCalls["train"][0][0] == "maskableppo"
+
+    def test_train_algo_is_selectable(self, rlCalls):
+        cli.main(["train", "2024-01-10", "2024-01-11", "--horizon", "4",
+                  "--timesteps", "10", "--algo", "dqn"])
+        assert rlCalls["train"][0][0] == "dqn"
+
+    def test_train_refuses_an_unknown_algo(self, rlCalls):
+        with pytest.raises(SystemExit):
+            cli.main(["train", "2024-01-10", "2024-01-11", "--algo", "ppo2"])
+
+    def test_train_subtracts_the_oracle_baseline_by_default(self, rlCalls):
+        cli.main(["train", "2024-01-10", "2024-01-11", "--horizon", "4",
+                  "--timesteps", "10"])
+        assert rlCalls["train"][0][1]["baselines"] is not None
+
+    def test_no_baseline_leaves_the_reward_as_raw_profit(self, rlCalls):
+        cli.main(["train", "2024-01-10", "2024-01-11", "--horizon", "4",
+                  "--timesteps", "10", "--no-baseline"])
+        assert rlCalls["train"][0][1]["baselines"] is None
+        assert "baseline" not in rlCalls  # no oracle solve at all
+
+    def test_the_horizon_reaches_both_the_env_and_the_oracle(self, rlCalls):
+        cli.main(["train", "2024-01-10", "2024-01-11", "--horizon", "4",
+                  "--timesteps", "10"])
+        assert rlCalls["train"][0][1]["horizon"] == 4
+        assert rlCalls["baseline"]["horizon"] == 4
+
+    def test_eval_refuses_a_missing_checkpoint(self, rlCalls, tmp_path):
+        with pytest.raises(SystemExit, match="no checkpoint"):
+            cli.main(["eval", "2024-01-10", "2024-01-11", "--horizon", "4",
+                      "--out", str(tmp_path)])
+
+    def test_eval_reports_regret_and_spread(self, rlCalls, tmp_path, capsys):
+        for seed in (0, 1):
+            directory = tmp_path / f"maskableppo_seed{seed}"
+            directory.mkdir(parents=True)
+            (directory / "agent.zip").write_bytes(b"")
+        cli.main(["eval", "2024-01-10", "2024-01-11", "--horizon", "4",
+                  "--out", str(tmp_path), "--seeds", "0", "1"])
+        out = capsys.readouterr().out
+        assert "regret" in out and "captured" in out and "oracle profit" in out
