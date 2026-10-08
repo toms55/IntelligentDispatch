@@ -36,10 +36,10 @@ def priceFeatures(prices, start, horizonEnd):
     or past the end of `prices` is read; those slots are zero."""
     limit = min(horizonEnd, len(prices))
     out = []
-    for step in range(config.price_fine_intervals):
+    for step in range(config.five_minute_interval_count):
         index = start + step
         out.append(normalisePrice(prices[index]) if index < limit else 0.0)
-    bucket = start + config.price_fine_intervals
+    bucket = start + config.five_minute_interval_count
     for _ in range(config.price_bucket_count):
         window = [prices[i] for i in range(bucket, min(bucket + config.price_bucket_intervals, limit))]
         out.append(normalisePrice(sum(window) / len(window)) if window else 0.0)
@@ -47,29 +47,10 @@ def priceFeatures(prices, start, horizonEnd):
     return out
 
 
-def temporalFeatures(timestamp):
-    """Time of day and time of year, each as a sine-cosine pair."""
-    dayFraction = (
-        timestamp.hour * 3600 + timestamp.minute * 60 + timestamp.second
-    ) / 86400.0
-    yearFraction = (timestamp.timetuple().tm_yday - 1) / 365.25
-    return [
-        math.sin(2 * math.pi * dayFraction),
-        math.cos(2 * math.pi * dayFraction),
-        math.sin(2 * math.pi * yearFraction),
-        math.cos(2 * math.pi * yearFraction),
-    ]
-
-
-def observation(soc, prices, timestamps, start, horizonEnd):
-    """The full vector: SoC, forward prices, time of day and year, time remaining."""
+def observation(soc, prices, start, horizonEnd):
+    """The full vector: SoC, forward prices, time remaining."""
     remaining = (horizonEnd - start) / (horizonEnd if horizonEnd else 1)
-    values = (
-        [soc]
-        + priceFeatures(prices, start, horizonEnd)
-        + temporalFeatures(timestamps[min(start, len(timestamps) - 1)])
-        + [remaining]
-    )
+    values = [soc] + priceFeatures(prices, start, horizonEnd) + [remaining]
     return np.asarray(values, dtype=np.float32)
 
 
@@ -81,7 +62,5 @@ def observationBounds():
     priceEnd = 1 + config.price_feature_count
     low[1:priceEnd] = priceFloorNormalised
     high[1:priceEnd] = priceCapNormalised
-    low[priceEnd:priceEnd + 4] = -1.0  # sin/cos pairs
-    high[priceEnd:priceEnd + 4] = 1.0
     low[-1], high[-1] = 0.0, 1.0  # intervals remaining
     return low, high

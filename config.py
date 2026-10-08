@@ -9,12 +9,12 @@ gamma = 1.0
 
 
 # --- Observation -------------------------------------------------------------
-price_fine_intervals = 12  # 5-minute values, the first hour
+five_minute_interval_count = 12  # 5-minute values, the first hour of the forecast
 price_bucket_intervals = 6  # intervals per 30-minute bucket beyond that
 
-price_bucket_count = (episode_intervals - price_fine_intervals) // price_bucket_intervals
-price_feature_count = price_fine_intervals + price_bucket_count
-observation_size = 1 + price_feature_count + 4 + 1  # soc, prices, temporal, time left
+price_bucket_count = (episode_intervals - five_minute_interval_count) // price_bucket_intervals
+price_feature_count = five_minute_interval_count + price_bucket_count
+observation_size = 1 + price_feature_count + 1  # soc, prices, time left
 
 # normalisePrice(p) = sign(p) * log1p(|p| / scale) / divisor. The divisor is chosen so
 # the market price cap lands on exactly 1.0.

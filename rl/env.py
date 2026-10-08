@@ -32,7 +32,6 @@ class BessEnv(gymnasium.Env):
                  calendar=True, rewardScale=config.reward_scale, shuffle=False,
                  forecasts=None):
         self.prices = prices.to_numpy(dtype=float)
-        self.timestamps = list(prices.index)
         self.model = model
         self.baseline = baseline
         self.horizon = horizon
@@ -169,7 +168,6 @@ class BessEnv(gymnasium.Env):
         return features.observation(
             self.stored / self.model.MWh,
             self._observedPrices(start, end),
-            self.timestamps[start:end],
             self.stepIndex,
             self.horizon,
         )

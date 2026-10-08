@@ -96,9 +96,8 @@ cover.
 
 - **`rl/`** — the agent.
   - `features.py` owns the observation layout and is the single definition of it.
-    64 slots: SoC, 12 five-minute prices, 46 half-hour bucket means, hour and season
-    sine-cosine pairs, and intervals remaining. Training and inference both call this
-    and neither is told which it is.
+    60 slots: SoC, 12 five-minute prices, 46 half-hour bucket means, and intervals
+    remaining. Training and inference both call this and neither is told which it is.
   - `env.py` — `BessEnv`, three actions, masking plus clipping at the SoC boundary.
     Takes a price `Series` rather than a date range, which is what keeps tests off the
     network. `forecasts=` swaps what the agent sees without touching what it is paid.
