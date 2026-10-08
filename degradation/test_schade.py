@@ -24,7 +24,7 @@ from degradation.schade import SchadeDegradation
 # Table 2 case study: 60 kW / 100 kWh at 150 EUR/kWh, in MW / MWh / per-MWh.
 PAPER_MW = 0.060
 PAPER_MWH = 0.100
-PAPER_REPLACEMENT_COST = 150_000.0
+PAPER_REPLACEMENT_COST = 150000.0
 
 
 @pytest.fixture
@@ -34,7 +34,7 @@ def paper():
 
 @pytest.fixture
 def bess():
-    return SchadeDegradation(50.0, 100.0, 200_000.0)
+    return SchadeDegradation(50.0, 100.0, 200000.0)
 
 
 def stressRef(model, cd):
@@ -81,7 +81,7 @@ class TestParameters:
         assert bess.chargePower == 50.0
         assert bess.dischargePower == 50.0
         assert bess.MWh == 100.0
-        assert bess.replacementCost == 200_000.0
+        assert bess.replacementCost == 200000.0
 
     def test_cycle_depth_breakpoints_are_16_uniform_segments(self, paper):
         edges = paper.SoC_breakpointVal
@@ -167,9 +167,9 @@ class TestSegmentCosts:
         assert sum(paper.segmentCosts) == pytest.approx(total)
 
     def test_scales_linearly_with_size_and_replacement_cost(self):
-        base = SchadeDegradation(1.0, 10.0, 100_000.0)
-        bigger = SchadeDegradation(1.0, 20.0, 100_000.0)
-        dearer = SchadeDegradation(1.0, 10.0, 300_000.0)
+        base = SchadeDegradation(1.0, 10.0, 100000.0)
+        bigger = SchadeDegradation(1.0, 20.0, 100000.0)
+        dearer = SchadeDegradation(1.0, 10.0, 300000.0)
         for b, big, dear in zip(base.segmentCosts, bigger.segmentCosts, dearer.segmentCosts):
             assert big == pytest.approx(2 * b)
             assert dear == pytest.approx(3 * b)
@@ -278,10 +278,10 @@ class TestSegmentCapacities:
         assert all(c == pytest.approx(paper.MWh / 16) for c in paper.segmentCapacities)
 
     def test_scales_with_rated_energy_only(self):
-        base = SchadeDegradation(1.0, 10.0, 100_000.0)
-        bigger = SchadeDegradation(1.0, 20.0, 100_000.0)
-        dearer = SchadeDegradation(1.0, 10.0, 300_000.0)
-        stronger = SchadeDegradation(5.0, 10.0, 100_000.0)
+        base = SchadeDegradation(1.0, 10.0, 100000.0)
+        bigger = SchadeDegradation(1.0, 20.0, 100000.0)
+        dearer = SchadeDegradation(1.0, 10.0, 300000.0)
+        stronger = SchadeDegradation(5.0, 10.0, 100000.0)
         for b, big, dear, strong in zip(
             base.segmentCapacities, bigger.segmentCapacities,
             dearer.segmentCapacities, stronger.segmentCapacities,
@@ -374,10 +374,10 @@ class TestLpEmbedding:
         assert honest / cheated > 10
 
     def test_scales_linearly_with_replacement_cost_and_not_with_size(self):
-        base = SchadeDegradation(1.0, 10.0, 100_000.0)
-        bigger = SchadeDegradation(1.0, 20.0, 100_000.0)
-        dearer = SchadeDegradation(1.0, 10.0, 300_000.0)
-        stronger = SchadeDegradation(5.0, 10.0, 100_000.0)
+        base = SchadeDegradation(1.0, 10.0, 100000.0)
+        bigger = SchadeDegradation(1.0, 20.0, 100000.0)
+        dearer = SchadeDegradation(1.0, 10.0, 300000.0)
+        stronger = SchadeDegradation(5.0, 10.0, 100000.0)
         for b, big, dear, strong in zip(
             base.lpObjectiveCoefficients(), bigger.lpObjectiveCoefficients(),
             dearer.lpObjectiveCoefficients(), stronger.lpObjectiveCoefficients(),
@@ -527,7 +527,7 @@ class TestDegradationCost:
     """Eq. 10, K_h = r * e_RAT * Q_h.  degradationCost(q) -> currency."""
 
     def test_matches_equation_10(self, bess):
-        assert bess.degradationCost(1e-4) == pytest.approx(200_000.0 * 100.0 * 1e-4)
+        assert bess.degradationCost(1e-4) == pytest.approx(200000.0 * 100.0 * 1e-4)
 
     def test_has_no_hidden_factor_of_a_hundred(self, paper):
         # a, f and y are stored as fractions, so Eq. 10 drops the /100 it needs
@@ -546,7 +546,7 @@ class TestDegradationCost:
         assert bess.degradationCost(2e-4) == pytest.approx(2 * bess.degradationCost(1e-4))
 
     def test_replacement_cost_is_per_mwh(self, paper):
-        assert paper.replacementCost == 150_000.0
+        assert paper.replacementCost == 150000.0
         assert paper.degradationCost(paper.cycleDegradation(1.0)) == pytest.approx(0.678, abs=0.001)
 
     def test_cost_per_mwh_discharged_scales_slightly_superlinearly(self, paper):
@@ -644,4 +644,4 @@ class TestValidityBounds:
         # The constructor runs fine today and simply stays silent, so this one
         # fails without ever raising AttributeError -- hence @notYetBehaviour.
         with pytest.warns(UserWarning, match="C-rate"):
-            SchadeDegradation(200.0, 100.0, 200_000.0)
+            SchadeDegradation(200.0, 100.0, 200000.0)

@@ -5,11 +5,13 @@ agent twice -- once with realised prices, once with the AEMO forecast -- isolate
 cost of forecast error from policy quality.
 """
 import statistics
+from pathlib import Path
 
 import numpy as np
 
 from rl import algos
 from rl.env import BessEnv
+from rl.train import loadScaler
 
 
 def rolloutWindow(agent, env, windowIndex, masking=False, bound=None):
@@ -55,7 +57,13 @@ def evaluatePolicy(agent, env, algoName=None, masking=None, bounds=None):
 def evaluateSeeds(checkpoints, prices, model, baselines=None, algoName="maskableppo",
                   calendar=True, horizon=None, rewardScale=None, forecasts=None,
                   bounds=None):
-    """One evaluation per seed, over the same windows. Returns {seed: records}."""
+    """One evaluation per seed, over the same windows. Returns {seed: records}.
+
+    Each env uses the price transform its own checkpoint trained under, read from
+    scaler.json. Never the transform the evaluation window would pin: the market price
+    cap moves between years, and a different divisor changes what every observation
+    means.
+    """
     extra = {}
     if horizon is not None:
         extra["horizon"] = horizon
@@ -64,7 +72,8 @@ def evaluateSeeds(checkpoints, prices, model, baselines=None, algoName="maskable
     results = {}
     for seed, path in checkpoints.items():
         env = BessEnv(prices, model, baseline=baselines, calendar=calendar,
-                      forecasts=forecasts, **extra)
+                      forecasts=forecasts, scaler=loadScaler(Path(path).parent),
+                      **extra)
         agent = algos.load(algoName, str(path), env=None)
         results[seed] = evaluatePolicy(agent, env, algoName=algoName, bounds=bounds)
     return results

@@ -15,7 +15,7 @@ from rl.train import trainOne
 
 @pytest.fixture
 def paper():
-    return SchadeDegradation(0.060, 0.100, 150_000.0)
+    return SchadeDegradation(0.060, 0.100, 150000.0)
 
 
 @pytest.fixture
@@ -183,8 +183,8 @@ class TestThresholdPolicy:
         env = makeEnv(paper, series)
         obs, _ = env.reset(seed=0)
         obs = obs.copy()
-        obs[1] = features.priceFloorNormalised  # now is the cheapest thing on offer
-        obs[2:1 + config.price_feature_count] = features.normalisePrice(300.0)
+        obs[1] = env.scaler.low  # now is the cheapest thing on offer
+        obs[2:1 + config.price_feature_count] = env.scaler(300.0)
         action, _ = ThresholdPolicy().predict(obs)
         assert action == CHARGE
 
@@ -193,8 +193,8 @@ class TestThresholdPolicy:
         env = makeEnv(paper, series)
         obs, _ = env.reset(seed=0)
         obs = obs.copy()
-        obs[1] = features.normalisePrice(5_000.0)
-        obs[2:1 + config.price_feature_count] = features.normalisePrice(20.0)
+        obs[1] = env.scaler(5000.0)
+        obs[2:1 + config.price_feature_count] = env.scaler(20.0)
         action, _ = ThresholdPolicy().predict(obs)
         assert action == DISCHARGE
 
@@ -203,7 +203,7 @@ class TestThresholdPolicy:
         env = makeEnv(paper, series)
         obs, _ = env.reset(seed=0)
         obs = obs.copy()
-        obs[1:1 + config.price_feature_count] = features.normalisePrice(50.0)
+        obs[1:1 + config.price_feature_count] = env.scaler(50.0)
         action, _ = ThresholdPolicy().predict(obs)
         assert action == IDLE
 
@@ -212,17 +212,17 @@ class TestThresholdPolicy:
         env = makeEnv(paper, series, initialSoc=1.0)
         obs, _ = env.reset(seed=0)
         obs = obs.copy()
-        obs[1] = features.priceFloorNormalised
-        obs[2:1 + config.price_feature_count] = features.normalisePrice(300.0)
+        obs[1] = env.scaler.low
+        obs[2:1 + config.price_feature_count] = env.scaler(300.0)
         action, _ = ThresholdPolicy().predict(obs, action_masks=env.action_masks())
         assert action == IDLE
 
-    def test_ignores_padding_past_the_episode_end(self, paper, series):
+    def test_ignores_padding_past_the_episode_end(self, scaler):
         from rl.heuristic import ThresholdPolicy
         obs = np.zeros(config.observation_size, dtype=np.float32)
-        obs[1] = features.normalisePrice(400.0)
-        obs[2] = features.normalisePrice(10.0)
-        obs[3] = features.normalisePrice(20.0)
+        obs[1] = scaler(400.0)
+        obs[2] = scaler(10.0)
+        obs[3] = scaler(20.0)
         action, _ = ThresholdPolicy().predict(obs)
         assert action == DISCHARGE
 

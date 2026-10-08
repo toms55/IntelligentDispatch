@@ -16,7 +16,7 @@ from rl.env import BessEnv
 
 @pytest.fixture
 def paper():
-    return SchadeDegradation(0.060, 0.100, 150_000.0)
+    return SchadeDegradation(0.060, 0.100, 150000.0)
 
 
 @pytest.fixture
@@ -90,7 +90,7 @@ class TestCacheKey:
         assert self._key(paper) != self._key(paper, **{field: value})
 
     def test_changes_with_the_battery(self, paper):
-        other = SchadeDegradation(0.120, 0.200, 150_000.0)
+        other = SchadeDegradation(0.120, 0.200, 150000.0)
         assert self._key(paper) != self._key(paper, model=other)
 
     def test_names_the_window_readably(self, paper):

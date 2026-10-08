@@ -15,7 +15,7 @@ from rl.env import CHARGE, DISCHARGE, IDLE, BessEnv
 
 PAPER_MW = 0.060
 PAPER_MWH = 0.100
-PAPER_REPLACEMENT_COST = 150_000.0
+PAPER_REPLACEMENT_COST = 150000.0
 
 MIXED_PRICES = [20.0, 15.0, -50.0, 10.0, 300.0, 25.0, 18.0, 400.0, 12.0, -80.0, 9.0, 250.0]
 
@@ -202,7 +202,7 @@ class TestBoundary:
             assert env.action_masks()[IDLE] == True  # noqa: E712
 
     def test_soc_never_leaves_zero_to_one(self, paper):
-        env = makeEnv(paper, values=[-1000.0] * 40 + [10_000.0] * 40, horizon=80)
+        env = makeEnv(paper, values=[-1000.0] * 40 + [10000.0] * 40, horizon=80)
         env.reset(seed=0)
         rng = np.random.default_rng(1)
         for _ in range(80):
@@ -275,7 +275,7 @@ class TestObservation:
         assert obs.dtype == np.float32
 
     def test_stays_inside_the_declared_space(self, paper):
-        env = makeEnv(paper, values=[-1000.0, 17_500.0, 0.0] * 4)
+        env = makeEnv(paper, values=[-1000.0, 17500.0, 0.0] * 4)
         obs, _ = env.reset(seed=0)
         assert env.observation_space.contains(obs)
         for action in (CHARGE, DISCHARGE, IDLE, CHARGE):
@@ -300,7 +300,7 @@ class TestObservation:
 
     def test_never_reads_a_price_past_the_episode(self, paper):
         inside = MIXED_PRICES
-        first = makeEnv(paper, values=inside + [9_999.0] * 12, horizon=len(inside))
+        first = makeEnv(paper, values=inside + [9999.0] * 12, horizon=len(inside))
         second = makeEnv(paper, values=inside + [-999.0] * 12, horizon=len(inside))
         a, _ = first.reset(seed=0)
         b, _ = second.reset(seed=0)
@@ -380,7 +380,7 @@ class TestForecastObservations:
         b, _ = withForecast.reset(seed=0)
         priceEnd = 1 + config.price_feature_count
         assert not np.allclose(a[1:priceEnd], b[1:priceEnd])
-        assert b[1] == pytest.approx(features.normalisePrice(999.0), abs=1e-6)
+        assert b[1] == pytest.approx(withForecast.scaler(999.0), abs=1e-6)
 
     def test_settlement_still_uses_the_realised_price(self, paper):
         forecast = [999.0] * len(MIXED_PRICES)

@@ -1,4 +1,5 @@
 """Tests for cli.py. No network: price_series is monkeypatched."""
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -70,13 +71,13 @@ class TestArgs:
         cli.main(["lp", "2024-01-10", "2024-01-11"])
         model = calls["solve"][1]
         assert (model.chargePower, model.MWh, model.replacementCost) == (
-            0.060, 0.100, 150_000.0)
+            0.060, 0.100, 150000.0)
 
     def test_battery_is_configurable(self, calls):
         cli.main(["lp", "2024-01-10", "2024-01-11",
                   "--mw", "1.5", "--mwh", "3.0", "--replacement-cost", "200000"])
         model = calls["solve"][1]
-        assert (model.chargePower, model.MWh, model.replacementCost) == (1.5, 3.0, 200_000.0)
+        assert (model.chargePower, model.MWh, model.replacementCost) == (1.5, 3.0, 200000.0)
 
     def test_prices_are_passed_as_a_plain_list(self, calls):
         """solve() indexes by position and has no use for a DatetimeIndex."""
@@ -138,6 +139,11 @@ class TestOutput:
         cli.main(["lp", "2024-03-05T06:00", "2024-03-06", "--region", "VIC1", "--csv"])
         assert (tmp_path / "lp_VIC1_2024-03-05.csv").exists()
 
+    def test_a_split_name_labels_the_default_path(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cli.main(["lp", "--split", "probe=2024-01-10..2024-01-11", "--csv"])
+        assert (tmp_path / "lp_SA1_probe.csv").exists()
+
     def test_show_displays_instead_of_saving(self, tmp_path, monkeypatch):
         """--show must not leave a file behind, and must not need a PATH."""
         monkeypatch.chdir(tmp_path)
@@ -164,21 +170,34 @@ class TestEndToEnd:
         assert "profit" in capsys.readouterr().out
 
 
+def _fakeCheckpoint(root, seed, cap=17500.0, algo="maskableppo"):
+    """A checkpoint directory as rl/train.py leaves it: the agent and its price scale."""
+    directory = root / f"{algo}_seed{seed}"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "agent.zip").write_bytes(b"")
+    (directory / "scaler.json").write_text(
+        json.dumps({"cap": cap, "floor": -1000.0, "knee": config.price_knee})
+    )
+    return directory
+
+
 class TestWindow:
-    """A window is two dates, or a named split out of config.py."""
+    """A window is two dates, or one --split NAME=START..END on the command line."""
 
     def test_a_split_supplies_the_dates(self, calls):
-        cli.main(["lp", "--split", "val"])
+        cli.main(["lp", "--split", "val=2024-11-01T04:00..2025-01-01T04:00"])
         start, end, _ = calls["prices"]
-        assert (start, end) == config.splits["val"]
+        assert start == datetime(2024, 11, 1, 4)
+        assert end == datetime(2025, 1, 1, 4)
 
-    def test_full_train_is_the_whole_training_year(self, calls):
-        cli.main(["lp", "--split", "full_train"])
+    def test_a_plain_date_needs_no_time(self, calls):
+        cli.main(["lp", "--split", "probe=2024-01-10..2024-01-11"])
         start, end, _ = calls["prices"]
-        assert (start, end) == config.full_train
+        assert (start, end) == (datetime(2024, 1, 10), datetime(2024, 1, 11))
 
     def test_explicit_dates_beat_a_split(self, calls):
-        cli.main(["lp", "2024-01-10", "2024-01-11", "--split", "test"])
+        cli.main(["lp", "2024-01-10", "2024-01-11",
+                  "--split", "test=2025-01-01T04:00..2026-01-01T04:00"])
         start, end, _ = calls["prices"]
         assert start == datetime(2024, 1, 10)
         assert end == datetime(2024, 1, 11)
@@ -191,9 +210,26 @@ class TestWindow:
         with pytest.raises(SystemExit):
             cli.main(["lp", "2024-01-10"])
 
-    def test_an_unknown_split_is_refused(self):
+    @pytest.mark.parametrize("value", [
+        "val",                                  # no name/window separator
+        "=2024-01-10..2024-01-11",              # no name
+        "val=2024-01-10",                       # no date separator
+        "val=2024-01-10:2024-01-11",            # ':' is not the separator
+        "val=notadate..2024-01-11",             # not ISO
+        "val=2024-01-10..notadate",
+    ])
+    def test_a_malformed_split_is_refused(self, value):
         with pytest.raises(SystemExit):
-            cli.main(["lp", "--split", "holdout"])
+            cli.main(["lp", "--split", value])
+
+    def test_more_than_one_split_is_refused(self):
+        with pytest.raises(SystemExit):
+            cli.main(["lp", "--split", "a=2024-01-10..2024-01-11",
+                      "--split", "b=2024-02-10..2024-02-11"])
+
+    def test_a_backwards_window_is_refused(self):
+        with pytest.raises(SystemExit):
+            cli.main(["lp", "2024-01-11", "2024-01-10"])
 
 
 class TestDiscretePowerFlag:
@@ -310,6 +346,27 @@ class TestRlSubcommands:
         assert rlCalls["train"][0][1]["baselines"] is None
         assert "baseline" not in rlCalls  # no oracle solve at all
 
+    def test_train_pins_the_price_scale_to_the_window_end(self, rlCalls, capsys):
+        """2024-01-10 to 2024-01-11 sits in 2023-24, so the cap is 16600."""
+        cli.main(["train", "2024-01-10", "2024-01-11", "--horizon", "4",
+                  "--timesteps", "10", "--seeds", "0"])
+        assert rlCalls["train"][0][1]["scaler"].cap == 16600.0
+        assert "cap 16600" in capsys.readouterr().out
+
+    def test_cap_date_overrides_the_window_end(self, rlCalls):
+        """Pin to the end of the window you will score on, so test-year prices above the
+        training year's cap still resolve."""
+        cli.main(["train", "2024-01-10", "2024-01-11", "--horizon", "4",
+                  "--timesteps", "10", "--seeds", "0",
+                  "--cap-date", "2026-01-01T04:00"])
+        assert rlCalls["train"][0][1]["scaler"].cap == 20300.0
+
+    def test_every_seed_shares_one_price_scale(self, rlCalls):
+        cli.main(["train", "2024-01-10", "2024-01-11", "--horizon", "4",
+                  "--timesteps", "10", "--seeds", "0", "1", "2"])
+        scalers = [kwargs["scaler"] for _, kwargs in rlCalls["train"]]
+        assert all(one == scalers[0] for one in scalers)
+
     def test_the_horizon_reaches_both_the_env_and_the_oracle(self, rlCalls):
         cli.main(["train", "2024-01-10", "2024-01-11", "--horizon", "4",
                   "--timesteps", "10"])
@@ -323,10 +380,19 @@ class TestRlSubcommands:
 
     def test_eval_reports_regret_and_spread(self, rlCalls, tmp_path, capsys):
         for seed in (0, 1):
-            directory = tmp_path / f"maskableppo_seed{seed}"
-            directory.mkdir(parents=True)
-            (directory / "agent.zip").write_bytes(b"")
+            _fakeCheckpoint(tmp_path, seed)
         cli.main(["eval", "2024-01-10", "2024-01-11", "--horizon", "4",
                   "--out", str(tmp_path), "--seeds", "0", "1"])
         out = capsys.readouterr().out
         assert "regret" in out and "captured" in out and "oracle profit" in out
+        assert "cap 17500" in out  # the cap the checkpoint trained under, not the window's
+
+    def test_eval_refuses_a_checkpoint_with_no_price_scale(self, rlCalls, tmp_path):
+        """A checkpoint from before the dated price cap. Guessing the transform would
+        silently change what every observation means."""
+        directory = tmp_path / "maskableppo_seed0"
+        directory.mkdir(parents=True)
+        (directory / "agent.zip").write_bytes(b"")
+        with pytest.raises(FileNotFoundError, match="scaler.json"):
+            cli.main(["eval", "2024-01-10", "2024-01-11", "--horizon", "4",
+                      "--out", str(tmp_path), "--seeds", "0"])

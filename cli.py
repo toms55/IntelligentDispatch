@@ -74,8 +74,11 @@ def _sharedParser():
                              "(e.g. 2024-01-10 or 2024-01-10T06:00); omit and use --split")
     parser.add_argument("end", type=datetime.fromisoformat, nargs="?",
                         help="end of the window, exclusive, same format as start")
-    parser.add_argument("--split", choices=sorted(config.splits) + ["full_train"],
-                        help="use a named window from config.py instead of two dates")
+    parser.add_argument("--split", action="append", metavar="NAME=START..END",
+                        help="a named window instead of two dates, e.g. "
+                             "train=2024-01-01T04:00..2024-11-01T04:00. Use '..' "
+                             "between the dates, because a single ':' is ambiguous "
+                             "against an ISO time. Give one per run")
     parser.add_argument("--region", default=config.default_region, metavar="ID",
                         help=f"NEM region: SA1, NSW1, VIC1, QLD1, TAS1 "
                              f"(default: {config.default_region})")
@@ -99,6 +102,7 @@ def _sharedParser():
                              "PATH defaults to <module>_<region>_<start>.png in the cwd")
     parser.add_argument("--show", action="store_true",
                         help="display the figure in a window instead of saving it")
+    parser.set_defaults(splitName=None)
     return parser
 
 
@@ -106,15 +110,36 @@ def _battery(args):
     return SchadeDegradation(args.mw, args.mwh, args.replacement_cost)
 
 
+def _parseSplit(value):
+    """One --split value, as (name, start, end). Raises SystemExit on any malformed part.
+
+    The separator is '..' rather than ':' because an ISO datetime already contains ':'.
+    """
+    name, equals, window = value.partition("=")
+    if not equals or not name.strip():
+        raise SystemExit(f"--split wants NAME=START..END, got {value!r}")
+    start, dots, end = window.partition("..")
+    if not dots:
+        raise SystemExit(f"--split {name.strip()} wants START..END, got {window!r}")
+    try:
+        return name.strip(), datetime.fromisoformat(start), datetime.fromisoformat(end)
+    except ValueError as error:
+        raise SystemExit(f"--split {name.strip()}: {error}")
+
+
 def _window(args):
     """Resolve the window to (start, end). Explicit dates win over --split."""
+    splits = args.split or []
+    if len(splits) > 1:
+        raise SystemExit(f"give one --split per run, got {len(splits)}")
     if args.start is None:
-        if args.split is None:
-            raise SystemExit("give two dates, or --split")
-        bounds = config.full_train if args.split == "full_train" else config.splits[args.split]
-        args.start, args.end = bounds
+        if not splits:
+            raise SystemExit("give two dates, or --split NAME=START..END")
+        args.splitName, args.start, args.end = _parseSplit(splits[0])
     elif args.end is None:
         raise SystemExit("give an end date as well as a start, or use --split alone")
+    if args.end <= args.start:
+        raise SystemExit(f"the window ends before it starts: {args.start} to {args.end}")
     return args.start, args.end
 
 
@@ -124,7 +149,8 @@ def _prices(args):
 
 
 def _outputPath(args, suffix):
-    return f"{args.module}_{args.region}_{args.start.date()}.{suffix}"
+    label = args.splitName or args.start.date()
+    return f"{args.module}_{args.region}_{label}.{suffix}"
 
 
 def _frame(prices, schedule):
@@ -249,10 +275,15 @@ def _runBaseline(args):
 
 def _runTrain(args):
     from rl import baseline
+    from rl.features import PriceScaler, scalerFor
     from rl.train import trainOne
+    from utils.market import marketPriceCap
 
     prices = _prices(args)
     model = _battery(args)
+    scaler = (PriceScaler(marketPriceCap(args.cap_date)) if args.cap_date
+              else scalerFor(prices.index))
+    print(f"price scale     cap {scaler.cap:.0f}, knee {scaler.knee:.0f}")
     baselines = None
     if not args.no_baseline:
         # The baseline only has to be a constant per window/interval, so it need not
@@ -270,6 +301,7 @@ def _runTrain(args):
                 args.algo, prices, model, baselines=baselines, seed=seed,
                 timesteps=args.timesteps, calendar=not args.no_calendar,
                 horizon=args.horizon, rewardScale=args.reward_scale, outDir=args.out,
+                scaler=scaler,
             )
         print(f"wrote          {path}.zip")
     return 0
@@ -326,6 +358,12 @@ def _runEval(args):
     missing = [str(path) for path in checkpoints.values() if not path.with_suffix(".zip").exists()]
     if missing:
         raise SystemExit("no checkpoint at: " + ", ".join(missing))
+
+    # Each seed is scored under the transform it trained with, so say which that is.
+    from rl.train import loadScaler
+    trained = loadScaler(Path(next(iter(checkpoints.values()))).parent)
+    print(f"price scale    cap {trained.cap:.0f}, knee {trained.knee:.0f} "
+          f"(from the checkpoint)")
 
     results = evaluate.evaluateSeeds(
         checkpoints, prices, model, baselines=baselines, algoName=args.algo,
@@ -437,8 +475,15 @@ def main(argv=None):
     train = addParser("train", "train an agent, one run per seed")
     addSolverArgs(train, gapDefault=config.oracle_gap)
     addRlArgs(train, "continuous" if not config.baseline_discrete_power else "discrete")
-    train.add_argument("--timesteps", type=int, default=100_000, metavar="N",
+    train.add_argument("--timesteps", type=int, default=100000, metavar="N",
                        help="environment steps per seed (default: 100000)")
+    train.add_argument("--cap-date", type=datetime.fromisoformat, default=None,
+                       metavar="DATE",
+                       help="pin the observation price scale to the AEMC market price "
+                            "cap in force at DATE, instead of at the end of the training "
+                            "window. Pass the end of the window you will score on to "
+                            "keep full resolution over prices above the training year's "
+                            "cap. The scale is saved beside the checkpoint either way")
     train.add_argument("--no-baseline", action="store_true",
                        help="reward is raw profit, with no oracle baseline subtracted")
     train.add_argument("--baseline-no-calendar", action="store_true",

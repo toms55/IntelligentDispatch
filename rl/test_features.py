@@ -1,9 +1,13 @@
 """Tests for rl/features.py. Run with: uv run pytest rl/ -q"""
+from datetime import datetime
+
 import numpy as np
 import pytest
 
 import config
 from rl import features
+from rl.features import PriceScaler
+from utils.market import market_price_floor
 
 
 @pytest.fixture
@@ -11,122 +15,177 @@ def ramp():
     return [float(n) for n in range(config.episode_intervals)]
 
 
-class TestNormalisePrice:
-    def test_zero_maps_to_zero(self):
-        assert features.normalisePrice(0.0) == 0.0
+class TestPriceScaler:
+    def test_zero_maps_to_zero(self, scaler):
+        assert scaler(0.0) == 0.0
 
-    def test_is_increasing(self):
-        values = [features.normalisePrice(p) for p in range(-1000, 1000, 25)]
-        assert all(b > a for a, b in zip(values, values[1:]))
+    def test_the_cap_lands_on_one(self, scaler):
+        assert scaler(scaler.cap) == pytest.approx(1.0)
+        assert scaler.high == 1.0
 
-    def test_is_odd_about_zero(self):
+    def test_is_increasing(self, scaler):
+        values = [scaler(price) for price in range(-1000, 1000, 25)]
+        assert all(later > earlier for earlier, later in zip(values, values[1:]))
+
+    def test_is_odd_about_zero(self, scaler):
+        """asinh is odd by construction, so this needs no tolerance at all."""
         for price in (5.0, 50.0, 300.0, 900.0):
-            assert features.normalisePrice(-price) == pytest.approx(
-                -features.normalisePrice(price)
-            )
+            assert scaler(-price) == -scaler(price)
 
-    def test_the_market_cap_lands_on_one(self):
-        assert features.normalisePrice(config.price_cap) == pytest.approx(1.0)
+    def test_the_knee_is_where_the_curve_bends(self, scaler):
+        """Below the knee the transform is roughly linear, above it roughly
+        logarithmic. Doubling inside the knee nearly doubles the output; doubling well
+        past it does not."""
+        inside = scaler(2 * scaler.knee / 20) / scaler(scaler.knee / 20)
+        outside = scaler(20 * scaler.knee) / scaler(10 * scaler.knee)
+        assert inside > 1.9
+        assert outside < 1.3
 
-    def test_compresses_spikes_relative_to_ordinary_prices(self):
-        ordinary = features.normalisePrice(50.0)
-        spike = features.normalisePrice(5_000.0)
-        assert spike / ordinary < 10
+    def test_compresses_spikes_relative_to_ordinary_prices(self, scaler):
+        ordinary = scaler(50.0)
+        spike = scaler(5000.0)
+        assert spike / ordinary < 25
 
-    def test_clips_beyond_the_administered_limits(self):
-        assert features.normalisePrice(50_000.0) == pytest.approx(
-            features.normalisePrice(config.price_cap)
-        )
-        assert features.normalisePrice(-9_000.0) == pytest.approx(
-            features.normalisePrice(config.price_floor)
-        )
+    def test_clips_beyond_the_administered_limits(self, scaler):
+        assert scaler(50000.0) == scaler(scaler.cap)
+        assert scaler(-9000.0) == scaler(scaler.floor)
+
+    def test_the_floor_sets_the_lower_bound(self, scaler):
+        assert scaler.low == scaler(market_price_floor)
+        assert -1.0 < scaler.low < 0.0
+
+    def test_a_different_cap_is_a_different_transform(self):
+        """Why rl/train.py saves the scaler. Two caps disagree on the same price, so an
+        agent scored under the wrong cap reads a number it never trained on."""
+        trained = PriceScaler(17500.0)
+        scored = PriceScaler(23200.0)
+        assert trained(1000.0) != scored(1000.0)
+        assert trained == PriceScaler(17500.0)
+        assert trained != scored
+
+    def test_round_trips_through_a_dict(self, scaler):
+        assert PriceScaler(**scaler.asDict()) == scaler
+
+    @pytest.mark.parametrize("kwargs", [
+        {"cap": 0.0},
+        {"cap": -1.0},
+        {"cap": 17500.0, "knee": 0.0},
+        {"cap": 17500.0, "floor": 10.0},
+    ])
+    def test_refuses_a_nonsense_scale(self, kwargs):
+        with pytest.raises(ValueError):
+            PriceScaler(**{"cap": 17500.0, **kwargs})
+
+
+class TestScalerFor:
+    def test_pins_the_cap_in_force_at_the_last_timestamp(self):
+        """The last, not the first: the caps only rise, so the final cap is the largest
+        over the window and nothing earlier clips."""
+        window = [datetime(2025, 6, 1, 4), datetime(2025, 8, 1, 4)]
+        assert features.scalerFor(window).cap == 20300.0
+
+    def test_a_window_inside_one_financial_year(self):
+        window = [datetime(2024, 1, 1, 4), datetime(2024, 6, 1, 4)]
+        assert features.scalerFor(window).cap == 16600.0
+
+    def test_carries_the_configured_knee(self):
+        window = [datetime(2025, 1, 1, 4)]
+        assert features.scalerFor(window).knee == config.price_knee
+        assert features.scalerFor(window, knee=50.0).knee == 50.0
+
+    def test_an_empty_window_is_refused(self):
+        with pytest.raises(ValueError, match="empty window"):
+            features.scalerFor([])
+
+    def test_accepts_a_pandas_index(self):
+        pandas = pytest.importorskip("pandas")
+        index = pandas.date_range("2025-08-01 04:00", periods=12, freq="5min")
+        assert features.scalerFor(index).cap == 20300.0
 
 
 class TestPriceFeatures:
-    def test_has_the_configured_length(self, ramp):
-        got = features.priceFeatures(ramp, 0, config.episode_intervals)
+    def test_has_the_configured_length(self, ramp, scaler):
+        got = features.priceFeatures(ramp, 0, config.episode_intervals, scaler)
         assert len(got) == config.price_feature_count == 58
 
-    def test_the_first_hour_is_five_minute_resolution(self, ramp):
-        got = features.priceFeatures(ramp, 0, config.episode_intervals)
+    def test_the_first_hour_is_five_minute_resolution(self, ramp, scaler):
+        got = features.priceFeatures(ramp, 0, config.episode_intervals, scaler)
         for step in range(config.five_minute_interval_count):
-            assert got[step] == pytest.approx(features.normalisePrice(ramp[step]))
+            assert got[step] == pytest.approx(scaler(ramp[step]))
 
-    def test_beyond_the_first_hour_is_half_hour_means(self, ramp):
-        got = features.priceFeatures(ramp, 0, config.episode_intervals)
+    def test_beyond_the_first_hour_is_half_hour_means(self, ramp, scaler):
+        got = features.priceFeatures(ramp, 0, config.episode_intervals, scaler)
         first = config.five_minute_interval_count
-        window = ramp[first:first + config.price_bucket_intervals]
-        assert got[first] == pytest.approx(
-            features.normalisePrice(sum(window) / len(window))
-        )
+        window = ramp[first:first + config.bucket_window_intervals]
+        assert got[first] == pytest.approx(scaler(sum(window) / len(window)))
 
     def test_the_layout_closes_with_no_ragged_bucket(self):
         covered = (
             config.five_minute_interval_count
-            + config.price_bucket_count * config.price_bucket_intervals
+            + config.price_bucket_count * config.bucket_window_intervals
         )
         assert covered == config.episode_intervals
 
-    def test_is_forward_looking(self, ramp):
-        got = features.priceFeatures(ramp, 100, config.episode_intervals)
-        assert got[0] == pytest.approx(features.normalisePrice(ramp[100]))
-        assert got[1] == pytest.approx(features.normalisePrice(ramp[101]))
+    def test_is_forward_looking(self, ramp, scaler):
+        got = features.priceFeatures(ramp, 100, config.episode_intervals, scaler)
+        assert got[0] == pytest.approx(scaler(ramp[100]))
+        assert got[1] == pytest.approx(scaler(ramp[101]))
 
-    def test_pads_past_the_horizon_instead_of_reading_on(self, ramp):
-        longer = ramp + [9_999.0] * 50
+    def test_pads_past_the_horizon_instead_of_reading_on(self, ramp, scaler):
+        longer = ramp + [9999.0] * 50
         got = features.priceFeatures(longer, config.episode_intervals - 2,
-                                     config.episode_intervals)
-        assert got[0] == pytest.approx(features.normalisePrice(ramp[-2]))
-        assert got[1] == pytest.approx(features.normalisePrice(ramp[-1]))
+                                     config.episode_intervals, scaler)
+        assert got[0] == pytest.approx(scaler(ramp[-2]))
+        assert got[1] == pytest.approx(scaler(ramp[-1]))
         assert all(value == 0.0 for value in got[2:])
 
-    def test_pads_a_part_full_bucket_from_what_is_there(self, ramp):
+    def test_pads_a_part_full_bucket_from_what_is_there(self, ramp, scaler):
         start = config.episode_intervals - config.five_minute_interval_count - 2
-        got = features.priceFeatures(ramp, start, config.episode_intervals)
+        got = features.priceFeatures(ramp, start, config.episode_intervals, scaler)
         tail = ramp[start + config.five_minute_interval_count:]
         assert got[config.five_minute_interval_count] == pytest.approx(
-            features.normalisePrice(sum(tail) / len(tail))
+            scaler(sum(tail) / len(tail))
         )
 
-    def test_a_shorter_series_pads_rather_than_raising(self):
-        got = features.priceFeatures([10.0, 20.0], 0, config.episode_intervals)
+    def test_a_shorter_series_pads_rather_than_raising(self, scaler):
+        got = features.priceFeatures([10.0, 20.0], 0, config.episode_intervals, scaler)
         assert len(got) == config.price_feature_count
         assert got[2] == 0.0
 
 
 class TestObservation:
-    def test_assembles_the_slots_in_order(self, ramp):
-        got = features.observation(0.42, ramp, 0, config.episode_intervals)
+    def test_assembles_the_slots_in_order(self, ramp, scaler):
+        got = features.observation(0.42, ramp, 0, config.episode_intervals, scaler)
         assert got.shape == (config.observation_size,)
         assert got[0] == pytest.approx(0.42, abs=1e-6)
         priceEnd = 1 + config.price_feature_count
         assert got[1:priceEnd] == pytest.approx(
-            np.asarray(features.priceFeatures(ramp, 0, config.episode_intervals),
+            np.asarray(features.priceFeatures(ramp, 0, config.episode_intervals, scaler),
                        dtype=np.float32), abs=1e-6
         )
         assert got[-1] == pytest.approx(1.0)
 
-    def test_a_forecast_equal_to_the_realised_prices_gives_the_same_vector(self, ramp):
-        realised = features.observation(0.5, ramp, 24, config.episode_intervals)
-        forecast = features.observation(0.5, list(ramp), 24, config.episode_intervals)
+    def test_a_forecast_equal_to_the_realised_prices_gives_the_same_vector(self, ramp, scaler):
+        realised = features.observation(0.5, ramp, 24, config.episode_intervals, scaler)
+        forecast = features.observation(0.5, list(ramp), 24, config.episode_intervals, scaler)
         assert np.array_equal(realised, forecast)
 
-    def test_is_float32(self, ramp):
-        got = features.observation(0.5, ramp, 0, config.episode_intervals)
+    def test_is_float32(self, ramp, scaler):
+        got = features.observation(0.5, ramp, 0, config.episode_intervals, scaler)
         assert got.dtype == np.float32
 
 
 class TestObservationBounds:
-    def test_are_finite(self):
-        low, high = features.observationBounds()
+    def test_are_finite(self, scaler):
+        low, high = features.observationBounds(scaler)
         assert np.all(np.isfinite(low)) and np.all(np.isfinite(high))
 
-    def test_low_is_below_high_everywhere(self):
-        low, high = features.observationBounds()
+    def test_low_is_below_high_everywhere(self, scaler):
+        low, high = features.observationBounds(scaler)
         assert np.all(low < high)
 
-    def test_contain_every_price_the_market_allows(self):
-        low, high = features.observationBounds()
-        extremes = [config.price_floor, config.price_cap] * config.episode_intervals
-        got = features.observation(1.0, extremes, 0, config.episode_intervals)
+    def test_contain_every_price_the_market_allows(self, scaler):
+        low, high = features.observationBounds(scaler)
+        extremes = [scaler.floor, scaler.cap] * config.episode_intervals
+        got = features.observation(1.0, extremes, 0, config.episode_intervals, scaler)
         assert np.all(got >= low - 1e-6) and np.all(got <= high + 1e-6)

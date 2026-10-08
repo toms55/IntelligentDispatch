@@ -18,7 +18,7 @@ from utils import nem_interval_hours
 
 PAPER_MW = 0.060
 PAPER_MWH = 0.100
-PAPER_REPLACEMENT_COST = 150_000.0
+PAPER_REPLACEMENT_COST = 150000.0
 
 # Eqs. 6-7: MW is a rate, the LP's variables are energy.
 INTERVAL_LIMIT = PAPER_MW * nem_interval_hours
@@ -57,12 +57,12 @@ class TestBounds:
         assert s.soc[-1] == pytest.approx(1.0, abs=1e-6)
 
     def test_cannot_discharge_beyond_empty(self, paper):
-        s = solve([10_000.0] * 60, paper, initialSoc=0.5, calendar=False)
+        s = solve([10000.0] * 60, paper, initialSoc=0.5, calendar=False)
         assert min(s.soc) >= -1e-9
         assert s.soc[-1] == pytest.approx(0.0, abs=1e-6)
 
     def test_respects_power_limit(self, paper):
-        prices = [-1000.0] * 5 + [10_000.0] * 5
+        prices = [-1000.0] * 5 + [10000.0] * 5
         s = solve(prices, paper, initialSoc=0.5, calendar=False)
         for boughtMWh, soldMWh in zip(s.bought, s.sold):
             assert boughtMWh <= INTERVAL_LIMIT + 1e-9
@@ -82,7 +82,7 @@ class TestDegradationIsHonest:
     """
 
     def test_matches_schade_recompute(self, paper):
-        prices = [0.0] * 4 + [5_000.0] * 8 + [0.0] * 4
+        prices = [0.0] * 4 + [5000.0] * 8 + [0.0] * 4
         s = solve(prices, paper, initialSoc=0.8, calendar=False)
         assert s.degradationCost == pytest.approx(
             recomputedDegradation(paper, s, calendar=False), rel=1e-6
@@ -90,14 +90,14 @@ class TestDegradationIsHonest:
 
     def test_deep_discharge_costs_the_top_segments(self, paper):
         # From full, price high enough that discharging is always worth it.
-        s = solve([10_000.0] * 3, paper, initialSoc=1.0, calendar=False)
+        s = solve([10000.0] * 3, paper, initialSoc=1.0, calendar=False)
         expected = paper.cost(paper.totalCycleDegradation(1.0, s.soc[-1]))
         assert s.degradationCost == pytest.approx(expected, rel=1e-6)
 
     def test_costs_more_than_the_cheapest_segments_would(self, paper):
         """The failure mode, stated as a number: draining the top of the pack
         must not be priced as if it came off the bottom."""
-        s = solve([10_000.0] * 3, paper, initialSoc=1.0, calendar=False)
+        s = solve([10000.0] * 3, paper, initialSoc=1.0, calendar=False)
         drained = 1.0 - s.soc[-1]
         cheapest = paper.cost(paper.totalCycleDegradation(drained, 0.0))
         assert s.degradationCost > 5 * cheapest
@@ -128,20 +128,20 @@ class TestObjective:
 
     def test_buys_low_and_sells_high(self, paper):
         # From empty, so selling in the spike requires buying in the trough first.
-        prices = [10.0] * 6 + [1_000.0] * 6
+        prices = [10.0] * 6 + [1000.0] * 6
         s = solve(prices, paper, initialSoc=0.0, calendar=False)
         assert sum(s.bought[:6]) > 0
         assert sum(s.sold[6:]) > 0
         assert s.profit > 0
 
     def test_profit_is_revenue_minus_degradation(self, paper):
-        prices = [10.0] * 6 + [1_000.0] * 6
+        prices = [10.0] * 6 + [1000.0] * 6
         s = solve(prices, paper, initialSoc=0.5, calendar=False)
         assert s.profit == pytest.approx(s.revenue - s.degradationCost, rel=1e-9)
 
     def test_longer_horizon_is_never_worse(self, paper):
         """Perfect foresight over more intervals cannot reduce the optimum."""
-        prices = [10.0] * 6 + [1_000.0] * 6
+        prices = [10.0] * 6 + [1000.0] * 6
         short = solve(prices[:6], paper, initialSoc=0.5, calendar=False)
         full = solve(prices, paper, initialSoc=0.5, calendar=False)
         assert full.profit >= short.profit - 1e-9
@@ -157,7 +157,7 @@ class TestCalendarAging:
         assert s.degradationCost > 0
 
     def test_matches_schade_recompute(self, paper):
-        prices = [0.0] * 4 + [5_000.0] * 8
+        prices = [0.0] * 4 + [5000.0] * 8
         s = solve(prices, paper, initialSoc=0.8, calendar=True)
         assert s.degradationCost == pytest.approx(
             recomputedDegradation(paper, s, calendar=True), rel=1e-4
@@ -227,7 +227,7 @@ class TestDiscretePower:
                 assert s.soc[t] == pytest.approx(1.0, abs=1e-6)
 
     def test_a_short_discharge_only_happens_out_of_an_empty_pack(self, paper):
-        s = solve([10_000.0] * 30, paper, initialSoc=0.5, calendar=False, discretePower=True)
+        s = solve([10000.0] * 30, paper, initialSoc=0.5, calendar=False, discretePower=True)
         for t, soldMWh in enumerate(s.sold):
             if 1e-9 < soldMWh < INTERVAL_LIMIT - 1e-9:
                 assert s.soc[t] == pytest.approx(0.0, abs=1e-6)
@@ -240,13 +240,13 @@ class TestDiscretePower:
 
     def test_the_last_part_step_out_of_an_empty_pack_is_exact(self, paper):
         start = (0.5 * INTERVAL_LIMIT / paper.dischargeEfficiency) / paper.MWh
-        s = solve([10_000.0], paper, initialSoc=start, calendar=False, discretePower=True)
+        s = solve([10000.0], paper, initialSoc=start, calendar=False, discretePower=True)
         assert s.sold[0] == pytest.approx(0.5 * INTERVAL_LIMIT, rel=1e-9)
         assert s.soc[0] == pytest.approx(0.0, abs=1e-9)
 
     def test_a_full_step_is_asymmetric_in_soc(self, paper):
         up = solve([-1000.0], paper, initialSoc=0.5, calendar=False, discretePower=True)
-        down = solve([10_000.0], paper, initialSoc=0.5, calendar=False, discretePower=True)
+        down = solve([10000.0], paper, initialSoc=0.5, calendar=False, discretePower=True)
         gained = up.soc[0] - 0.5
         lost = 0.5 - down.soc[0]
         assert gained == pytest.approx(

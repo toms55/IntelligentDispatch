@@ -23,6 +23,10 @@ class BessEnv(gymnasium.Env):
 
     prices: a pandas Series of RRP with a DatetimeIndex. baseline: per-window lists of
     the LP's own per-interval profit, keyed by window index. Needs `gamma = 1`.
+
+    scaler: the price transform the observation uses. It defaults to the cap in force at
+    the end of `prices`, which is right for a fresh run. When you score a checkpoint,
+    pass the scaler the checkpoint trained under instead.
     """
 
     metadata = {"render_modes": []}
@@ -30,8 +34,12 @@ class BessEnv(gymnasium.Env):
     def __init__(self, prices, model, baseline=None, horizon=config.episode_intervals,
                  initialSoc=config.initial_soc, dtHours=nem_interval_hours,
                  calendar=True, rewardScale=config.reward_scale, shuffle=False,
-                 forecasts=None):
+                 forecasts=None, scaler=None):
         self.prices = prices.to_numpy(dtype=float)
+        self.timestamps = prices.index
+        # One cap for the whole run, from the last timestamp. Pass `scaler` to reuse the
+        # one a checkpoint was trained under; see rl/train.py.
+        self.scaler = scaler if scaler is not None else features.scalerFor(prices.index)
         self.model = model
         self.baseline = baseline
         self.horizon = horizon
@@ -53,7 +61,7 @@ class BessEnv(gymnasium.Env):
         self.fullStep = model.chargePower * dtHours
         self.tolerance = 1e-9 * self.fullStep
 
-        low, high = features.observationBounds()
+        low, high = features.observationBounds(self.scaler)
         self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
         self.action_space = spaces.Discrete(3)
 
@@ -170,6 +178,7 @@ class BessEnv(gymnasium.Env):
             self._observedPrices(start, end),
             self.stepIndex,
             self.horizon,
+            self.scaler,
         )
 
     def _observedPrices(self, start, end):
