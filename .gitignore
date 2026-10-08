@@ -9,6 +9,7 @@ __pycache__/
 data_cache/
 model/
 runs/
+results/*
 
 # --- CLI outputs: <module>_<region>_<date>.csv/.png land in the cwd ---
 lp_*.csv
