@@ -12,7 +12,7 @@ runs/
 
 # --- CLI outputs: <module>_<region>_<date>.csv/.png land in the cwd ---
 lp_*.csv
-lp_*.png
+*png
 
 # --- papers, drafts, forms: copyright / PII, never commit ---
 *.pdf
