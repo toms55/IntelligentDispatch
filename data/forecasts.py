@@ -9,7 +9,20 @@ whichever run was most accurate in hindsight.
 
 A PREDISPATCH value is held flat across its six 5-minute intervals rather than
 interpolated, since dispatch price is a step function.
+
+Runs come straight from NEMWeb, from one of three places by age: the monthly MMSDM
+archive once AEMO has published the month, Reports/Archive for about a year before
+that, and Reports/Current for the last few days. All three are the same AEMO CSV, so a
+historical run and a live one go through the same code.
 """
+import csv
+import io
+import re
+import shutil
+import urllib.error
+import urllib.parse
+import urllib.request
+import zipfile
 from datetime import time, timedelta
 from pathlib import Path
 
@@ -18,38 +31,215 @@ import pandas as pd
 
 from utils import nem_interval, nem_interval_hours
 
-rawCache = Path(__file__).resolve().parent.parent / "data_cache" / "nemseer_raw"
+rawCache = Path(__file__).resolve().parent.parent / "data_cache" / "forecast_raw"
 forecastCacheRoot = Path(__file__).resolve().parent.parent / "data_cache" / "forecast_paths"
 tradingDayStart = time(4, 0)
 
 p5minIntervals = 11
 predispatchInterval = timedelta(minutes=30)
 
+nemweb = "https://nemweb.com.au/"
+mmsdmUrl = (nemweb + "Data_Archive/Wholesale_Electricity/MMSDM/{year}/"
+            "MMSDM_{year}_{month:02d}/MMSDM_Historical_Data_SQLLoader/")
+# AEMO renamed the MMSDM files from August 2024 on. The CSV inside did not change.
+archiveRenamed = (2024, 8)
 
-def _nemseer():
-    import nemseer
+sources = {
+    "PREDISPATCH": {
+        "monthFolder": "PREDISP_ALL_DATA",  # every run, not just the last per interval
+        "oldName": "PUBLIC_DVD_PREDISPATCHPRICE_{stamp}",
+        "newName": "PUBLIC_ARCHIVE#PREDISPATCHPRICE#ALL#FILE01#{stamp}",
+        "table": ("PREDISPATCH", "REGION_PRICES"),
+        "reports": "PredispatchIS_Reports", "prefix": "PUBLIC_PREDISPATCHIS_",
+        "columns": ("PREDISPATCHSEQNO", "DATETIME"),
+    },
+    "P5MIN": {
+        "monthFolder": "DATA",
+        "oldName": "PUBLIC_DVD_P5MIN_REGIONSOLUTION_{stamp}",
+        "newName": "PUBLIC_ARCHIVE#P5MIN_REGIONSOLUTION#FILE01#{stamp}",
+        "table": ("P5MIN", "REGIONSOLUTION"),
+        "reports": "P5_Reports", "prefix": "PUBLIC_P5MIN_",
+        "columns": ("RUN_DATETIME", "INTERVAL_DATETIME"),
+    },
+}
+rowColumns = ["run", "interval", "REGIONID", "RRP"]
 
-    rawCache.mkdir(parents=True, exist_ok=True)
-    return nemseer
+# A PREDISPATCH run is filed under its trading day, so the run labelled 04:00 on the 1st,
+# the previous trading day's last, sits in the previous month's file.
+fileLag = timedelta(hours=4, minutes=30)
 
 
-def _stamp(moment):
-    return pd.Timestamp(moment).strftime("%Y/%m/%d %H:%M")
+def nemNow():
+    """The current NEM time: AEST, naive, no daylight saving."""
+    return pd.Timestamp.now("UTC").tz_localize(None) + pd.Timedelta(hours=10)
+
+
+def _download(url, target):
+    """Stream `url` to `target`. False on a 404, which is AEMO not having published it."""
+    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.with_suffix(target.suffix + ".part")
+    try:
+        with urllib.request.urlopen(request, timeout=600) as response, \
+                open(partial, "wb") as out:
+            shutil.copyfileobj(response, out)
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return False
+        raise
+    partial.replace(target)
+    return True
+
+
+def _listing(folder):
+    """The zip file names in a NEMWeb directory page."""
+    request = urllib.request.Request(nemweb + folder, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(request, timeout=120) as response:
+        page = response.read().decode("utf-8", "replace")
+    return re.findall(r'HREF="[^"]*/([^/"]+\.zip)"', page, flags=re.IGNORECASE)
+
+
+def _readTable(kind, handle, table):
+    """Normalised rows of one table in a zipped AEMO CSV. Interventions are dropped."""
+    table = list(table)
+    keyColumn, intervalColumn = sources[kind]["columns"]
+    wanted = [keyColumn, intervalColumn, "REGIONID", "RRP", "INTERVENTION"]
+    rows, positions = [], None
+    with zipfile.ZipFile(handle) as archive:
+        with archive.open(archive.namelist()[0]) as raw:
+            for row in csv.reader(io.TextIOWrapper(raw, "utf-8")):
+                if row[1:3] != table:
+                    continue
+                if row[0] == "I":
+                    positions = [row.index(column) for column in wanted]
+                elif row[0] == "D":
+                    rows.append([row[at] for at in positions])
+    frame = pd.DataFrame(rows, columns=wanted)
+    frame = frame[frame.INTERVENTION.astype(int) == 0]
+    stamp = "%Y/%m/%d %H:%M:%S"
+    if kind == "PREDISPATCH":
+        sequence = frame[keyColumn]
+        run = (pd.to_datetime(sequence.str[:8], format="%Y%m%d") + timedelta(hours=4)
+               + pd.to_timedelta(sequence.str[8:].astype(int) * 30, unit="min"))
+    else:
+        run = pd.to_datetime(frame[keyColumn], format=stamp)
+    return pd.DataFrame({"run": run.to_numpy(),
+                         "interval": pd.to_datetime(frame[intervalColumn],
+                                                    format=stamp).to_numpy(),
+                         "REGIONID": frame.REGIONID.to_numpy(),
+                         "RRP": frame.RRP.astype(float).to_numpy()})
+
+
+def _monthRows(kind, year, month):
+    """Every run in one MMSDM month, or None while AEMO has not published it."""
+    cached = rawCache / f"{kind}_{year}{month:02d}.parquet"
+    if cached.exists():
+        return pd.read_parquet(cached)
+    source = sources[kind]
+    name = source["newName" if (year, month) >= archiveRenamed else "oldName"].format(
+        stamp=f"{year}{month:02d}010000")
+    url = (mmsdmUrl.format(year=year, month=month) + source["monthFolder"] + "/"
+           + urllib.parse.quote(name) + ".zip")
+    zipped = rawCache / f"{kind}_{year}{month:02d}.zip"
+    if not _download(url, zipped):
+        return None
+    frame = _readTable(kind, zipped, source["table"])
+    # A published month with no rows is a format change, and caching it would hide it.
+    if frame.empty:
+        raise ValueError(f"{url} holds no {'.'.join(source['table'])} rows")
+    frame.to_parquet(cached)
+    zipped.unlink()
+    return frame
+
+
+def _reportRows(kind, runTime):
+    """One run from Reports/Current, else Reports/Archive. None when neither holds it."""
+    stamp = pd.Timestamp(runTime).strftime("%Y%m%d%H%M")
+    cached = rawCache / f"{kind}_{stamp}.parquet"
+    if cached.exists():
+        return pd.read_parquet(cached)
+    source = sources[kind]
+    prefix = f"{source['prefix']}{stamp}_"
+    frame = None
+    current = f"Reports/Current/{source['reports']}/"
+    for name in _listing(current):
+        if name.startswith(prefix):
+            target = rawCache / name
+            if _download(nemweb + current + name, target):
+                frame = _readTable(kind, target, source["table"])
+                target.unlink()
+            break
+    else:
+        frame = _archivedReport(kind, runTime, prefix)
+    if frame is not None:
+        frame.to_parquet(cached)
+    return frame
+
+
+def _archivedReport(kind, runTime, prefix):
+    """The run from a Reports/Archive bundle: daily for P5MIN, weekly for PREDISPATCH.
+
+    Bundles are named by publication date, which can be the day before the run label,
+    so both days are searched. The bundle is kept on disk: one serves many runs.
+    """
+    source = sources[kind]
+    folder = f"Reports/Archive/{source['reports']}/"
+    days = {(pd.Timestamp(runTime) - delta).strftime("%Y%m%d")
+            for delta in (timedelta(0), timedelta(days=1))}
+    for name in _listing(folder):
+        covered = re.findall(r"_(\d{8})(?=[_.])", name)
+        if not covered or not any(covered[0] <= day <= covered[-1] for day in days):
+            continue
+        bundle = rawCache / "archive" / name
+        if not bundle.exists() and not _download(nemweb + folder + name, bundle):
+            continue
+        with zipfile.ZipFile(bundle) as outer:
+            for inner in outer.namelist():
+                if inner.startswith(prefix):
+                    with outer.open(inner) as handle:
+                        return _readTable(kind, io.BytesIO(handle.read()),
+                                          source["table"])
+    return None
+
+
+def runRows(kind, runTimes):
+    """Rows (run, interval, REGIONID, RRP) for exactly these runs, every region.
+
+    A run is looked for in its MMSDM month first and in the NEMWeb reports only when
+    the month is unpublished or lacks it. A run found nowhere is simply absent.
+    """
+    wanted = pd.DatetimeIndex(sorted({pd.Timestamp(runTime) for runTime in runTimes}))
+    months = sorted({(moment.year, moment.month)
+                     for runTime in wanted for moment in (runTime, runTime - fileLag)})
+    parts = []
+    for year, month in months:
+        frame = _monthRows(kind, year, month)
+        if frame is not None:
+            parts.append(frame[frame.run.isin(wanted)])
+    found = set(pd.concat(parts).run) if parts else set()
+    for runTime in wanted:
+        if runTime not in found:
+            frame = _reportRows(kind, runTime)
+            if frame is not None:
+                parts.append(frame[frame.run == runTime])
+    parts = [part for part in parts if len(part)]
+    if not parts:
+        return pd.DataFrame(columns=rowColumns)
+    return pd.concat(parts, ignore_index=True)
+
+
+def _series(rows, region, runTime, last):
+    """One run's RRP for one region, by interval end, over (runTime, last]."""
+    rows = rows[(rows.REGIONID == region) & (rows.run == runTime)
+                & (rows.interval > runTime) & (rows.interval <= last)]
+    return rows.set_index("interval")["RRP"].astype(float).sort_index()
 
 
 def p5minForecast(runTime, region="SA1"):
     """RRP by interval end, as the P5MIN run at `runTime` saw it. 11 intervals."""
-    nemseer = _nemseer()
     runTime = pd.Timestamp(runTime)
-    first = runTime + nem_interval
-    last = runTime + p5minIntervals * nem_interval
-    tables = nemseer.compile_data(
-        _stamp(runTime), _stamp(runTime), _stamp(first), _stamp(last),
-        "P5MIN", "REGIONSOLUTION", raw_cache=str(rawCache),
-    )
-    frame = next(iter(tables.values()))
-    rows = frame[(frame["REGIONID"] == region) & (frame["RUN_DATETIME"] == runTime)]
-    return rows.set_index("INTERVAL_DATETIME")["RRP"].astype(float).sort_index()
+    return _series(runRows("P5MIN", [runTime]), region, runTime,
+                   runTime + p5minIntervals * nem_interval)
 
 
 def predispatchForecast(runTime, region="SA1", hours=24):
@@ -59,22 +249,9 @@ def predispatchForecast(runTime, region="SA1", hours=24):
     PREDISPATCH always stops at the end of a trading day. Episodes align to 04:00
     because that is where 24h is available.
     """
-    nemseer = _nemseer()
-    runTime = pd.Timestamp(runTime)
-    run = runTime.floor("30min")
-    first = run + predispatchInterval
-    last = run + timedelta(hours=hours)
-    tables = nemseer.compile_data(
-        _stamp(run), _stamp(run), _stamp(first), _stamp(last),
-        "PREDISPATCH", "PRICE", raw_cache=str(rawCache),
-    )
-    frame = next(iter(tables.values()))
-    rows = frame[
-        (frame["REGIONID"] == region)
-        & (frame["INTERVENTION"] == 0)
-        & (frame["PREDISPATCH_RUN_DATETIME"] == run)
-    ]
-    return rows.set_index("DATETIME")["RRP"].astype(float).sort_index()
+    run = pd.Timestamp(runTime).floor("30min")
+    return _series(runRows("PREDISPATCH", [run]), region, run,
+                   run + timedelta(hours=hours))
 
 
 def _expandToFiveMinutes(halfHourly):
@@ -109,20 +286,8 @@ def forecastSeries(runTime, region="SA1", horizon=288, allowPartial=False):
         [runTime + (step + 1) * nem_interval for step in range(horizon)]
     )
 
-    def _fetch(source):
-        try:
-            return source()
-        except ValueError:
-            # nemseer itself raises when a whole run has no archive at all (as opposed
-            # to our own short-path check below); with allowPartial that is just more
-            # missing coverage to pad, not a reason to give up on the other source.
-            if not allowPartial:
-                raise
-            return pd.Series(dtype=float)
-
-    coarse = _fetch(lambda: predispatchForecast(
-        runTime, region, hours=horizon * nem_interval_hours))
-    fine = _fetch(lambda: p5minForecast(runTime, region))
+    coarse = predispatchForecast(runTime, region, hours=horizon * nem_interval_hours)
+    fine = p5minForecast(runTime, region)
     merged = _stitch(coarse, fine)
 
     path = merged.reindex(wanted)
@@ -157,70 +322,36 @@ def _stepColumns(horizon):
     return [str(step) for step in range(1, horizon + 1)]
 
 
-def _monthStarts(runStart, runEnd):
-    months = pd.date_range(pd.Timestamp(runStart).normalize().replace(day=1),
-                           pd.Timestamp(runEnd), freq="MS")
-    return [(month, month + pd.offsets.MonthEnd(1)) for month in months]
-
-
-def _monthTable(nemseer, table, runFrom, runTo, horizon, columns):
-    """One compile_data call for a whole month, subset before anything else sees it.
-
-    P5MIN REGIONSOLUTION is 112 columns and about 56 MB a month, of which four are
-    wanted, and compile_data has no column selection. Subsetting here is what keeps a
-    month in memory rather than half a gigabyte.
-    """
-    # nemseer validates the forecasted window against the run's own resolution:
-    # PREDISPATCH rejects any minute outside {0, 30}, P5MIN any outside multiples of 5.
-    # P5MIN only ever reaches 55 minutes past its run, and nemseer refuses a wider ask.
-    reach = columns["reach"] or horizon * nem_interval
-    last = runTo + reach
-    tables = nemseer.compile_data(
-        _stamp(runFrom), _stamp(runTo), _stamp(runFrom + columns["step"]),
-        _stamp(last), table, columns["table"], raw_cache=str(rawCache),
-    )
-    frame = next(iter(tables.values()))
-    keep = [columns["run"], columns["interval"], "REGIONID", "RRP"]
-    if "INTERVENTION" in frame.columns:
-        frame = frame[frame["INTERVENTION"] == 0]
-    frame = frame[keep].rename(columns={columns["run"]: "run",
-                                        columns["interval"]: "interval"})
-    return frame[frame["run"].dt.time == tradingDayStart]
-
-
-predispatchColumns = {"table": "PRICE", "run": "PREDISPATCH_RUN_DATETIME",
-                      "interval": "DATETIME", "step": predispatchInterval, "reach": None}
-p5minColumns = {"table": "REGIONSOLUTION", "run": "RUN_DATETIME",
-                "interval": "INTERVAL_DATETIME", "step": nem_interval,
-                "reach": p5minIntervals * nem_interval}
+def liveForecast(region="SA1", horizon=288):
+    """The forward path from the latest runs right now. NaN past the trading day's end,
+    where PREDISPATCH stops."""
+    return forecastSeries(nemNow().floor("5min"), region, horizon, allowPartial=True)
 
 
 def prefetchForecasts(runStart, runEnd, region, horizon=288, cacheDir=None):
     """Stitch every 04:00 forward path in the span into one parquet per region.
 
-    `forecastSeries` makes two compile_data calls per run time, each reading a whole
-    monthly parquet to extract one run. This makes two per month instead, and a year of
-    paths lands in under 2 MB.
+    Runs are fetched a month at a time, so a month of paths costs two archive reads
+    rather than two per day. A run AEMO never published is left out.
     """
     directory = Path(cacheDir) if cacheDir is not None else forecastCacheRoot
     directory.mkdir(parents=True, exist_ok=True)
-    nemseer = _nemseer()
+    runStart, runEnd = pd.Timestamp(runStart), pd.Timestamp(runEnd)
+    runTimes = pd.date_range(runStart.normalize() + timedelta(hours=4), runEnd, freq="D")
+    runTimes = runTimes[runTimes >= runStart]
     paths = {}
-    for runFrom, runTo in _monthStarts(runStart, runEnd):
-        runFrom = max(runFrom + timedelta(hours=4), pd.Timestamp(runStart))
-        runTo = min(runTo + timedelta(hours=4), pd.Timestamp(runEnd))
-        if runFrom > runTo:
-            continue
-        coarse = _monthTable(nemseer, "PREDISPATCH", runFrom, runTo, horizon,
-                             predispatchColumns)
-        fine = _monthTable(nemseer, "P5MIN", runFrom, runTo, horizon, p5minColumns)
-        coarse = coarse[coarse["REGIONID"] == region]
-        fine = fine[fine["REGIONID"] == region]
-        for runTime in sorted(set(coarse["run"]) | set(fine["run"])):
-            merged = _stitch(_runSeries(coarse, runTime), _runSeries(fine, runTime))
-            wanted = pd.DatetimeIndex(
-                [runTime + (step + 1) * nem_interval for step in range(horizon)])
-            paths[runTime] = merged.reindex(wanted).to_numpy(dtype=float)
+    for _, chunk in pd.Series(runTimes, index=runTimes).groupby(
+            [runTimes.year, runTimes.month]):
+        coarse = runRows("PREDISPATCH", chunk)
+        fine = runRows("P5MIN", chunk)
+        for runTime in chunk:
+            merged = _stitch(
+                _series(coarse, region, runTime, runTime + horizon * nem_interval),
+                _series(fine, region, runTime, runTime + p5minIntervals * nem_interval))
+            if len(merged):
+                wanted = pd.DatetimeIndex(
+                    [runTime + (step + 1) * nem_interval for step in range(horizon)])
+                paths[runTime] = merged.reindex(wanted).to_numpy(dtype=float)
 
     frame = pd.DataFrame.from_dict(paths, orient="index",
                                    columns=_stepColumns(horizon))
@@ -233,11 +364,6 @@ def prefetchForecasts(runStart, runEnd, region, horizon=288, cacheDir=None):
     target = directory / f"{region}.parquet"
     frame.to_parquet(target)
     return target
-
-
-def _runSeries(frame, runTime):
-    rows = frame[frame["run"] == runTime]
-    return rows.set_index("interval")["RRP"].astype(float).sort_index()
 
 
 def loadForecastCache(region, cacheDir=None):

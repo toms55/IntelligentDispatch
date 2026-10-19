@@ -32,7 +32,9 @@ The interpreter is 3.11 rather than 3.13 because `nemseer`, the only maintained 
 reach AEMO's forecast tables, declares `requires-python >=3.8,<3.12` and pins
 `packaging<22`. That pin rules out pytest 9, so pytest sits at 8.4.2. Nothing in the
 numerical or RL stack moves: numpy, pandas, torch, gymnasium, stable-baselines3 and
-nemosis all keep their versions, and the whole suite passes unchanged.
+nemosis all keep their versions, and the whole suite passes unchanged. nemseer is no
+longer imported (it cannot read AEMO's archive from August 2024 on), so the pin could
+now be lifted.
 
 ```bash
 nix develop        # pinned interpreter + uv
@@ -71,11 +73,13 @@ cover.
   - `prices.py` is the layer above it: `price_series()` returns a clean 5-minute RRP
     series for one region, dropping AEMO's intervention duplicates. This is what the
     oracle consumes — prefer it over calling `NEMOSIS.py` directly.
-  - `forecasts.py` is the inference-time price source, via `nemseer`.
+  - `forecasts.py` is the inference-time price source, read straight from NEMWeb.
     `forecastSeries(runTime, region, horizon)` stitches P5MIN REGIONSOLUTION (5-minute,
     11 intervals, 55 minutes ahead) under PREDISPATCH PRICE (30-minute, to the end of a
     trading day), preferring P5MIN on the overlap. PDPASA and STPASA are not used and
-    cannot be: they are adequacy runs and carry no RRP column at all.
+    cannot be: they are adequacy runs and carry no RRP column at all. `runRows` finds a
+    run in its MMSDM month, else Reports/Archive, else Reports/Current, so history and
+    `liveForecast()` share one path.
 
 - **`degradation/`** — `schade.py` implements Schade & Egging-Bratseth (2024),
   doi:10.1002/est2.588. The battery is 16 stacked energy segments; emptying a high
@@ -170,6 +174,9 @@ cover.
 - `gamma` must stay 1.0 while the reward subtracts a per-interval baseline. Under
   discounting the subtraction stops being a constant shift and reweights the oracle's own
   profit profile into the agent's incentives.
+- **A PREDISPATCH run is filed under its trading day.** The run labelled 04:00 on the
+  1st is the previous trading day's last and sits in the previous month's MMSDM file;
+  `fileLag` in `forecasts.py` is why `runRows` reads that month too.
 - `nemosis` downloads AEMO archive files into `data_cache/` on first use, so the first
   call for a date range is slow and network-bound while later calls are local. The
   directory is gitignored and safe to delete.

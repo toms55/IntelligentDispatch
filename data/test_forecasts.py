@@ -1,7 +1,11 @@
 """Tests for data/forecasts.py. Run with: uv run pytest data/ -q
 
-No network: nemseer is replaced by a fake returning hand-built frames.
+No network: the archive readers are replaced by fakes returning normalised rows, and the
+CSV reader is fed hand-built zips.
 """
+import io
+import zipfile
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -13,23 +17,17 @@ RUN = pd.Timestamp("2024-01-10 04:00")
 
 
 def predispatchFrame(runs, region="SA1", periods=48, base=100.0):
-    """One row per (run, 30-minute interval end), RRP = base + run offset + period."""
+    """Normalised rows, one per (run, 30-minute interval end), RRP = base + offset + period."""
     rows = []
     for offset, run in enumerate(runs):
         for period in range(1, periods + 1):
             rows.append({
-                "PREDISPATCH_RUN_DATETIME": pd.Timestamp(run),
-                "DATETIME": pd.Timestamp(run) + pd.Timedelta(minutes=30 * period),
+                "run": pd.Timestamp(run),
+                "interval": pd.Timestamp(run) + pd.Timedelta(minutes=30 * period),
                 "REGIONID": region,
-                "INTERVENTION": 0,
                 "RRP": base + 1000.0 * offset + period,
             })
-    rows.append({  # intervention duplicate, must be dropped
-        "PREDISPATCH_RUN_DATETIME": pd.Timestamp(runs[0]),
-        "DATETIME": pd.Timestamp(runs[0]) + pd.Timedelta(minutes=30),
-        "REGIONID": region, "INTERVENTION": 1, "RRP": -999.0,
-    })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=forecasts.rowColumns)
 
 
 def p5minFrame(runs, region="SA1", intervals=11, base=5.0):
@@ -37,64 +35,111 @@ def p5minFrame(runs, region="SA1", intervals=11, base=5.0):
     for offset, run in enumerate(runs):
         for step in range(1, intervals + 1):
             rows.append({
-                "RUN_DATETIME": pd.Timestamp(run),
-                "INTERVAL_DATETIME": pd.Timestamp(run) + pd.Timedelta(minutes=5 * step),
+                "run": pd.Timestamp(run),
+                "interval": pd.Timestamp(run) + pd.Timedelta(minutes=5 * step),
                 "REGIONID": region,
                 "RRP": base + 1000.0 * offset + step,
             })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=forecasts.rowColumns)
+
+
+def fileMonth(kind, run):
+    """Where AEMO files a run: PREDISPATCH by trading day, P5MIN by run time."""
+    moment = run - forecasts.fileLag if kind == "PREDISPATCH" else run
+    return moment.year, moment.month
+
+
+def installFakeArchive(monkeypatch, state):
+    """Months serve the rows AEMO would file under them; `unpublished` months are None
+    and their runs come from `reports` instead. Every read is recorded."""
+    asked = []
+
+    def monthRows(kind, year, month):
+        asked.append(("month", kind, year, month))
+        if (year, month) in state.get("unpublished", ()):
+            return None
+        frame = state[kind]
+        inMonth = np.array([fileMonth(kind, run) == (year, month) for run in frame.run],
+                           dtype=bool)
+        return frame[inMonth]
+
+    def reportRows(kind, runTime):
+        asked.append(("report", kind, runTime))
+        frame = state.get("reports", {}).get(kind)
+        if frame is None or not (frame.run == runTime).any():
+            return None
+        return frame[frame.run == runTime]
+
+    monkeypatch.setattr(forecasts, "_monthRows", monthRows)
+    monkeypatch.setattr(forecasts, "_reportRows", reportRows)
+    return asked
+
+
+class FakeArchive:
+    def __init__(self, state, asked):
+        self.state, self.asked = state, asked
 
 
 @pytest.fixture
-def fakeNemseer(monkeypatch):
-    """Stand in for nemseer, recording the windows it was asked for."""
-    asked = []
+def fakeArchive(monkeypatch):
     state = {
         "PREDISPATCH": predispatchFrame([RUN, RUN + pd.Timedelta(minutes=30)]),
         "P5MIN": p5minFrame([RUN, RUN + pd.Timedelta(minutes=5)]),
     }
-
-    class Fake:
-        @staticmethod
-        def compile_data(runStart, runEnd, forecastStart, forecastEnd, forecastType,
-                         tables, raw_cache=None, **kwargs):
-            asked.append({"runStart": runStart, "runEnd": runEnd,
-                          "forecastStart": forecastStart, "forecastEnd": forecastEnd,
-                          "type": forecastType, "tables": tables})
-            return {tables: state[forecastType]}
-
-    monkeypatch.setattr(forecasts, "_nemseer", lambda: Fake)
-    Fake.asked = asked
-    Fake.state = state
-    return Fake
+    return FakeArchive(state, installFakeArchive(monkeypatch, state))
 
 
 class TestRunTimeSelection:
-    def test_predispatch_keeps_only_the_requested_run(self, fakeNemseer):
+    def test_predispatch_keeps_only_the_requested_run(self, fakeArchive):
         got = forecasts.predispatchForecast(RUN, "SA1")
         assert got.max() < 1000.0
 
-    def test_p5min_keeps_only_the_requested_run(self, fakeNemseer):
+    def test_p5min_keeps_only_the_requested_run(self, fakeArchive):
         got = forecasts.p5minForecast(RUN, "SA1")
         assert len(got) == 11
         assert got.max() < 1000.0
 
-    def test_predispatch_floors_to_the_published_half_hour(self, fakeNemseer):
+    def test_predispatch_floors_to_the_published_half_hour(self, fakeArchive):
         got = forecasts.predispatchForecast(RUN + pd.Timedelta(minutes=20), "SA1")
         assert got.index[0] == RUN + pd.Timedelta(minutes=30)
-        assert fakeNemseer.asked[-1]["runStart"] == "2024/01/10 04:00"
+        assert got.max() < 1000.0
 
-    def test_drops_intervention_rows(self, fakeNemseer):
-        got = forecasts.predispatchForecast(RUN, "SA1")
-        assert got.min() > 0
-
-    def test_selects_the_region(self, fakeNemseer):
-        fakeNemseer.state["PREDISPATCH"] = pd.concat([
+    def test_selects_the_region(self, fakeArchive):
+        fakeArchive.state["PREDISPATCH"] = pd.concat([
             predispatchFrame([RUN], region="SA1", base=100.0),
             predispatchFrame([RUN], region="NSW1", base=9000.0),
         ])
         got = forecasts.predispatchForecast(RUN, "SA1")
         assert got.max() < 9000.0
+
+    def test_predispatch_stops_at_the_requested_hours(self, fakeArchive):
+        got = forecasts.predispatchForecast(RUN, "SA1", hours=2)
+        assert got.index[-1] == RUN + pd.Timedelta(hours=2)
+
+
+class TestWhereARunIsFiled:
+    # The run labelled 04:00 on the 1st is the previous trading day's last, filed in the
+    # previous month. Looking only in the run's own month gave 11 of 288 intervals.
+    def test_the_first_of_the_month_reads_the_previous_months_file(self, monkeypatch):
+        first = pd.Timestamp("2024-02-01 04:00")
+        state = {"PREDISPATCH": predispatchFrame([first]), "P5MIN": p5minFrame([first])}
+        installFakeArchive(monkeypatch, state)
+        got = forecasts.forecastSeries(first, "SA1", horizon=288)
+        assert int(got.isna().sum()) == 0
+
+    def test_an_unpublished_month_falls_back_to_the_reports(self, monkeypatch):
+        state = {"PREDISPATCH": predispatchFrame([]), "P5MIN": p5minFrame([]),
+                 "unpublished": {(2024, 1)},
+                 "reports": {"PREDISPATCH": predispatchFrame([RUN]),
+                             "P5MIN": p5minFrame([RUN])}}
+        asked = installFakeArchive(monkeypatch, state)
+        got = forecasts.forecastSeries(RUN, "SA1", horizon=288)
+        assert int(got.isna().sum()) == 0
+        assert ("report", "PREDISPATCH", RUN) in asked
+
+    def test_a_run_the_month_holds_never_touches_the_reports(self, fakeArchive):
+        forecasts.forecastSeries(RUN, "SA1", horizon=288)
+        assert not [entry for entry in fakeArchive.asked if entry[0] == "report"]
 
 
 class TestStitching:
@@ -114,13 +159,13 @@ class TestStitching:
         got = forecasts._expandToFiveMinutes(halfHourly)
         assert sorted(set(got.to_numpy())) == [10.0, 90.0]
 
-    def test_p5min_wins_on_the_overlap(self, fakeNemseer):
+    def test_p5min_wins_on_the_overlap(self, fakeArchive):
         got = forecasts.forecastSeries(RUN, "SA1", horizon=288, allowPartial=True)
         fine = forecasts.p5minForecast(RUN, "SA1")
         for stamp, price in fine.items():
             assert got[stamp] == pytest.approx(price)
 
-    def test_predispatch_covers_everything_after_the_p5min_run(self, fakeNemseer):
+    def test_predispatch_covers_everything_after_the_p5min_run(self, fakeArchive):
         got = forecasts.forecastSeries(RUN, "SA1", horizon=288, allowPartial=True)
         coarse = forecasts.predispatchForecast(RUN, "SA1")
         beyond = RUN + pd.Timedelta(minutes=60)
@@ -128,60 +173,177 @@ class TestStitching:
 
 
 class TestForecastSeries:
-    def test_is_indexed_from_the_next_interval_for_the_whole_horizon(self, fakeNemseer):
+    def test_is_indexed_from_the_next_interval_for_the_whole_horizon(self, fakeArchive):
         got = forecasts.forecastSeries(RUN, "SA1", horizon=288)
         assert len(got) == 288
         assert got.index[0] == RUN + pd.Timedelta(minutes=5)
         assert got.index[-1] == RUN + pd.Timedelta(hours=24)
 
-    def test_is_complete_at_the_trading_day_boundary(self, fakeNemseer):
+    def test_is_complete_at_the_trading_day_boundary(self, fakeArchive):
         got = forecasts.forecastSeries(RUN, "SA1", horizon=288)
         assert int(got.isna().sum()) == 0
 
-    def test_refuses_a_short_path(self, fakeNemseer):
-        fakeNemseer.state["PREDISPATCH"] = predispatchFrame([RUN], periods=8)
+    def test_refuses_a_short_path(self, fakeArchive):
+        fakeArchive.state["PREDISPATCH"] = predispatchFrame([RUN], periods=8)
         with pytest.raises(ValueError, match="of 288 intervals"):
             forecasts.forecastSeries(RUN, "SA1", horizon=288)
 
-    def test_allow_partial_pads_with_nan_instead(self, fakeNemseer):
-        fakeNemseer.state["PREDISPATCH"] = predispatchFrame([RUN], periods=8)
+    def test_allow_partial_pads_with_nan_instead(self, fakeArchive):
+        fakeArchive.state["PREDISPATCH"] = predispatchFrame([RUN], periods=8)
         got = forecasts.forecastSeries(RUN, "SA1", horizon=288, allowPartial=True)
         assert len(got) == 288
         assert int(got.isna().sum()) > 0
 
-    def test_allow_partial_survives_a_run_with_no_archive_at_all(self, fakeNemseer, monkeypatch):
-        """nemseer raises ValueError itself when a whole run has no archive, distinct
-        from our own short-path check above. allowPartial must pad through that too."""
-        def missing(*args, **kwargs):
-            raise ValueError("Table(s) not available from MMS Historical Data SQL Loader")
-        monkeypatch.setattr(forecasts, "predispatchForecast", missing)
+    def test_allow_partial_survives_a_run_published_nowhere(self, fakeArchive):
+        fakeArchive.state["PREDISPATCH"] = predispatchFrame([])
         got = forecasts.forecastSeries(RUN, "SA1", horizon=288, allowPartial=True)
-        assert len(got) == 288
         assert int(got.isna().sum()) == 288 - 11  # only the P5MIN run still lands
 
-    def test_without_allow_partial_a_missing_archive_still_raises(self, fakeNemseer, monkeypatch):
-        def missing(*args, **kwargs):
-            raise ValueError("Table(s) not available from MMS Historical Data SQL Loader")
-        monkeypatch.setattr(forecasts, "predispatchForecast", missing)
-        with pytest.raises(ValueError, match="MMS Historical Data SQL Loader"):
+    def test_without_allow_partial_a_missing_run_raises(self, fakeArchive):
+        fakeArchive.state["PREDISPATCH"] = predispatchFrame([])
+        with pytest.raises(ValueError, match="of 288 intervals"):
             forecasts.forecastSeries(RUN, "SA1", horizon=288)
 
-    def test_asks_for_only_the_horizon_it_needs(self, fakeNemseer):
-        forecasts.forecastSeries(RUN, "SA1", horizon=288)
-        predispatch = [a for a in fakeNemseer.asked if a["type"] == "PREDISPATCH"][-1]
-        assert predispatch["forecastEnd"] == "2024/01/11 04:00"
+
+class TestLive:
+    # Live is the same path at the current NEM time, floored to the dispatch interval.
+    def test_reads_the_latest_runs(self, monkeypatch):
+        now = pd.Timestamp("2024-01-10 21:42")
+        monkeypatch.setattr(forecasts, "nemNow", lambda: now)
+        state = {"PREDISPATCH": predispatchFrame([pd.Timestamp("2024-01-10 21:30")]),
+                 "P5MIN": p5minFrame([pd.Timestamp("2024-01-10 21:40")])}
+        installFakeArchive(monkeypatch, state)
+        got = forecasts.liveForecast("SA1")
+        assert got.index[0] == pd.Timestamp("2024-01-10 21:45")
+        assert got.iloc[0] == pytest.approx(5.0 + 1)  # the P5MIN run's first step
+
+    def test_nem_time_is_aest_without_daylight_saving(self):
+        utc = pd.Timestamp.now("UTC").tz_localize(None)
+        assert abs(forecasts.nemNow() - utc - pd.Timedelta(hours=10)) < pd.Timedelta(
+            minutes=1)
 
 
 class TestForecastMatrix:
-    def test_one_row_per_run_time(self, fakeNemseer):
+    def test_one_row_per_run_time(self, fakeArchive):
         runs = [RUN, RUN + pd.Timedelta(hours=24)]
-        fakeNemseer.state["PREDISPATCH"] = predispatchFrame(
-            [RUN, RUN + pd.Timedelta(hours=24)]
-        )
-        fakeNemseer.state["P5MIN"] = p5minFrame([RUN, RUN + pd.Timedelta(hours=24)])
+        fakeArchive.state["PREDISPATCH"] = predispatchFrame(runs)
+        fakeArchive.state["P5MIN"] = p5minFrame(runs)
         got = forecasts.forecastMatrix(runs, "SA1", horizon=288)
         assert got.shape == (2, 288)
         assert not np.isnan(got[0]).all()
+
+
+# --- the NEMWeb readers -------------------------------------------------------
+
+def zipped(text, name="file.CSV"):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(name, text)
+    buffer.seek(0)
+    return buffer
+
+
+PREDISPATCH_CSV = """C,SETP.WORLD,DVD_PREDISPATCHPRICE,AEMO,PUBLIC,2024/01/02
+I,PREDISPATCH,CASE_SOLUTION,1,PREDISPATCHSEQNO,RUNNO
+D,PREDISPATCH,CASE_SOLUTION,1,2023123148,1
+I,PREDISPATCH,REGION_PRICES,2,PREDISPATCHSEQNO,RUNNO,REGIONID,PERIODID,INTERVENTION,RRP,LASTCHANGED,DATETIME
+D,PREDISPATCH,REGION_PRICES,2,2023123148,1,NSW1,01,0,57.5,"2024/01/01 03:32:06","2024/01/01 04:30:00"
+D,PREDISPATCH,REGION_PRICES,2,2023123148,1,NSW1,01,1,-999,"2024/01/01 03:32:06","2024/01/01 04:30:00"
+D,PREDISPATCH,REGION_PRICES,2,2024010101,1,SA1,01,0,60.25,"2024/01/01 04:01:00","2024/01/01 05:00:00"
+C,"END OF REPORT",7
+"""
+
+P5MIN_CSV = """C,NEMP.WORLD,P5MIN,AEMO,PUBLIC,2026/10/19
+I,P5MIN,REGIONSOLUTION,10,RUN_DATETIME,INTERVENTION,INTERVAL_DATETIME,REGIONID,RRP,ROP
+D,P5MIN,REGIONSOLUTION,10,"2026/10/19 21:40:00",0,"2026/10/19 21:45:00",NSW1,129.65,129.65
+I,P5MIN,INTERCONNECTORSOLN,4,RUN_DATETIME,INTERVENTION,INTERCONNECTORID,RRP
+D,P5MIN,INTERCONNECTORSOLN,4,"2026/10/19 21:40:00",0,N-Q-MNSP1,1.0
+C,"END OF REPORT",4
+"""
+
+
+class TestReadTable:
+    def test_predispatch_run_is_labelled_from_the_sequence_number(self):
+        got = forecasts._readTable("PREDISPATCH", zipped(PREDISPATCH_CSV),
+                                   forecasts.sources["PREDISPATCH"]["table"])
+        # Period 48 of trading day 2023-12-31 is the run labelled 2024-01-01 04:00.
+        assert list(got.run) == [pd.Timestamp("2024-01-01 04:00"),
+                                 pd.Timestamp("2024-01-01 04:30")]
+        assert list(got.columns) == forecasts.rowColumns
+
+    def test_drops_intervention_rows(self):
+        got = forecasts._readTable("PREDISPATCH", zipped(PREDISPATCH_CSV),
+                                   forecasts.sources["PREDISPATCH"]["table"])
+        assert got.RRP.min() > 0
+
+    def test_reads_only_its_table_from_a_multi_table_report(self):
+        got = forecasts._readTable("P5MIN", zipped(P5MIN_CSV),
+                                   forecasts.sources["P5MIN"]["table"])
+        assert len(got) == 1
+        assert got.iloc[0].RRP == pytest.approx(129.65)
+        assert got.iloc[0].interval == pd.Timestamp("2026-10-19 21:45")
+
+
+class TestMonthRows:
+    @pytest.fixture
+    def offline(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(forecasts, "rawCache", tmp_path)
+        urls = []
+
+        def download(url, target):
+            urls.append(url)
+            return False
+        monkeypatch.setattr(forecasts, "_download", download)
+        return urls
+
+    # AEMO renamed the monthly files in August 2024; both names must still resolve.
+    @pytest.mark.parametrize("year, month, name", [
+        (2024, 7, "PREDISP_ALL_DATA/PUBLIC_DVD_PREDISPATCHPRICE_202407010000.zip"),
+        (2024, 8, "PREDISP_ALL_DATA/PUBLIC_ARCHIVE%23PREDISPATCHPRICE%23ALL%23FILE01"
+                  "%23202408010000.zip"),
+    ])
+    def test_the_file_name_follows_the_layout_of_its_month(self, offline, year, month,
+                                                           name):
+        assert forecasts._monthRows("PREDISPATCH", year, month) is None
+        assert offline[-1].endswith(f"MMSDM_{year}_{month:02d}/"
+                                    f"MMSDM_Historical_Data_SQLLoader/{name}")
+
+    def test_an_empty_published_month_raises_rather_than_caching(self, monkeypatch,
+                                                                  tmp_path):
+        monkeypatch.setattr(forecasts, "rawCache", tmp_path)
+
+        def download(url, target):
+            target.write_bytes(zipped("C,header\n").getvalue())
+            return True
+        monkeypatch.setattr(forecasts, "_download", download)
+        with pytest.raises(ValueError, match="holds no"):
+            forecasts._monthRows("P5MIN", 2025, 1)
+        assert not list(tmp_path.glob("*.parquet"))
+
+
+class TestArchivedReport:
+    # The 00:00 run is published at 23:55 the day before, so it sits in that day's bundle.
+    def test_finds_a_run_in_the_bundle_published_the_day_before(self, monkeypatch,
+                                                                tmp_path):
+        monkeypatch.setattr(forecasts, "rawCache", tmp_path)
+        inner = "PUBLIC_P5MIN_202610200000_20261019235534.zip"
+        monkeypatch.setattr(forecasts, "_listing", lambda folder: [
+            "PUBLIC_P5MIN_20261018.zip", "PUBLIC_P5MIN_20261019.zip"])
+        fetched = []
+
+        def download(url, target):
+            fetched.append(url)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, "w") as bundle:
+                bundle.writestr(inner, zipped(P5MIN_CSV).getvalue())
+            target.write_bytes(buffer.getvalue())
+            return True
+        monkeypatch.setattr(forecasts, "_download", download)
+        got = forecasts._archivedReport("P5MIN", pd.Timestamp("2026-10-20 00:00"),
+                                        "PUBLIC_P5MIN_202610200000_")
+        assert len(got) == 1
+        assert [url.rsplit("/", 1)[1] for url in fetched] == ["PUBLIC_P5MIN_20261019.zip"]
 
 
 # --- prefetch -----------------------------------------------------------------
@@ -194,50 +356,20 @@ PREFETCH_RUNS = [JAN, JAN + pd.Timedelta(days=1), pd.Timestamp("2024-02-01 04:00
 def fakeMonths(monkeypatch):
     """Two months of 04:00 runs, plus one 08:00 run the prefetch must drop."""
     runs = PREFETCH_RUNS + [JAN + pd.Timedelta(hours=4)]
-    asked = []
-    state = {
-        "PREDISPATCH": predispatchFrame(runs),
-        "P5MIN": p5minFrame(runs),
-    }
-
-    class Fake:
-        @staticmethod
-        def compile_data(runStart, runEnd, forecastStart, forecastEnd, forecastType,
-                         tables, raw_cache=None, **kwargs):
-            # nemseer's own validation: PREDISPATCH accepts only 0 and 30 minutes past
-            # the hour, P5MIN only multiples of five.
-            step = 30 if forecastType == "PREDISPATCH" else 5
-            for stamp in (runStart, runEnd, forecastStart, forecastEnd):
-                minute = pd.Timestamp(stamp).minute
-                if minute % step:
-                    raise ValueError(
-                        f"{forecastType} runs every {step} minutes, got {stamp}")
-            # P5MIN never reaches past 55 minutes from the last run.
-            if forecastType == "P5MIN" and (pd.Timestamp(forecastEnd)
-                                            - pd.Timestamp(runEnd)
-                                            > pd.Timedelta(minutes=55)):
-                raise ValueError("For P5MIN, forecasted_end must be within 55 minutes")
-            asked.append((forecastType, runStart, runEnd))
-            frame = state[forecastType]
-            column = ("PREDISPATCH_RUN_DATETIME" if forecastType == "PREDISPATCH"
-                      else "RUN_DATETIME")
-            inWindow = frame[column].between(pd.Timestamp(runStart),
-                                             pd.Timestamp(runEnd))
-            return {tables: frame[inWindow]}
-
-    monkeypatch.setattr(forecasts, "_nemseer", lambda: Fake)
-    Fake.asked = asked
-    return Fake
+    state = {"PREDISPATCH": predispatchFrame(runs), "P5MIN": p5minFrame(runs)}
+    return FakeArchive(state, installFakeArchive(monkeypatch, state))
 
 
 class TestPrefetch:
-    # One compile_data call per table per month, never one per run time.
-    def test_one_query_per_table_per_month(self, fakeMonths, tmp_path):
+    # Whole months per table, never one read per run time. The 1st of each month also
+    # reads the month before, where its PREDISPATCH run is filed.
+    def test_reads_whole_months_not_runs(self, fakeMonths, tmp_path):
         forecasts.prefetchForecasts(JAN, pd.Timestamp("2024-02-29 04:00"), "SA1",
                                     cacheDir=tmp_path)
-        assert len(fakeMonths.asked) == 4
-        assert sorted(kind for kind, _, _ in fakeMonths.asked) == [
-            "P5MIN", "P5MIN", "PREDISPATCH", "PREDISPATCH"]
+        months = sorted({entry for entry in fakeMonths.asked if entry[0] == "month"})
+        assert months == sorted(("month", kind, year, month)
+                                for kind in ("P5MIN", "PREDISPATCH")
+                                for year, month in ((2023, 12), (2024, 1), (2024, 2)))
 
     # The cache holds one row per run time and one column per horizon step.
     def test_the_cache_is_one_row_per_run(self, fakeMonths, tmp_path):
