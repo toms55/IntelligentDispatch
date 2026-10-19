@@ -182,3 +182,116 @@ class TestForecastMatrix:
         got = forecasts.forecastMatrix(runs, "SA1", horizon=288)
         assert got.shape == (2, 288)
         assert not np.isnan(got[0]).all()
+
+
+# --- prefetch -----------------------------------------------------------------
+
+JAN = pd.Timestamp("2024-01-01 04:00")
+PREFETCH_RUNS = [JAN, JAN + pd.Timedelta(days=1), pd.Timestamp("2024-02-01 04:00")]
+
+
+@pytest.fixture
+def fakeMonths(monkeypatch):
+    """Two months of 04:00 runs, plus one 08:00 run the prefetch must drop."""
+    runs = PREFETCH_RUNS + [JAN + pd.Timedelta(hours=4)]
+    asked = []
+    state = {
+        "PREDISPATCH": predispatchFrame(runs),
+        "P5MIN": p5minFrame(runs),
+    }
+
+    class Fake:
+        @staticmethod
+        def compile_data(runStart, runEnd, forecastStart, forecastEnd, forecastType,
+                         tables, raw_cache=None, **kwargs):
+            # nemseer's own validation: PREDISPATCH accepts only 0 and 30 minutes past
+            # the hour, P5MIN only multiples of five.
+            step = 30 if forecastType == "PREDISPATCH" else 5
+            for stamp in (runStart, runEnd, forecastStart, forecastEnd):
+                minute = pd.Timestamp(stamp).minute
+                if minute % step:
+                    raise ValueError(
+                        f"{forecastType} runs every {step} minutes, got {stamp}")
+            # P5MIN never reaches past 55 minutes from the last run.
+            if forecastType == "P5MIN" and (pd.Timestamp(forecastEnd)
+                                            - pd.Timestamp(runEnd)
+                                            > pd.Timedelta(minutes=55)):
+                raise ValueError("For P5MIN, forecasted_end must be within 55 minutes")
+            asked.append((forecastType, runStart, runEnd))
+            frame = state[forecastType]
+            column = ("PREDISPATCH_RUN_DATETIME" if forecastType == "PREDISPATCH"
+                      else "RUN_DATETIME")
+            inWindow = frame[column].between(pd.Timestamp(runStart),
+                                             pd.Timestamp(runEnd))
+            return {tables: frame[inWindow]}
+
+    monkeypatch.setattr(forecasts, "_nemseer", lambda: Fake)
+    Fake.asked = asked
+    return Fake
+
+
+class TestPrefetch:
+    # One compile_data call per table per month, never one per run time.
+    def test_one_query_per_table_per_month(self, fakeMonths, tmp_path):
+        forecasts.prefetchForecasts(JAN, pd.Timestamp("2024-02-29 04:00"), "SA1",
+                                    cacheDir=tmp_path)
+        assert len(fakeMonths.asked) == 4
+        assert sorted(kind for kind, _, _ in fakeMonths.asked) == [
+            "P5MIN", "P5MIN", "PREDISPATCH", "PREDISPATCH"]
+
+    # The cache holds one row per run time and one column per horizon step.
+    def test_the_cache_is_one_row_per_run(self, fakeMonths, tmp_path):
+        forecasts.prefetchForecasts(JAN, pd.Timestamp("2024-02-29 04:00"), "SA1",
+                                    cacheDir=tmp_path)
+        cached = forecasts.loadForecastCache("SA1", cacheDir=tmp_path)
+        assert list(cached.index) == PREFETCH_RUNS
+        assert len(cached.columns) == 288
+
+    # Runs at any hour other than 04:00 never reach the cache.
+    def test_only_0400_runs_are_kept(self, fakeMonths, tmp_path):
+        forecasts.prefetchForecasts(JAN, pd.Timestamp("2024-02-29 04:00"), "SA1",
+                                    cacheDir=tmp_path)
+        cached = forecasts.loadForecastCache("SA1", cacheDir=tmp_path)
+        assert set(cached.index.time) == {JAN.time()}
+
+    # A region with no cache file returns None rather than raising.
+    def test_a_missing_cache_is_none(self, tmp_path):
+        assert forecasts.loadForecastCache("NSW1", cacheDir=tmp_path) is None
+
+    # Reading a prefetched source makes no nemseer call at all.
+    def test_the_cached_path_touches_no_nemseer(self, fakeMonths, tmp_path):
+        forecasts.prefetchForecasts(JAN, pd.Timestamp("2024-02-29 04:00"), "SA1",
+                                    cacheDir=tmp_path)
+        source = forecasts.loadForecastCache("SA1", cacheDir=tmp_path)
+        before = len(fakeMonths.asked)
+        forecasts.forecastMatrix(PREFETCH_RUNS, "SA1", source=source)
+        assert len(fakeMonths.asked) == before
+
+    # The cached matrix equals what the live per-run path produces.
+    def test_the_cached_matrix_matches_the_live_one(self, fakeMonths, tmp_path):
+        forecasts.prefetchForecasts(JAN, pd.Timestamp("2024-02-29 04:00"), "SA1",
+                                    cacheDir=tmp_path)
+        source = forecasts.loadForecastCache("SA1", cacheDir=tmp_path)
+        cached = forecasts.forecastMatrix(PREFETCH_RUNS, "SA1", source=source)
+        live = forecasts.forecastMatrix(PREFETCH_RUNS, "SA1")
+        np.testing.assert_allclose(cached, live, equal_nan=True)
+
+    # A run time the cache never saw becomes a NaN row, not an exception.
+    def test_an_unknown_run_time_pads_with_nan(self, fakeMonths, tmp_path):
+        forecasts.prefetchForecasts(JAN, pd.Timestamp("2024-02-29 04:00"), "SA1",
+                                    cacheDir=tmp_path)
+        source = forecasts.loadForecastCache("SA1", cacheDir=tmp_path)
+        got = forecasts.forecastMatrix([pd.Timestamp("2023-05-05 04:00")], "SA1",
+                                       source=source)
+        assert got.shape == (1, 288) and np.isnan(got).all()
+
+    # A horizon shorter than the cache slices it rather than refetching.
+    def test_a_short_horizon_slices_the_cache(self, fakeMonths, tmp_path):
+        forecasts.prefetchForecasts(JAN, pd.Timestamp("2024-02-29 04:00"), "SA1",
+                                    cacheDir=tmp_path)
+        source = forecasts.loadForecastCache("SA1", cacheDir=tmp_path)
+        got = forecasts.forecastMatrix(PREFETCH_RUNS, "SA1", horizon=12, source=source)
+        assert got.shape == (3, 12)
+        np.testing.assert_allclose(
+            got, forecasts.forecastMatrix(PREFETCH_RUNS, "SA1", source=source)[:, :12],
+            equal_nan=True)
