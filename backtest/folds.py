@@ -60,7 +60,8 @@ def enumerateFolds(start, end, trainWeeks, testWeeks=1, stepWeeks=1,
     """Sliding training window, test window immediately after it, stepped forward.
 
     Folds are emitted while the test window still fits inside `end`. Returns an empty
-    list when the span has no room for one.
+    list when the span has no room for one. The test windows never overlap, so
+    `stepWeeks` must be at least `testWeeks`.
     """
     for label, moment in (("start", start), ("end", end)):
         requireNemDatetime(moment, label)
@@ -75,6 +76,15 @@ def enumerateFolds(start, end, trainWeeks, testWeeks=1, stepWeeks=1,
             raise ValueError(f"{label} must be a whole number of weeks, got {weeks!r}")
         if weeks < 1:
             raise ValueError(f"{label} must be at least 1, got {weeks}")
+    # A step shorter than the test window puts the same trading day in two folds. Every
+    # pooled figure then counts that day twice, so the overlap is refused here rather
+    # than handled downstream.
+    if stepWeeks < testWeeks:
+        raise ValueError(
+            f"stepWeeks {stepWeeks} is shorter than testWeeks {testWeeks}, so the test "
+            f"windows would overlap and share trading days. Step by at least the test "
+            f"window length"
+        )
     if start < earliest:
         raise ValueError(
             f"start {start:%Y-%m-%d} precedes {earliest:%Y-%m-%d}, when Five Minute "

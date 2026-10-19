@@ -47,7 +47,7 @@ class TestEnumerateFolds:
     @pytest.mark.parametrize("trainWeeks,testWeeks,stepWeeks,expected", [
         (4, 1, 1, 6),
         (4, 1, 2, 3),
-        (4, 2, 1, 5),
+        (4, 2, 2, 3),
         (9, 1, 1, 1),
         (12, 1, 1, 0),
     ])
@@ -132,6 +132,14 @@ class TestArgumentValidation:
         with pytest.raises(ValueError, match=label):
             folds.enumerateFolds(SMALL_START, SMALL_END, **{"trainWeeks": 4, label: weeks})
 
+    # An overlapping test window would put one trading day in two folds, and every
+    # pooled dollar figure would then count that day twice.
+    @pytest.mark.parametrize("testWeeks,stepWeeks", [(2, 1), (3, 1), (3, 2)])
+    def test_an_overlapping_test_window_is_refused(self, testWeeks, stepWeeks):
+        with pytest.raises(ValueError, match="windows would overlap"):
+            folds.enumerateFolds(SMALL_START, SMALL_END, trainWeeks=4,
+                                 testWeeks=testWeeks, stepWeeks=stepWeeks)
+
     # A fractional week would put a boundary off 04:00 and break the forecast horizon.
     @pytest.mark.parametrize("label", ["trainWeeks", "testWeeks", "stepWeeks"])
     def test_a_fractional_week_count_is_refused(self, label):
@@ -184,7 +192,7 @@ class TestFold:
     @pytest.mark.parametrize("testWeeks,expected", [(1, 7), (2, 14)])
     def test_test_days_are_one_0400_start_per_day(self, testWeeks, expected):
         fold = folds.enumerateFolds(SMALL_START, SMALL_END, trainWeeks=4,
-                                    testWeeks=testWeeks)[0]
+                                    testWeeks=testWeeks, stepWeeks=testWeeks)[0]
         days = fold.testDays
         assert len(days) == expected
         assert days[0] == fold.testStart
