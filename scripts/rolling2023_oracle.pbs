@@ -8,6 +8,8 @@
 #       qsub -v SPAN="$span" scripts/rolling2023_oracle.pbs
 #     done
 #
+# Pass REGION=SA1 (etc.) alongside SPAN for another region; NSW1 by default.
+#
 # Stage 2, scripts/rolling2023_folds.pbs, is queued with -W depend=afterok on all four.
 # Prices must already be in data_cache/: compute nodes are not assumed to reach AEMO.
 # Resumable: a rerun skips every day already cached.
@@ -26,4 +28,4 @@ export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONWARNINGS=ignore
 # 15 workers leave one core for the parent. The limit is 1800s because cacheKey does
 # not record it, so a day that stops early writes a loose bound for good.
 .venv/bin/python -u -m cli baseline --split "part=${SPAN:?pass -v SPAN=START..END}" \
-  --region NSW1 --no-calendar --gap 0.02 --time-limit 1800 --workers 15 --verbose
+  --region "${REGION:-NSW1}" --no-calendar --gap 0.02 --time-limit 1800 --workers 15 --verbose
