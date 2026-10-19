@@ -7,6 +7,7 @@ Every algorithm runs undiscounted: the reward subtracts a per-interval LP baseli
 and that subtraction is only policy-invariant at gamma = 1.
 """
 from stable_baselines3 import A2C, DQN
+from stable_baselines3.common.utils import ConstantSchedule
 from sb3_contrib import MaskablePPO
 
 import config
@@ -53,6 +54,19 @@ builders = {
 }
 
 assert set(builders) == set(config.algorithms), (sorted(builders), sorted(config.algorithms))
+
+
+def holdExploration(agent):
+    """Keep a warm-started chain at the epsilon it reached.
+
+    SB3 recomputes exploration_rate from _current_progress_remaining, which every
+    learn() call resets, so an off-policy agent would restart at exploration_initial_eps
+    (1.0) on each fold and re-randomise itself. On-policy algorithms have no schedule.
+    """
+    # ConstantSchedule, not a closure over `agent`: the schedule is pickled into the
+    # checkpoint, and a closure would drag the whole agent and its open monitor file in.
+    if hasattr(agent, "exploration_schedule"):
+        agent.exploration_schedule = ConstantSchedule(agent.exploration_final_eps)
 
 
 def load(name, path, env=None):
