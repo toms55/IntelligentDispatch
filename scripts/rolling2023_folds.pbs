@@ -1,0 +1,66 @@
+#!/bin/bash
+# Stage 2 of the 2023 rolling backtest: 143 one-week folds, 52-week warm-chained
+# training, each scored on realised prices and on the AEMO 04:00 forecast. Needs the
+# oracle cache from scripts/rolling2023_oracle.pbs and the forecast prefetch in
+# data_cache/forecast_paths/NSW1.parquet.
+#
+#     qsub -W depend=afterok:<oracle job id> scripts/rolling2023_folds.pbs
+#
+# Each seed's chain is independent, so each seed runs in its own process. They write to
+# separate result directories, because the runner rewrites a fold CSV whole and two
+# processes on one directory would drop each other's rows. The last step merges them.
+# Resumable: a fold is skipped once its rows are written.
+
+#PBS -N id-folds23
+#PBS -q medq
+#PBS -l ncpus=6
+#PBS -l mem=24GB
+#PBS -l walltime=96:00:00
+#PBS -j oe
+
+set -euo pipefail
+cd "${PBS_O_WORKDIR:-$PWD}"
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONWARNINGS=ignore
+PY=.venv/bin/python
+
+SEEDS=${SEEDS:-"0 1 2 3 4"}
+OUT=runs/rolling2023
+RESULTS=results/rolling2023
+mkdir -p "$OUT"
+
+# No --allow-solve: every day must already be cached, or the run stops rather than
+# solving MILPs on one core per seed.
+pids=()
+for seed in $SEEDS; do
+  $PY -u -m cli rolling --split "all=2023-01-01T04:00..2026-10-01T04:00" --region NSW1 \
+    --train-weeks 52 --test-weeks 1 --step-weeks 1 --algo maskableppo \
+    --cap-date 2026-10-01T04:00 --baseline-oracle discrete --no-calendar \
+    --gap 0.02 --time-limit 1800 --price-source both --seeds "$seed" \
+    --out "$OUT" --results "$RESULTS/seed$seed" > "$OUT/seed$seed.log" 2>&1 &
+  pids+=($!)
+done
+failed=0
+for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
+[ "$failed" -eq 0 ] || { echo "a seed FAILED, see $OUT/seed*.log"; exit 1; }
+
+# Merge the seeds into one result set the dashboard and the report can read.
+$PY - "$RESULTS" $SEEDS <<'EOF'
+import json, shutil, sys
+from pathlib import Path
+import pandas as pd
+from backtest import metrics, records
+import cli
+
+root, seeds = Path(sys.argv[1]), sys.argv[2:]
+frame = pd.concat([records.readDays(root / f"seed{s}", "NSW1") for s in seeds],
+                  ignore_index=True)
+for fold, rows in frame.groupby("fold"):
+    rows = rows.assign(testDay=rows.testDay.dt.to_pydatetime())
+    records.writeFold(root / "all", "NSW1", fold, rows.to_dict("records"))
+# Trajectories are kept for seed 0 only (the runner's trajectorySeed).
+for path in sorted((root / "seed0" / "NSW1").glob("fold*.parquet")):
+    shutil.copy(path, records.regionDir(root / "all", "NSW1") / path.name)
+manifest = json.loads((root / "seed0" / "NSW1" / "manifest.json").read_text())
+records.writeManifest(root / "all", "NSW1", {**manifest, "seeds": [int(s) for s in seeds]})
+cli._reportRolling(records.readDays(root / "all", "NSW1"), metrics, 0.02)
+EOF

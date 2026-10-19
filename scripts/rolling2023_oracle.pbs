@@ -1,0 +1,29 @@
+#!/bin/bash
+# Stage 1 of the 2023 rolling backtest: the discrete oracle cache, 1365 trading days
+# from 2023-01-01, as four 16-core medq jobs rather than one 48-core workq job, which
+# queues far longer. The cache is keyed per day, so the parts never collide:
+#
+#     for span in 2023-01-01T04:00..2023-12-01T04:00 2023-12-01T04:00..2024-11-01T04:00 \
+#                 2024-11-01T04:00..2025-10-01T04:00 2025-10-01T04:00..2026-09-27T04:00; do
+#       qsub -v SPAN="$span" scripts/rolling2023_oracle.pbs
+#     done
+#
+# Stage 2, scripts/rolling2023_folds.pbs, is queued with -W depend=afterok on all four.
+# Prices must already be in data_cache/: compute nodes are not assumed to reach AEMO.
+# Resumable: a rerun skips every day already cached.
+
+#PBS -N id-oracle23
+#PBS -q medq
+#PBS -l ncpus=16
+#PBS -l mem=40GB
+#PBS -l walltime=36:00:00
+#PBS -j oe
+
+set -euo pipefail
+cd "${PBS_O_WORKDIR:-$PWD}"
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONWARNINGS=ignore
+
+# 15 workers leave one core for the parent. The limit is 1800s because cacheKey does
+# not record it, so a day that stops early writes a loose bound for good.
+.venv/bin/python -u -m cli baseline --split "part=${SPAN:?pass -v SPAN=START..END}" \
+  --region NSW1 --no-calendar --gap 0.02 --time-limit 1800 --workers 15 --verbose
