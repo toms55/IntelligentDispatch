@@ -119,6 +119,8 @@ cover.
 
 - **`scripts/overnight.sh`** — the six stages of the full experiment in order, each
   resumable because the oracle cache is keyed on its own parameters.
+- **`scripts/rolling.sh`** — the two stages of the rolling-origin backtest: the discrete
+  oracle cache over the whole span, then the 52 folds.
 
 - **`conftest.py`** — exists only to put the repo root on `sys.path` so
   `degradation/schade.py` can resolve `from utils import ...` during collection.
@@ -145,6 +147,19 @@ cover.
   discrete: 1555s to prove 21.8041, or 82s to return 21.7269 with a dual bound of
   21.8353. Note HiGHS minimises internally, so pulp negates a maximisation and the raw
   `mip_dual_bound` comes back with the opposite sign — `_solverInfo` flips it.
+- **`cacheKey` does not record the solver time limit.** A window that stops on the limit
+  writes a loose dual bound, and `solveWindow` then serves that record from cache for
+  good. Raising `--time-limit` later cannot reach it, so delete the files to redo them.
+  Measured on NSW1 2024-01-10, discrete, no calendar, 0.02 gap: a 300s limit stopped with
+  the incumbent at 14.6996 and the bound still at 17.7368, above the continuous bound of
+  17.1258 and so useless as a bound. This is why the rolling backtest uses 1800s.
+- **The rolling backtest uses one discrete oracle for both roles**, unlike `train`/`eval`
+  below. Paying for discrete power on the training days buys the reward baseline nothing,
+  but one oracle under one set of settings produces every figure the backtest quotes.
+  `scripts/rolling.sh` builds that cache. The existing `data_cache/lp_baseline` entries
+  are continuous, so none of them match.
+- **Rolling test windows never overlap.** `enumerateFolds` refuses `stepWeeks` below
+  `testWeeks`, because a shared trading day would count twice in every pooled figure.
 - The reward baseline and the reported bound are different jobs and use different
   oracles. The baseline only has to be constant per window and interval, so the cheap
   continuous solve does it; the bound must be discrete. See `config.py`.

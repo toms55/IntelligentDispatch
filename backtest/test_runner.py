@@ -97,12 +97,12 @@ class TestSpanWideWork:
         runner.runRolling(config)
         assert len(spy["baseline"]) == 1
 
-    # The oracle must be asked for with the settings the cache was built under, or every
-    # key misses and the run silently starts solving a MILP per day.
-    def test_the_oracle_is_asked_for_with_the_cached_settings(self, config, spy):
+    # The oracle must be asked for with the settings the run reports under. Discrete
+    # power is the one the agent's three actions can reach, so `captured` divides by it.
+    def test_the_oracle_is_asked_for_with_the_reported_settings(self, config, spy):
         runner.runRolling(config)
         asked = spy["baseline"][0]
-        assert (asked["calendar"], asked["discretePower"]) == (False, False)
+        assert (asked["calendar"], asked["discretePower"]) == (False, True)
         assert asked["gap"] == 0.02
 
 

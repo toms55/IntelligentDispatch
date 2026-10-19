@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Rolling-origin backtest over two years of NSW1, 52-week train, 1-week test.
+#
+#     bash scripts/rolling.sh 2>&1 | tee runs/rolling.log
+#
+# Resumable at both stages. The oracle cache is keyed on its own parameters, and a fold
+# is skipped once its rows are in the fold CSV.
+set -euo pipefail
+
+REGION=NSW1
+SPAN="all=2024-01-01T04:00..2026-01-01T04:00"
+WORKERS=6
+GAP=0.02
+LIMIT=1800
+TRAIN_WEEKS=52
+CAP_DATE="2026-01-01T04:00"
+
+mkdir -p runs
+
+say() { printf '\n========== %s  (%s) ==========\n' "$1" "$(date +%H:%M)"; }
+
+# Stage 1 is the long one: 731 discrete windows, and nothing is cached yet, because the
+# existing data_cache/lp_baseline entries are continuous and the key includes the mode.
+# Measured on NSW1 at this gap, discrete, no calendar, single thread: 107s on a quiet day,
+# 194s on an average one, and past 300s on a volatile one. Budget 10 to 14 hours at six
+# workers, and expect the volatile days to use the whole 1800s limit.
+#
+# The limit matters more than it looks. cacheKey does not record it, so a day that stops
+# on the limit writes a loose dual bound that the cache then serves for good. Raising
+# --time-limit later cannot reach those records. Delete the files to redo them.
+say "1/2 oracle cache: discrete, no calendar, 731 windows (52 folds use 728)"
+uv run python -u -m cli baseline --split "$SPAN" --region "$REGION" --no-calendar \
+  --gap "$GAP" --time-limit "$LIMIT" --workers "$WORKERS" --verbose
+
+# One discrete oracle serves both roles here: the per-interval reward baseline and the
+# dual bound that `captured` divides by. --allow-solve is still passed, because a gap in
+# the cache must solve rather than stop the run at this point.
+say "2/2 rolling backtest: 52 folds, warm chain, realised prices then the AEMO forecast"
+uv run python -u -m cli rolling --split "$SPAN" --region "$REGION" \
+  --train-weeks "$TRAIN_WEEKS" --test-weeks 1 --step-weeks 1 \
+  --algo maskableppo --cap-date "$CAP_DATE" \
+  --baseline-oracle discrete --no-calendar \
+  --gap "$GAP" --time-limit "$LIMIT" --workers "$WORKERS" \
+  --price-source both --allow-solve
+
+say "done"

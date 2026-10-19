@@ -561,16 +561,19 @@ def main(argv=None):
         return subcommands.add_parser(name, parents=[_sharedParser()],
                                       formatter_class=_formatter, help=helpText)
 
-    def addSolverArgs(parser, gapDefault=None):
+    def addSolverArgs(parser, gapDefault=None, limitDefault=None):
         parser.add_argument("--no-calendar", action="store_true",
                             help="drop calendar aging; roughly 5x faster")
         parser.add_argument("--gap", type=float, default=gapDefault, metavar="FRACTION",
                             help="relative MIP gap to stop at; HiGHS defaults to 0.0001, "
                                  "which costs 1555s on one discrete day against 82s at "
                                  f"0.005 (default: {gapDefault})")
-        parser.add_argument("--time-limit", type=float, default=None, metavar="SECONDS",
+        parser.add_argument("--time-limit", type=float, default=limitDefault,
+                            metavar="SECONDS",
                             help="cap each solve; past it the incumbent is kept and the "
-                                 "dual bound is still valid")
+                                 "dual bound is still valid, but it is also loose, and "
+                                 "the cache key does not record the limit, so a loose "
+                                 f"record is permanent (default: {limitDefault})")
 
     def addRlArgs(parser, oracleDefault, forecastFlag=True, algoList=False):
         parser.add_argument("--algo", default=["maskableppo"] if algoList else "maskableppo",
@@ -668,8 +671,9 @@ def main(argv=None):
 
     rolling = addParser("rolling", "walk-forward backtest: slide the training window, "
                                    "test the next week, repeat")
-    addSolverArgs(rolling, gapDefault=config.backtest_gap)
-    addRlArgs(rolling, "continuous", forecastFlag=False, algoList=True)
+    addSolverArgs(rolling, gapDefault=config.backtest_gap,
+                  limitDefault=config.backtest_time_limit)
+    addRlArgs(rolling, "discrete", forecastFlag=False, algoList=True)
     rolling.add_argument("--train-weeks", type=int, required=True, metavar="N",
                          help="weeks of training data per fold; the window slides rather "
                               "than grows")

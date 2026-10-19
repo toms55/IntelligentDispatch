@@ -47,12 +47,16 @@ class RollingConfig(NamedTuple):
     horizon: int = config.episode_intervals
     rewardScale: float = config.reward_scale
     initialSoc: float = config.initial_soc
-    # Defaults match the settings data_cache/lp_baseline was built under. Change one and
-    # every cache key misses.
     calendar: bool = False
-    discretePower: bool = False
+    # One discrete oracle serves both the reward baseline and the bound. `captured`
+    # divides by this bound, and a continuous oracle may ramp to any power between zero
+    # and rated, which the agent's three actions cannot, so a continuous bound is one the
+    # agent can never reach. The existing data_cache/lp_baseline entries are continuous,
+    # so this key misses every one of them and the discrete cache must be built first.
+    # See config.backtest_time_limit for why the limit is 1800s.
+    discretePower: bool = True
     gap: float = config.backtest_gap
-    timeLimit: Optional[float] = 300.0
+    timeLimit: Optional[float] = config.backtest_time_limit
     workers: int = 1
     battery: tuple = (config.battery_mw, config.battery_mwh,
                       config.battery_replacement_cost)
