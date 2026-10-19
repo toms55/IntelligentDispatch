@@ -375,6 +375,101 @@ def _runEval(args):
     return 0
 
 
+def _parseFolds(value):
+    """'0-3,10' as a set of fold indices. Raises SystemExit on any malformed part."""
+    chosen = set()
+    for part in value.split(","):
+        part = part.strip()
+        try:
+            if "-" in part.lstrip("-"):
+                first, last = (int(n) for n in part.split("-", 1))
+                chosen.update(range(first, last + 1))
+            else:
+                chosen.add(int(part))
+        except ValueError:
+            raise SystemExit(f"--folds wants N or N-M, comma separated; got {part!r}")
+    if not chosen:
+        raise SystemExit(f"--folds selected nothing: {value!r}")
+    return frozenset(chosen)
+
+
+def _runRolling(args):
+    # A bad span, a cold oracle cache and a changed manifest are all the operator's to
+    # fix, so they exit with the message rather than a traceback.
+    try:
+        return _rolling(args)
+    except ValueError as error:
+        raise SystemExit(str(error))
+
+
+def _rolling(args):
+    from backtest import metrics, records, runner
+
+    start, end = _window(args)
+    sources = (("realised", "forecast") if args.price_source == "both"
+               else (args.price_source,))
+    cfg = runner.RollingConfig(
+        region=args.region, start=start, end=end, capDate=args.cap_date,
+        trainWeeks=args.train_weeks, testWeeks=args.test_weeks,
+        stepWeeks=args.step_weeks, algos=tuple(args.algo), seeds=tuple(args.seeds),
+        arms=tuple(args.arms), warmTimesteps=args.warm_timesteps,
+        coldTimesteps=args.cold_timesteps, priceSources=sources,
+        horizon=args.horizon, rewardScale=args.reward_scale,
+        initialSoc=args.initial_soc, calendar=not args.no_calendar,
+        gap=args.gap, timeLimit=args.time_limit, workers=args.workers,
+        battery=(args.mw, args.mwh, args.replacement_cost),
+        trajectorySeed=None if args.trajectory_seed < 0 else args.trajectory_seed,
+        foldFilter=args.folds and _parseFolds(args.folds),
+        allowSolve=args.allow_solve, outDir=Path(args.out),
+        resultsDir=Path(args.results),
+    )
+
+    audit = runner.auditPlan(cfg)
+    print(f"folds          {audit['selected']} of {audit['folds']}, "
+          f"{audit['leftoverDays']} day(s) past the last one")
+    print(f"first          train {audit['first'].trainStart:%Y-%m-%d} .. "
+          f"{audit['first'].trainEnd:%Y-%m-%d}, test .. {audit['first'].testEnd:%Y-%m-%d}")
+    print(f"last           test {audit['last'].testStart:%Y-%m-%d} .. "
+          f"{audit['last'].testEnd:%Y-%m-%d}")
+    print(f"oracle cache   {audit['days'] - audit['missing']} of {audit['days']} days "
+          f"present, {audit['missing']} would be solved")
+    if args.dry_run:
+        return 0
+
+    written = runner.runRolling(cfg, onProgress=lambda done, total, fold: print(
+        f"  [{done:3d}/{total}] fold {fold.index:2d} test {fold.testStart:%Y-%m-%d}"))
+    frame = records.readDays(cfg.resultsDir, cfg.region)
+    print(f"wrote          {written} new unit(s), {len(frame)} rows in "
+          f"{records.regionDir(cfg.resultsDir, cfg.region)}")
+    _reportRolling(frame, metrics)
+    return 0
+
+
+def _runPrefetch(args):
+    from data.forecasts import prefetchForecasts
+
+    start, end = _window(args)
+    # Always the full episode horizon: a shorter one is a slice of this cache.
+    target = prefetchForecasts(start, end, args.region, config.episode_intervals)
+    print(f"wrote {target}")
+    return 0
+
+
+def _reportRolling(frame, metrics):
+    overall = metrics.summarise(frame)
+    print(f"days           {overall['days']}")
+    print(f"agent profit   {overall['agentProfit']:12.4f}")
+    print(f"oracle profit  {overall['oracleProfit']:12.4f}")
+    print(f"captured       {overall['captured']:12.2%}  "
+          f"(per-fold median {overall['foldMedian']:.2%}, "
+          f"IQR {overall['foldIqr']:.2%})")
+    print(f"win rate       {overall['winRate']:12.2%}")
+    for high, got in metrics.byBucket(frame).items():
+        label = "high vol" if high else "low vol "
+        print(f"  {label}     {got['days']:4d} days  agent {got['agentProfit']:10.4f}  "
+              f"oracle {got['oracleProfit']:10.4f}  captured {got['captured']:7.2%}")
+
+
 def _reportEval(summary, results, args):
     """The same report for a trained agent and for the rule-based control."""
     from rl import evaluate
@@ -476,8 +571,9 @@ def main(argv=None):
                             help="cap each solve; past it the incumbent is kept and the "
                                  "dual bound is still valid")
 
-    def addRlArgs(parser, oracleDefault):
-        parser.add_argument("--algo", default="maskableppo",
+    def addRlArgs(parser, oracleDefault, forecastFlag=True, algoList=False):
+        parser.add_argument("--algo", default=["maskableppo"] if algoList else "maskableppo",
+                            nargs="+" if algoList else None,
                             choices=list(config.algorithms),
                             help="MaskablePPO is the only one that reads the action mask "
                                  "(default: maskableppo)")
@@ -504,10 +600,12 @@ def main(argv=None):
                             help="which oracle supplies the per-interval profit; the "
                                  "reward baseline can use continuous, a quoted bound must "
                                  f"be discrete (default: {oracleDefault})")
-        parser.add_argument("--forecast", action="store_true",
-                            help="fill the price slots from the AEMO forecast published "
-                                 "at each episode's run time, instead of realised prices; "
-                                 "settlement still uses realised prices")
+        if forecastFlag:
+            parser.add_argument("--forecast", action="store_true",
+                                help="fill the price slots from the AEMO forecast "
+                                     "published at each episode's run time, instead of "
+                                     "realised prices; settlement still uses realised "
+                                     "prices")
 
     lp = addParser("lp", "perfect-foresight MILP oracle")
     addSolverArgs(lp)
@@ -566,6 +664,59 @@ def main(argv=None):
                               "realised vs forecast; other sections already in the file "
                               "are left untouched")
     evalCmd.set_defaults(run=_runEval)
+
+    rolling = addParser("rolling", "walk-forward backtest: slide the training window, "
+                                   "test the next week, repeat")
+    addSolverArgs(rolling, gapDefault=config.backtest_gap)
+    addRlArgs(rolling, "continuous", forecastFlag=False, algoList=True)
+    rolling.add_argument("--train-weeks", type=int, required=True, metavar="N",
+                         help="weeks of training data per fold; the window slides rather "
+                              "than grows")
+    rolling.add_argument("--test-weeks", type=int, default=1, metavar="N",
+                         help="weeks scored per fold (default: 1)")
+    rolling.add_argument("--step-weeks", type=int, default=1, metavar="N",
+                         help="weeks between fold origins (default: 1)")
+    rolling.add_argument("--cap-date", type=datetime.fromisoformat, required=True,
+                         metavar="DATE",
+                         help="pin the observation price scale to the market price cap in "
+                              "force then; required, because a per-fold cap would make "
+                              "folds either side of 1 July incomparable")
+    rolling.add_argument("--arms", nargs="+", default=["warm"],
+                         choices=["warm", "cold"],
+                         help="warm continues the previous fold's checkpoint, cold starts "
+                              "fresh each fold (default: warm)")
+    rolling.add_argument("--warm-timesteps", type=int, default=30000, metavar="N",
+                         help="top-up budget per warm fold (default: 30000)")
+    rolling.add_argument("--cold-timesteps", type=int, default=300000, metavar="N",
+                         help="budget for a fresh fit, also used for the first fold of a "
+                              "warm chain (default: 300000)")
+    rolling.add_argument("--price-source", choices=["realised", "forecast", "both"],
+                         default="realised",
+                         help="what fills the observation's price slots; settlement always "
+                              "uses realised prices (default: realised)")
+    rolling.add_argument("--results", default="results/rolling", metavar="DIR",
+                         help="where the per-fold CSV and parquet go "
+                              "(default: results/rolling)")
+    rolling.add_argument("--trajectory-seed", type=int, default=0, metavar="N",
+                         help="persist per-interval trajectories for this seed; -1 for "
+                              "none (default: 0)")
+    rolling.add_argument("--folds", metavar="SPEC",
+                         help="restrict to a subset, as N or N-M, comma separated")
+    rolling.add_argument("--allow-solve", action="store_true",
+                         help="permit solving oracle windows that are not cached; without "
+                              "it a cold cache stops the run instead of silently starting "
+                              "hours of MILP")
+    rolling.add_argument("--dry-run", action="store_true",
+                         help="print the fold table and the cache audit, run nothing")
+    # The cached oracle was solved without calendar aging, so matching it is the
+    # default here and opting back in costs a full re-solve.
+    rolling.add_argument("--calendar", dest="no_calendar", action="store_false",
+                         help="keep calendar aging; every oracle window then misses the "
+                              "cache and must be re-solved")
+    rolling.set_defaults(run=_runRolling, out="runs/rolling", no_calendar=True)
+
+    prefetch = addParser("prefetch", "cache the AEMO forecast paths for a region")
+    prefetch.set_defaults(run=_runPrefetch)
 
     args = parser.parse_args(argv)
     return args.run(args)

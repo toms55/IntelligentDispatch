@@ -1,3 +1,5 @@
+from datetime import datetime
+
 # --- Episode -----------------------------------------------------------------
 episode_intervals = 288
 initial_soc = 0.5
@@ -29,6 +31,22 @@ reward_scale = 20.0
 
 
 # --- Experiment design -------------------------------------------------------
+# Five Minute Settlement commenced in the NEM on this trading day, under NER 3.15.1A.
+# Before it the market settled on the 30-minute TRADINGPRICE, so an episode that settles
+# each 5-minute interval at its own RRP models a market that did not exist. The rolling
+# backtest refuses any span that starts earlier.
+five_minute_settlement_start = datetime(2021, 10, 1, 4)
+
+# A high-volatility trading day, by mean excess over the spike threshold:
+#     spikeIntensity = sum(max(RRP - spike_threshold, 0)) / episode_intervals
+# A day is high-volatility when its intensity reaches the cutoff (inclusive).
+# Only the excess counts, so negative prices never make a day high-volatility.
+# Calibrated on NSW1: a 1.20 cutoff selects 17% of 2025 days carrying 64.6% of the
+# oracle's profit, and 22% of 2024 days carrying 75.9%. Separate from price_knee, which
+# happens to share the value 300 and means something else entirely.
+spike_threshold = 300.0
+high_vol_intensity = 1.20
+
 # Windows are not set here. Pass them on the command line as --split NAME=START..END,
 # because the design changes between experiments. Align every boundary to 04:00, the NEM
 # trading day boundary: PREDISPATCH only reaches 288 intervals from a 04:00 run, so this
@@ -44,6 +62,11 @@ algorithms = ("maskableppo", "dqn", "a2c")
 # incumbent below the true optimum.
 oracle_gap = 0.005
 oracle_time_limit = 600
+
+# The gap the existing data_cache/lp_baseline entries were solved at. The cache key
+# includes the gap, so the rolling backtest must ask for this one or it misses every
+# entry and silently starts re-solving.
+backtest_gap = 0.02
 
 # The reward baseline only has to be a constant per window and interval, so it can use
 # the cheap continuous solve. A quoted bound must be discrete, since the agent has three

@@ -396,3 +396,118 @@ class TestRlSubcommands:
         with pytest.raises(FileNotFoundError, match="scaler.json"):
             cli.main(["eval", "2024-01-10", "2024-01-11", "--horizon", "4",
                       "--out", str(tmp_path), "--seeds", "0"])
+
+
+class TestRolling:
+    """The rolling subcommand's argument translation. runRolling itself is faked."""
+
+    @pytest.fixture
+    def spy(self, monkeypatch):
+        from backtest import runner
+        seen = {}
+        monkeypatch.setattr(runner, "runRolling",
+                            lambda cfg, onProgress=None: seen.update(cfg=cfg) or 0)
+        monkeypatch.setattr(runner, "auditPlan", lambda cfg: {
+            "folds": 1, "selected": 1, "days": 7, "missing": 0, "leftoverDays": 0,
+            "first": runner.folds.Fold(0, *[datetime(2025, 1, 1, 4)] * 4),
+            "last": runner.folds.Fold(0, *[datetime(2025, 1, 1, 4)] * 4)})
+        return seen
+
+    def rolling(self, *extra):
+        return cli.main([
+            "rolling", "--split", "r=2024-01-01T04:00..2026-01-01T04:00",
+            "--region", "NSW1", "--train-weeks", "52",
+            "--cap-date", "2026-01-01T04:00", *extra,
+        ])
+
+    # Both price sources in one run becomes the pair the runner expects.
+    def test_price_source_both_becomes_a_pair(self, spy):
+        self.rolling("--price-source", "both", "--dry-run")
+        self.rolling("--price-source", "both")
+        assert spy["cfg"].priceSources == ("realised", "forecast")
+
+    # A fold range and a fold list both resolve to a set of indices.
+    @pytest.mark.parametrize("spec,expected", [
+        ("0-3", {0, 1, 2, 3}),
+        ("0,13", {0, 13}),
+        ("0-2,10", {0, 1, 2, 10}),
+        ("7", {7}),
+    ])
+    def test_folds_spec_resolves_to_indices(self, spy, spec, expected):
+        self.rolling("--folds", spec)
+        assert spy["cfg"].foldFilter == frozenset(expected)
+
+    # A malformed fold spec exits rather than silently selecting nothing.
+    def test_a_malformed_folds_spec_exits(self, spy):
+        with pytest.raises(SystemExit):
+            self.rolling("--folds", "one-two")
+
+    # Several algorithms in one run, which train and eval do not accept.
+    def test_several_algorithms_become_a_tuple(self, spy):
+        self.rolling("--algo", "maskableppo", "dqn")
+        assert spy["cfg"].algos == ("maskableppo", "dqn")
+
+    # Without a pinned cap, folds either side of 1 July read a different price scale.
+    def test_the_cap_date_is_required(self, spy):
+        with pytest.raises(SystemExit):
+            cli.main(["rolling", "--split", "r=2024-01-01T04:00..2026-01-01T04:00",
+                      "--train-weeks", "52"])
+
+    # The training length has no sensible default, so it must be given.
+    def test_the_train_length_is_required(self, spy):
+        with pytest.raises(SystemExit):
+            cli.main(["rolling", "--split", "r=2024-01-01T04:00..2026-01-01T04:00",
+                      "--cap-date", "2026-01-01T04:00"])
+
+    # One window per run still holds, so _window is untouched by this subcommand.
+    def test_two_splits_still_exit(self, spy):
+        with pytest.raises(SystemExit):
+            cli.main(["rolling", "--split", "a=2024-01-01T04:00..2025-01-01T04:00",
+                      "--split", "b=2025-01-01T04:00..2026-01-01T04:00",
+                      "--train-weeks", "52", "--cap-date", "2026-01-01T04:00"])
+
+    # The cache-matching oracle settings are the default here, and --calendar opts back in.
+    def test_calendar_is_off_by_default_and_can_be_turned_on(self, spy):
+        self.rolling()
+        assert spy["cfg"].calendar is False
+        self.rolling("--calendar")
+        assert spy["cfg"].calendar is True
+
+    # A negative trajectory seed means persist nothing.
+    def test_a_negative_trajectory_seed_disables_trajectories(self, spy):
+        self.rolling("--trajectory-seed", "-1")
+        assert spy["cfg"].trajectorySeed is None
+
+    # --dry-run reports and stops.
+    def test_dry_run_does_not_run(self, spy):
+        assert self.rolling("--dry-run") == 0
+        assert "cfg" not in spy
+
+
+class TestExistingSubcommandsSurvive:
+    # train and eval keep their single --algo after rolling made it a list elsewhere.
+    @pytest.mark.parametrize("module", ["train", "eval"])
+    def test_a_single_algo_is_still_a_string(self, module, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(cli, f"_run{module.capitalize()}",
+                            lambda args: captured.update(algo=args.algo) or 0)
+        parser_args = ["--split", "t=2024-01-01T04:00..2024-01-02T04:00",
+                       "--algo", "dqn"]
+        cli.main([module, *parser_args])
+        assert captured["algo"] == "dqn"
+
+    # train and eval keep --forecast, which rolling replaces with --price-source.
+    def test_eval_still_takes_forecast(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(cli, "_runEval",
+                            lambda args: captured.update(f=args.forecast) or 0)
+        cli.main(["eval", "--split", "t=2024-01-01T04:00..2024-01-02T04:00",
+                  "--forecast"])
+        assert captured["f"] is True
+
+    # rolling has no --forecast to collide with --price-source.
+    def test_rolling_rejects_forecast(self):
+        with pytest.raises(SystemExit):
+            cli.main(["rolling", "--split", "r=2024-01-01T04:00..2026-01-01T04:00",
+                      "--train-weeks", "52", "--cap-date", "2026-01-01T04:00",
+                      "--forecast"])
