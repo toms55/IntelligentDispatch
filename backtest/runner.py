@@ -80,7 +80,8 @@ def manifestOf(cfg):
     return {key: value for key, value in cfg._asdict().items() if key not in skip}
 
 
-def _plan(cfg):
+def _foldTable(cfg):
+    """Every fold in the span, and the ones this run covers. Raises on either empty."""
     everyFold = folds.enumerateFolds(cfg.start, cfg.end, cfg.trainWeeks,
                                      cfg.testWeeks, cfg.stepWeeks)
     if not everyFold:
@@ -90,6 +91,16 @@ def _plan(cfg):
         )
     selected = [fold for fold in everyFold
                 if cfg.foldFilter is None or fold.index in cfg.foldFilter]
+    if not selected:
+        raise ValueError(
+            f"the fold filter {sorted(cfg.foldFilter)} selected none of the "
+            f"{len(everyFold)} folds in the span, which are 0 to {len(everyFold) - 1}"
+        )
+    return everyFold, selected
+
+
+def _plan(cfg):
+    everyFold, selected = _foldTable(cfg)
     spanEnd = everyFold[-1].testEnd
     prices = price_series(cfg.start, spanEnd, cfg.region)
     folds.requireFullDays(prices, cfg.start, spanEnd)
@@ -147,10 +158,7 @@ def _spanDays(cfg, plan):
 
 def auditPlan(cfg):
     """The --dry-run report: the fold table, and how much oracle solving it would need."""
-    everyFold = folds.enumerateFolds(cfg.start, cfg.end, cfg.trainWeeks,
-                                     cfg.testWeeks, cfg.stepWeeks)
-    selected = [fold for fold in everyFold
-                if cfg.foldFilter is None or fold.index in cfg.foldFilter]
+    everyFold, selected = _foldTable(cfg)
     model = SchadeDegradation(*cfg.battery)
     # The span is every fold, not the selection: one price fetch and one oracle build
     # cover the whole range whichever folds run.
@@ -195,6 +203,11 @@ def _ensureTrained(cfg, fold, arm, algo, seed, parent, trainPrices, baselines, s
     if (directory / "agent.zip").exists():
         return directory
     warmFrom = parent if arm == "warm" else None
+    if warmFrom is not None and not (Path(warmFrom) / "agent.zip").exists():
+        raise ValueError(
+            f"fold {fold} warm starts from {warmFrom}, which holds no checkpoint. Run "
+            f"the earlier folds first, or pass arms=('cold',) to fit each fold fresh"
+        )
     trainOne(
         algo, trainPrices, SchadeDegradation(*cfg.battery), baselines=baselines,
         seed=seed, timesteps=cfg.warmTimesteps if warmFrom else cfg.coldTimesteps,
@@ -230,7 +243,8 @@ def _oracleRows(cfg, fold, day, record, prices):
 
 
 def runRolling(cfg, onProgress=None):
-    plan = _plan(cfg)
+    # Both checks come before _plan, because _plan solves the oracle cache. A guard that
+    # fires after the solve it forbids has already spent the hours it exists to save.
     records.requireSameManifest(cfg.resultsDir, cfg.region, manifestOf(cfg))
 
     audit = auditPlan(cfg)
@@ -240,6 +254,7 @@ def runRolling(cfg, onProgress=None):
             f"Solving them is hours of MILP, so pass allowSolve to go ahead."
         )
 
+    plan = _plan(cfg)
     existing = records.readDays(cfg.resultsDir, cfg.region)
     done = records.completedUnits(existing)
     trainDays = cfg.trainWeeks * 7
@@ -277,8 +292,10 @@ def runRolling(cfg, onProgress=None):
                                if (fold.index, algo, arm, seed, source) not in done]
                     if not pending:
                         continue
+                    # allowPartial=False: a NaN row reads as a flat $0 day and the
+                    # agent idles through it, so a missing run must stop the run.
                     forecasts = (forecastMatrix(
-                        fold.testDays, cfg.region, cfg.horizon,
+                        fold.testDays, cfg.region, cfg.horizon, allowPartial=False,
                         source=plan.forecastSource)
                         if source == "forecast" else None)
                     results = evaluateSeeds(
@@ -296,13 +313,20 @@ def runRolling(cfg, onProgress=None):
                     written += len(pending)
 
         if trajectories:
+            # The parquet is replaced whole, so carry over the series this pass did not
+            # regenerate. Without it a resumed run drops every other arm and source.
+            fresh = {(row["algo"], row["arm"], row["priceSource"])
+                     for row in trajectories} | {("oracle", "oracle", "realised")}
+            kept = [row for row in records.readTrajectories(
+                        cfg.resultsDir, cfg.region, fold.index)
+                    if (row["algo"], row["arm"], row["priceSource"]) not in fresh]
             trajectories += [row for day, record in zip(fold.testDays, testRecords)
                              for row in _oracleRows(
                                  cfg, fold.index, day, record,
                                  folds.sliceWindow(plan.prices, day,
                                                    day + folds.oneDay).to_numpy())]
             records.writeTrajectories(cfg.resultsDir, cfg.region, fold.index,
-                                      trajectories)
+                                      kept + trajectories)
         records.writeFold(cfg.resultsDir, cfg.region, fold.index, rows)
         if onProgress:
             onProgress(position + 1, len(plan.selected), fold)
@@ -311,10 +335,16 @@ def runRolling(cfg, onProgress=None):
 
 def _resultRows(cfg, plan, fold, algo, arm, source, results, position):
     stamp = datetime.now().isoformat(timespec="seconds")
-    parent = ("" if position == 0 else
-              str(checkpointDir(cfg, plan.selected[position - 1].index, arm, algo, 0)))
+
+    def parentOf(seed):
+        """The checkpoint this seed warm started from, which is its own, not seed 0's."""
+        return ("" if position == 0 else
+                str(checkpointDir(cfg, plan.selected[position - 1].index,
+                                  arm, algo, seed)))
+
     out = []
     for seed, perWindow in sorted(results.items()):
+        parent = parentOf(seed)
         for record in perWindow:
             day = fold.testDays[record["window"]]
             stats = plan.volatility.loc[day]

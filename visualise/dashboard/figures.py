@@ -177,7 +177,10 @@ def calendarFigure(frame, metric="captured"):
     extra[row, column, 2] = days.agentProfit.to_numpy(dtype=float)
     extra[row, column, 3] = days.oracleProfit.to_numpy(dtype=float)
 
-    limit = float(np.nanpercentile(np.abs(grid), 95)) or 1.0
+    # A metric that is NaN everywhere (every oracle day at or below zero) would make
+    # the percentile NaN, and a NaN colour range draws nothing.
+    limit = (float(np.nanpercentile(np.abs(grid), 95))
+             if np.isfinite(grid).any() else 1.0) or 1.0
     weekLabels = [f"{(firstMonday + pd.Timedelta(weeks=n)):%-d %b}"
                   for n in range(weeks)]
 
@@ -258,7 +261,7 @@ def dayFigure(trajectory, day, algo=None, arm=None):
     for source, label, dash in (("realised", "Agent SoC", "solid"),
                                 ("forecast", "Agent SoC on forecast", "dot")):
         side = rows[rows.priceSource == source]
-        if side.empty or (source == "forecast" and realised.empty):
+        if side.empty:
             continue
         figure.add_trace(go.Scatter(
             x=pd.to_datetime(side.settlementdate), y=side.soc, name=label,

@@ -74,6 +74,14 @@ def writeTrajectories(resultsDir, region, fold, rows):
                   lambda f, path: f.to_parquet(path, index=False))
 
 
+def readTrajectories(resultsDir, region, fold):
+    """Fold `fold`'s per-interval rows already on disk, as dicts. Empty when absent."""
+    path = regionDir(resultsDir, region) / f"fold{fold:02d}.parquet"
+    if not path.exists():
+        return []
+    return pd.read_parquet(path).to_dict("records")
+
+
 def readDays(resultsDir, region):
     """Every fold's rows, in fold order. Empty frame when nothing has run yet."""
     paths = sorted(regionDir(resultsDir, region).glob("fold*.csv"))

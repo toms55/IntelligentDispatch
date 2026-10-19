@@ -34,6 +34,9 @@ def config(tmp_path, prices):
         region=REGION, start=START, end=prices.index[-1], capDate=datetime(2026, 1, 1, 4),
         trainWeeks=4, seeds=(0, 1), arms=("warm",),
         warmTimesteps=10, coldTimesteps=100,
+        # buildBaseline is faked, so nothing solves. Without this the suite reads the
+        # real data_cache/lp_baseline, which is gitignored and absent on a clean clone.
+        allowSolve=True,
         outDir=tmp_path / "runs", resultsDir=tmp_path / "results",
     )
 

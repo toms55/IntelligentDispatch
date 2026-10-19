@@ -89,7 +89,13 @@ def _expandToFiveMinutes(halfHourly):
 
 def _stitch(halfHourly, fiveMinute):
     """The one merge rule: PREDISPATCH held flat, then P5MIN overwrites the overlap."""
-    merged = pd.concat([_expandToFiveMinutes(halfHourly), fiveMinute])
+    # An empty part is dropped before the concat, not after: concatenating an empty
+    # Series decides the result dtype from it, which pandas is about to change.
+    parts = [part for part in (_expandToFiveMinutes(halfHourly), fiveMinute)
+             if len(part)]
+    if not parts:
+        return pd.Series(dtype=float)
+    merged = pd.concat(parts)
     return merged[~merged.index.duplicated(keep="last")].sort_index()
 
 
@@ -217,7 +223,13 @@ def prefetchForecasts(runStart, runEnd, region, horizon=288, cacheDir=None):
             paths[runTime] = merged.reindex(wanted).to_numpy(dtype=float)
 
     frame = pd.DataFrame.from_dict(paths, orient="index",
-                                   columns=_stepColumns(horizon)).sort_index()
+                                   columns=_stepColumns(horizon))
+    # Add to the cache rather than replace it, so prefetching a second span does not
+    # throw away the first one. A new run wins on any run time both hold.
+    stored = loadForecastCache(region, directory)
+    if stored is not None and list(stored.columns) == list(frame.columns):
+        frame = pd.concat([stored[~stored.index.isin(frame.index)], frame])
+    frame = frame.sort_index()
     target = directory / f"{region}.parquet"
     frame.to_parquet(target)
     return target

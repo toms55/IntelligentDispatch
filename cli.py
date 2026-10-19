@@ -416,10 +416,11 @@ def _rolling(args):
         coldTimesteps=args.cold_timesteps, priceSources=sources,
         horizon=args.horizon, rewardScale=args.reward_scale,
         initialSoc=args.initial_soc, calendar=not args.no_calendar,
+        discretePower=args.baseline_oracle == "discrete",
         gap=args.gap, timeLimit=args.time_limit, workers=args.workers,
         battery=(args.mw, args.mwh, args.replacement_cost),
         trajectorySeed=None if args.trajectory_seed < 0 else args.trajectory_seed,
-        foldFilter=args.folds and _parseFolds(args.folds),
+        foldFilter=None if args.folds is None else _parseFolds(args.folds),
         allowSolve=args.allow_solve, outDir=Path(args.out),
         resultsDir=Path(args.results),
     )
