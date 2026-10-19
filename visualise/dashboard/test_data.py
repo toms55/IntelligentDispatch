@@ -23,7 +23,7 @@ def dayRows(count=14, folds=2):
             "fold": index // (count // folds), "algo": "maskableppo", "arm": "warm",
             "seed": 0, "priceSource": "realised", "testDay": day,
             "agentProfit": 10.0 - index, "agentRevenue": 12.0, "agentDegradation": 2.0,
-            "oracleDualBound": 40.0, "spikeIntensity": 5.0 * (index % 2),
+            "oracleDualBound": 40.0, "oracleGap": 0.01, "spikeIntensity": 5.0 * (index % 2),
             "highVol": bool(index % 2), "timesteps": 30000, "warmFrom": "",
             "writtenAt": "2026-01-01T00:00:00",
         })

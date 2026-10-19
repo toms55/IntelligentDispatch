@@ -16,7 +16,7 @@ import pandas as pd
 
 dayColumns = (
     "fold", "algo", "arm", "seed", "priceSource", "testDay",
-    "agentProfit", "agentRevenue", "agentDegradation", "oracleDualBound",
+    "agentProfit", "agentRevenue", "agentDegradation", "oracleDualBound", "oracleGap",
     "spikeIntensity", "highVol", "timesteps", "warmFrom", "writtenAt",
 )
 
@@ -32,6 +32,7 @@ unitColumns = ("fold", "algo", "arm", "seed", "priceSource")
 _dayTypes = {"fold": "int64", "seed": "int64", "timesteps": "int64",
              "highVol": "bool", "agentProfit": "float64", "agentRevenue": "float64",
              "agentDegradation": "float64", "oracleDualBound": "float64",
+             "oracleGap": "float64",
              "spikeIntensity": "float64"}
 
 

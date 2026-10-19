@@ -442,7 +442,7 @@ def _rolling(args):
     frame = records.readDays(cfg.resultsDir, cfg.region)
     print(f"wrote          {written} new unit(s), {len(frame)} rows in "
           f"{records.regionDir(cfg.resultsDir, cfg.region)}")
-    _reportRolling(frame, metrics)
+    _reportRolling(frame, metrics, cfg.gap)
     return 0
 
 
@@ -456,19 +456,31 @@ def _runPrefetch(args):
     return 0
 
 
-def _reportRolling(frame, metrics):
-    overall = metrics.summarise(frame)
-    print(f"days           {overall['days']}")
-    print(f"agent profit   {overall['agentProfit']:12.4f}")
-    print(f"oracle profit  {overall['oracleProfit']:12.4f}")
-    print(f"captured       {overall['captured']:12.2%}  "
-          f"(per-fold median {overall['foldMedian']:.2%}, "
-          f"IQR {overall['foldIqr']:.2%})")
-    print(f"win rate       {overall['winRate']:12.2%}")
-    for high, got in metrics.byBucket(frame).items():
-        label = "high vol" if high else "low vol "
-        print(f"  {label}     {got['days']:4d} days  agent {got['agentProfit']:10.4f}  "
-              f"oracle {got['oracleProfit']:10.4f}  captured {got['captured']:7.2%}")
+def _reportRolling(frame, metrics, gap):
+    # One block per (algo, arm, source): pooling them would average unlike runs.
+    for (algo, arm, source), part in frame.groupby(["algo", "arm", "priceSource"]):
+        overall = metrics.summarise(part)
+        days = part.drop_duplicates("testDay")
+        # NaN is a solve with no gap at all, so it counts as loose too.
+        loose = int((~(days.oracleGap <= gap + 1e-9)).sum())
+        print(f"\n{algo} {arm} on {source} prices")
+        print(f"days           {overall['days']}  ({loose} with a loose bound, gap "
+              f"above {gap:.2%}: captured is a floor there)")
+        print(f"agent profit   {overall['agentProfit']:12.4f}")
+        print(f"oracle profit  {overall['oracleProfit']:12.4f}")
+        print(f"captured       {overall['captured']:12.2%}  "
+              f"(per-fold median {overall['foldMedian']:.2%}, "
+              f"IQR {overall['foldIqr']:.2%})")
+        print(f"win rate       {overall['winRate']:12.2%}")
+        for high, got in metrics.byBucket(part).items():
+            label = "high vol" if high else "low vol "
+            print(f"  {label}     {got['days']:4d} days  agent {got['agentProfit']:10.4f}  "
+                  f"oracle {got['oracleProfit']:10.4f}  captured {got['captured']:7.2%}")
+    for (algo, arm), part in frame.groupby(["algo", "arm"]):
+        if set(part.priceSource) >= {"realised", "forecast"}:
+            delta = metrics.difference(part, "priceSource", "realised", "forecast")
+            print(f"\n{algo} {arm}: realised minus forecast {delta.pooled:.4f} over "
+                  f"{len(delta.perFold)} folds")
 
 
 def _reportEval(summary, results, args):

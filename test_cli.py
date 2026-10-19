@@ -511,3 +511,25 @@ class TestExistingSubcommandsSurvive:
             cli.main(["rolling", "--split", "r=2024-01-01T04:00..2026-01-01T04:00",
                       "--train-weeks", "52", "--cap-date", "2026-01-01T04:00",
                       "--forecast"])
+
+
+class TestReportRolling:
+    """The rolling report keeps each price source apart and counts loose bounds."""
+
+    def frame(self):
+        days = pd.date_range("2024-01-01 04:00", periods=7, freq="D")
+        return pd.DataFrame([
+            {"fold": 0, "algo": "maskableppo", "arm": "warm", "seed": 0,
+             "priceSource": source, "testDay": day, "agentProfit": agent,
+             "oracleDualBound": 10.0, "oracleGap": 0.5 if step == 0 else 0.01,
+             "highVol": False}
+            for source, agent in (("realised", 8.0), ("forecast", 2.0))
+            for step, day in enumerate(days)])
+
+    def test_sources_are_reported_apart_with_their_difference(self, capsys):
+        from backtest import metrics
+        cli._reportRolling(self.frame(), metrics, 0.02)
+        out = capsys.readouterr().out
+        assert "80.00%" in out and "20.00%" in out and "50.00%" not in out
+        assert "1 with a loose bound" in out
+        assert "realised minus forecast 42.0000 over 1 folds" in out

@@ -23,7 +23,7 @@ def rows(**overrides):
         "fold": 0, "algo": "maskableppo", "arm": "warm", "seed": 0,
         "priceSource": "realised", "testDay": DAY,
         "agentProfit": 5.0, "agentRevenue": 6.0, "agentDegradation": 1.0,
-        "oracleDualBound": 10.0, "spikeIntensity": 3.0, "highVol": True,
+        "oracleDualBound": 10.0, "oracleGap": 0.01, "spikeIntensity": 3.0, "highVol": True,
         "timesteps": 30000, "warmFrom": "", "writtenAt": "2026-10-19T12:00:00",
     }
     return {**base, **overrides}

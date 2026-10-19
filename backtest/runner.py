@@ -279,6 +279,7 @@ def runRolling(cfg, onProgress=None):
         testRecords = _foldRecords(cfg, plan, fold.testStart, testDays)
         testBaselines = [record["profitPerInterval"] for record in testRecords]
         bounds = [record["dualBound"] for record in testRecords]
+        gaps = [record["mipGap"] for record in testRecords]
 
         for algo in cfg.algos:
             for arm in cfg.arms:
@@ -309,7 +310,7 @@ def runRolling(cfg, onProgress=None):
                         rewardScale=cfg.rewardScale, forecasts=forecasts, bounds=bounds,
                     )
                     rows += _resultRows(cfg, plan, fold, algo, arm, source, results,
-                                        position)
+                                        position, gaps)
                     if cfg.trajectorySeed in results:
                         trajectories += _resultTrajectories(
                             cfg, fold, algo, arm, source, results[cfg.trajectorySeed],
@@ -337,7 +338,7 @@ def runRolling(cfg, onProgress=None):
     return written
 
 
-def _resultRows(cfg, plan, fold, algo, arm, source, results, position):
+def _resultRows(cfg, plan, fold, algo, arm, source, results, position, gaps):
     stamp = datetime.now().isoformat(timespec="seconds")
 
     def parentOf(seed):
@@ -359,6 +360,9 @@ def _resultRows(cfg, plan, fold, algo, arm, source, results, position):
                 "agentRevenue": record["agentRevenue"],
                 "agentDegradation": record["agentDegradation"],
                 "oracleDualBound": record["lpProfit"],
+                # None when the solve stopped with no incumbent; the CSV holds NaN.
+                "oracleGap": (float("nan") if gaps[record["window"]] is None
+                              else gaps[record["window"]]),
                 "spikeIntensity": float(stats.spikeIntensity),
                 "highVol": bool(stats.highVol),
                 "timesteps": cfg.warmTimesteps if (arm == "warm" and position)

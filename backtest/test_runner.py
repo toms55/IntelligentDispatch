@@ -54,7 +54,7 @@ def spy(monkeypatch, prices):
         calls["baseline"].append(kwargs)
         days = len(window) // 288
         return [{"start": window.index[n * 288].isoformat(),
-                 "profitPerInterval": [0.01] * 288, "dualBound": 10.0, "profit": 9.0,
+                 "profitPerInterval": [0.01] * 288, "dualBound": 10.0, "profit": 9.0, "mipGap": 0.01,
                  "soc": [0.5] * 288, "bought": [0.0] * 288, "sold": [0.0] * 288}
                 for n in range(days)]
 

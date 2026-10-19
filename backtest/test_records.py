@@ -21,7 +21,7 @@ def row(fold=0, arm="warm", seed=0, priceSource="realised", day=DAY, profit=1.5)
         "fold": fold, "algo": "maskableppo", "arm": arm, "seed": seed,
         "priceSource": priceSource, "testDay": day,
         "agentProfit": profit, "agentRevenue": 2.0, "agentDegradation": 0.5,
-        "oracleDualBound": 4.0, "spikeIntensity": 3.25, "highVol": True,
+        "oracleDualBound": 4.0, "oracleGap": 0.01, "spikeIntensity": 3.25, "highVol": True,
         "timesteps": 30000, "warmFrom": "runs/rolling/NSW1/fold00/warm",
         "writtenAt": "2026-10-19T12:00:00",
     }
