@@ -18,6 +18,9 @@ dependencies = [
     "stable-baselines3==2.9.0",
     "sb3-contrib==2.9.0",
     "nemseer==1.0.7",
+    "pyarrow==25.0.1",
+    "plotly==6.5.1",
+    "dash==3.3.0",
 ]
 
 [tool.uv]
