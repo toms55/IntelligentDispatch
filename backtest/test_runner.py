@@ -105,6 +105,18 @@ class TestSpanWideWork:
         assert (asked["calendar"], asked["discretePower"]) == (False, True)
         assert asked["gap"] == 0.02
 
+    # The reward is raw profit, so training days need no oracle: the build starts at the
+    # first test day, and no training call is handed a baseline.
+    def test_the_oracle_covers_the_test_days_only(self, config, monkeypatch, spy):
+        windows = []
+        fake = runner.buildBaseline
+        monkeypatch.setattr(runner, "buildBaseline",
+                            lambda window, **kw: windows.append(window) or fake(window, **kw))
+        runner.runRolling(config)
+        first = folds.enumerateFolds(config.start, config.end, 4)[0]
+        assert windows[0].index[0] == first.testStart + nem_interval
+        assert all("baselines" not in call for call in spy["train"])
+
 
 class TestFoldWindows:
     # Each fold trains on its own sliding window, starting one interval after its 04:00
@@ -250,7 +262,7 @@ class TestDryRun:
     def test_the_audit_counts_folds_and_cache_misses(self, config, spy):
         report = runner.auditPlan(config)
         assert report["folds"] == 6
-        assert report["days"] == 70          # fold 0's train start to fold 5's test end
+        assert report["days"] == 42          # fold 0's test start to fold 5's test end
         assert 0 <= report["missing"] <= report["days"]
         assert spy["train"] == [] and spy["evaluate"] == []
 

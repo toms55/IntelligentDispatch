@@ -335,16 +335,11 @@ class TestRlSubcommands:
         with pytest.raises(SystemExit):
             cli.main(["train", "2024-01-10", "2024-01-11", "--algo", "ppo2"])
 
-    def test_train_subtracts_the_oracle_baseline_by_default(self, rlCalls):
+    def test_train_solves_no_oracle(self, rlCalls):
         cli.main(["train", "2024-01-10", "2024-01-11", "--horizon", "4",
                   "--timesteps", "10"])
-        assert rlCalls["train"][0][1]["baselines"] is not None
-
-    def test_no_baseline_leaves_the_reward_as_raw_profit(self, rlCalls):
-        cli.main(["train", "2024-01-10", "2024-01-11", "--horizon", "4",
-                  "--timesteps", "10", "--no-baseline"])
-        assert rlCalls["train"][0][1]["baselines"] is None
-        assert "baseline" not in rlCalls  # no oracle solve at all
+        assert "baselines" not in rlCalls["train"][0][1]
+        assert "baseline" not in rlCalls
 
     def test_train_pins_the_price_scale_to_the_window_end(self, rlCalls, capsys):
         """2024-01-10 to 2024-01-11 sits in 2023-24, so the cap is 16600."""
@@ -367,11 +362,10 @@ class TestRlSubcommands:
         scalers = [kwargs["scaler"] for _, kwargs in rlCalls["train"]]
         assert all(one == scalers[0] for one in scalers)
 
-    def test_the_horizon_reaches_both_the_env_and_the_oracle(self, rlCalls):
+    def test_the_horizon_reaches_the_env(self, rlCalls):
         cli.main(["train", "2024-01-10", "2024-01-11", "--horizon", "4",
                   "--timesteps", "10"])
         assert rlCalls["train"][0][1]["horizon"] == 4
-        assert rlCalls["baseline"]["horizon"] == 4
 
     def test_eval_refuses_a_missing_checkpoint(self, rlCalls, tmp_path):
         with pytest.raises(SystemExit, match="no checkpoint"):

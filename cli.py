@@ -6,7 +6,8 @@
     python -m cli eval  --split val   --algo maskableppo
 
 `lp` is the oracle. `baseline` solves and caches one oracle schedule per episode window,
-which the reward subtracts. `train` and `eval` are the agent.
+which `eval` scores against. `train` and `eval` are the agent.  The reward is the agent's
+own profit, so training needs no oracle.
 
 A window is either two explicit dates or a named `--split` out of config.py.
 """
@@ -274,7 +275,6 @@ def _runBaseline(args):
 
 
 def _runTrain(args):
-    from rl import baseline
     from rl.features import PriceScaler, scalerFor
     from rl.train import trainOne
     from utils.market import marketPriceCap
@@ -284,21 +284,10 @@ def _runTrain(args):
     scaler = (PriceScaler(marketPriceCap(args.cap_date)) if args.cap_date
               else scalerFor(prices.index))
     print(f"price scale     cap {scaler.cap:.0f}, knee {scaler.knee:.0f}")
-    baselines = None
-    if not args.no_baseline:
-        # The baseline only has to be a constant per window/interval, so it need not
-        # share the environment's battery model -- dropping Q^CAL here is much cheaper.
-        baselines = baseline.profitPerInterval(baseline.buildBaseline(
-            prices, region=args.region, horizon=args.horizon,
-            calendar=not (args.no_calendar or args.baseline_no_calendar),
-            model=model, initialSoc=args.initial_soc,
-            discretePower=args.baseline_oracle == "discrete",
-            gap=args.gap, timeLimit=args.time_limit, workers=args.workers,
-        ))
     for seed in args.seeds:
         with _stage(f"train {args.algo} seed {seed}", quiet=not args.verbose):
             _, path = trainOne(
-                args.algo, prices, model, baselines=baselines, seed=seed,
+                args.algo, prices, model, seed=seed,
                 timesteps=args.timesteps, calendar=not args.no_calendar,
                 horizon=args.horizon, rewardScale=args.reward_scale, outDir=args.out,
                 scaler=scaler,
@@ -587,7 +576,7 @@ def main(argv=None):
                                  "the cache key does not record the limit, so a loose "
                                  f"record is permanent (default: {limitDefault})")
 
-    def addRlArgs(parser, oracleDefault, forecastFlag=True, algoList=False):
+    def addRlArgs(parser, oracleDefault=None, forecastFlag=True, algoList=False):
         parser.add_argument("--algo", default=["maskableppo"] if algoList else "maskableppo",
                             nargs="+" if algoList else None,
                             choices=list(config.algorithms),
@@ -606,16 +595,18 @@ def main(argv=None):
                             help=f"fixed divisor on the reward (default: {config.reward_scale})")
         parser.add_argument("--out", default="runs", metavar="DIR",
                             help="where checkpoints live (default: runs)")
+        parser.add_argument("--verbose", action="store_true",
+                            help="show an elapsed-time ticker per run")
+        if oracleDefault is None:
+            return  # train: the reward is raw profit, so no oracle is consulted
         parser.add_argument("--workers", type=int, default=1, metavar="N",
                             help="parallel oracle solves when the cache is cold "
                                  "(default: 1)")
-        parser.add_argument("--verbose", action="store_true",
-                            help="show an elapsed-time ticker per run")
         parser.add_argument("--baseline-oracle", choices=["continuous", "discrete"],
                             default=oracleDefault,
-                            help="which oracle supplies the per-interval profit; the "
-                                 "reward baseline can use continuous, a quoted bound must "
-                                 f"be discrete (default: {oracleDefault})")
+                            help="which oracle supplies the per-interval profit and the "
+                                 "bound; a quoted bound must be discrete "
+                                 f"(default: {oracleDefault})")
         if forecastFlag:
             parser.add_argument("--forecast", action="store_true",
                                 help="fill the price slots from the AEMO forecast "
@@ -647,8 +638,9 @@ def main(argv=None):
     baselineCmd.set_defaults(run=_runBaseline)
 
     train = addParser("train", "train an agent, one run per seed")
-    addSolverArgs(train, gapDefault=config.oracle_gap)
-    addRlArgs(train, "continuous" if not config.baseline_discrete_power else "discrete")
+    train.add_argument("--no-calendar", action="store_true",
+                       help="drop calendar aging from the environment's degradation cost")
+    addRlArgs(train)
     train.add_argument("--timesteps", type=int, default=100000, metavar="N",
                        help="environment steps per seed (default: 100000)")
     train.add_argument("--cap-date", type=datetime.fromisoformat, default=None,
@@ -658,11 +650,6 @@ def main(argv=None):
                             "window. Pass the end of the window you will score on to "
                             "keep full resolution over prices above the training year's "
                             "cap. The scale is saved beside the checkpoint either way")
-    train.add_argument("--no-baseline", action="store_true",
-                       help="reward is raw profit, with no oracle baseline subtracted")
-    train.add_argument("--baseline-no-calendar", action="store_true",
-                       help="drop calendar aging from the baseline solve only, leaving it "
-                            "on in the environment")
     train.set_defaults(run=_runTrain)
 
     evalCmd = addParser("eval", "score trained agents against the oracle")

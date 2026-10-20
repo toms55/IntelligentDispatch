@@ -1,7 +1,9 @@
 """The rolling-origin backtest driver.
 
 Span-wide work happens once: one price fetch, one oracle build, one volatility pass, one
-price transform. Per-fold baselines are then slices of those, found by whole-day offset,
+price transform. The reward is the agent's own profit, so the oracle is only the bound the
+test days are scored against, and it is built from the first test day rather than from the
+start of the span. Per-fold bounds are then slices of it, found by whole-day offset,
 which is only safe because every boundary is a trading day and requireFullDays has
 proved the index complete. The start-stamp check in _foldRecords is what makes the
 arithmetic trustworthy: a day-shifted slice gives wrong regret on every row and raises
@@ -48,7 +50,7 @@ class RollingConfig(NamedTuple):
     rewardScale: float = config.reward_scale
     initialSoc: float = config.initial_soc
     calendar: bool = False
-    # One discrete oracle serves both the reward baseline and the bound. `captured`
+    # The oracle supplies the test-day bound only; training never consults it. `captured`
     # divides by this bound, and a continuous oracle may ramp to any power between zero
     # and rated, which the agent's three actions cannot, so a continuous bound is one the
     # agent can never reach. The existing data_cache/lp_baseline entries are continuous,
@@ -72,6 +74,7 @@ class Plan(NamedTuple):
     selected: list
     prices: object
     oracle: list
+    oracleStart: datetime
     volatility: object
     scaler: PriceScaler
     model: SchadeDegradation
@@ -81,7 +84,10 @@ class Plan(NamedTuple):
 def manifestOf(cfg):
     """What two runs must agree on before their rows may share a result set."""
     skip = {"foldFilter", "allowSolve", "outDir", "resultsDir", "workers", "timeLimit"}
-    return {key: value for key, value in cfg._asdict().items() if key not in skip}
+    # Checkpoints trained against the old oracle-baselined reward carry no such key, so
+    # this keeps a resumed run from mixing the two rewards in one result set.
+    return {**{key: value for key, value in cfg._asdict().items() if key not in skip},
+            "reward": "profit"}
 
 
 def _foldTable(cfg):
@@ -109,13 +115,14 @@ def _plan(cfg):
     prices = price_series(cfg.start, spanEnd, cfg.region)
     folds.requireFullDays(prices, cfg.start, spanEnd)
     model = SchadeDegradation(*cfg.battery)
+    oracleStart = everyFold[0].testStart
     oracle = buildBaseline(
-        prices, region=cfg.region, horizon=cfg.horizon, calendar=cfg.calendar,
+        folds.sliceWindow(prices, oracleStart, spanEnd), region=cfg.region, horizon=cfg.horizon, calendar=cfg.calendar,
         discretePower=cfg.discretePower, model=model, initialSoc=cfg.initialSoc,
         gap=cfg.gap, timeLimit=cfg.timeLimit, workers=cfg.workers,
     )
     days = sorted({day for fold in selected for day in fold.testDays})
-    return Plan(everyFold, selected, prices, oracle,
+    return Plan(everyFold, selected, prices, oracle, oracleStart,
                 volatility.volatilityFrame(prices, days),
                 PriceScaler(marketPriceCap(cfg.capDate)), model,
                 _forecastSource(cfg, days))
@@ -164,9 +171,9 @@ def auditPlan(cfg):
     """The --dry-run report: the fold table, and how much oracle solving it would need."""
     everyFold, selected = _foldTable(cfg)
     model = SchadeDegradation(*cfg.battery)
-    # The span is every fold, not the selection: one price fetch and one oracle build
-    # cover the whole range whichever folds run.
-    spanStart, spanEnd = everyFold[0].trainStart, everyFold[-1].testEnd
+    # The span is every fold, not the selection: one oracle build covers every test day
+    # whichever folds run. Training days need no oracle at all.
+    spanStart, spanEnd = everyFold[0].testStart, everyFold[-1].testEnd
     days = [spanStart + n * folds.oneDay
             for n in range((spanEnd - spanStart) // folds.oneDay)]
     missing = [day for day in days if not (cacheRoot / cacheKey(
@@ -180,7 +187,7 @@ def auditPlan(cfg):
 
 def _foldRecords(cfg, plan, start, dayCount):
     """The oracle records for `dayCount` days from `start`, checked against their stamps."""
-    first = folds.dayOffset(cfg.start, start)
+    first = folds.dayOffset(plan.oracleStart, start)
     if first + dayCount > len(plan.oracle):
         raise ValueError(
             f"the oracle record set holds {len(plan.oracle)} days, too few to reach day "
@@ -201,7 +208,7 @@ def checkpointDir(cfg, fold, arm, algo, seed):
     return Path(cfg.outDir) / cfg.region / f"fold{fold:02d}" / arm / f"{algo}_seed{seed}"
 
 
-def _ensureTrained(cfg, fold, arm, algo, seed, parent, trainPrices, baselines, scaler):
+def _ensureTrained(cfg, fold, arm, algo, seed, parent, trainPrices, scaler):
     """Train this fold's agent unless its checkpoint is already on disk."""
     directory = checkpointDir(cfg, fold, arm, algo, seed)
     if (directory / "agent.zip").exists():
@@ -213,8 +220,7 @@ def _ensureTrained(cfg, fold, arm, algo, seed, parent, trainPrices, baselines, s
             f"the earlier folds first, or pass arms=('cold',) to fit each fold fresh"
         )
     trainOne(
-        algo, trainPrices, SchadeDegradation(*cfg.battery), baselines=baselines,
-        seed=seed, timesteps=cfg.warmTimesteps if warmFrom else cfg.coldTimesteps,
+        algo, trainPrices, SchadeDegradation(*cfg.battery), seed=seed, timesteps=cfg.warmTimesteps if warmFrom else cfg.coldTimesteps,
         calendar=cfg.calendar, horizon=cfg.horizon, rewardScale=cfg.rewardScale,
         outDir=directory.parent, scaler=scaler, warmFrom=warmFrom,
     )
@@ -261,7 +267,6 @@ def runRolling(cfg, onProgress=None):
     plan = _plan(cfg)
     existing = records.readDays(cfg.resultsDir, cfg.region)
     done = records.completedUnits(existing)
-    trainDays = cfg.trainWeeks * 7
     testDays = cfg.testWeeks * 7
     written = 0
 
@@ -274,8 +279,6 @@ def runRolling(cfg, onProgress=None):
         testPrices = folds.sliceWindow(plan.prices, fold.testStart, fold.testEnd)
         folds.requireFullDays(testPrices, fold.testStart, fold.testEnd)
 
-        trainBaselines = [record["profitPerInterval"] for record in
-                          _foldRecords(cfg, plan, fold.trainStart, trainDays)]
         testRecords = _foldRecords(cfg, plan, fold.testStart, testDays)
         testBaselines = [record["profitPerInterval"] for record in testRecords]
         bounds = [record["dualBound"] for record in testRecords]
@@ -290,7 +293,7 @@ def runRolling(cfg, onProgress=None):
                                             arm, algo, seed))
                     checkpoints[seed] = _ensureTrained(
                         cfg, fold.index, arm, algo, seed, parent, trainPrices,
-                        trainBaselines, plan.scaler)
+                        plan.scaler)
 
                 for source in cfg.priceSources:
                     pending = [seed for seed in cfg.seeds

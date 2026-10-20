@@ -121,7 +121,7 @@ cover.
   caches one per window, `train` fits one agent per seed, `eval` scores them. A window is
   two dates or a named `--split`.
 
-- **`scripts/overnight.sh`** — the six stages of the full experiment in order, each
+- **`scripts/overnight.sh`** — the five stages of the full experiment in order, each
   resumable because the oracle cache is keyed on its own parameters.
 - **`scripts/rolling.sh`** — the two stages of the rolling-origin backtest: the discrete
   oracle cache over the whole span, then the 52 folds.
@@ -157,23 +157,20 @@ cover.
   Measured on NSW1 2024-01-10, discrete, no calendar, 0.02 gap: a 300s limit stopped with
   the incumbent at 14.6996 and the bound still at 17.7368, above the continuous bound of
   17.1258 and so useless as a bound. This is why the rolling backtest uses 1800s.
-- **The rolling backtest uses one discrete oracle for both roles**, unlike `train`/`eval`
-  below. Paying for discrete power on the training days buys the reward baseline nothing,
-  but one oracle under one set of settings produces every figure the backtest quotes.
-  `scripts/rolling.sh` builds that cache. The existing `data_cache/lp_baseline` entries
-  are continuous, so none of them match.
+- **The reward is raw profit; no oracle baseline is subtracted.** The oracle is only the
+  bound the agent is scored against, so `train` solves nothing, and the rolling backtest
+  needs its discrete oracle cache over the test days only (from the first fold's test
+  start). The rolling manifest carries `reward: profit`, so a result set from the old
+  baselined reward refuses to resume under it. The existing `data_cache/lp_baseline`
+  entries are continuous, so none of them match the rolling oracle.
 - **Rolling test windows never overlap.** `enumerateFolds` refuses `stepWeeks` below
   `testWeeks`, because a shared trading day would count twice in every pooled figure.
-- The reward baseline and the reported bound are different jobs and use different
-  oracles. The baseline only has to be constant per window and interval, so the cheap
-  continuous solve does it; the bound must be discrete. See `config.py`.
 - **Episode windows align to 04:00, the NEM trading day boundary, and that is
   load-bearing.** PREDISPATCH always stops at the end of a trading day, so its horizon
   depends on the time of day: a 04:00 run reaches 288 intervals, 08:00 reaches 240, and
   12:00 only 192. 04:00 is the one run time where exactly one episode fits.
-- `gamma` must stay 1.0 while the reward subtracts a per-interval baseline. Under
-  discounting the subtraction stops being a constant shift and reweights the oracle's own
-  profit profile into the agent's incentives.
+- `gamma` is 1.0: an episode is one trading day of profit, and every interval counts
+  the same.
 - **A PREDISPATCH run is filed under its trading day.** The run labelled 04:00 on the
   1st is the previous trading day's last and sits in the previous month's MMSDM file;
   `fileLag` in `forecasts.py` is why `runRows` reads that month too.

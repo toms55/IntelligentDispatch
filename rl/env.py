@@ -22,7 +22,9 @@ class BessEnv(gymnasium.Env):
     """One episode is one LP chunk: `horizon` intervals from a fixed starting SoC.
 
     prices: a pandas Series of RRP with a DatetimeIndex. baseline: per-window lists of
-    the LP's own per-interval profit, keyed by window index. Needs `gamma = 1`.
+    the LP's own per-interval profit, keyed by window index. It is reporting only: it
+    fills `lpProfit` and the episode's `regret`, and never enters the reward, which is
+    the agent's own profit.
 
     scaler: the price transform the observation uses. It defaults to the cap in force at
     the end of `prices`, which is right for a fresh run. When you score a checkpoint,
@@ -97,7 +99,7 @@ class BessEnv(gymnasium.Env):
         qCd, qCal, degradationCost = self._degradation(socPrev, socNew)
         profit = revenue - degradationCost
         baseline = self._baselineAt(self.stepIndex)
-        reward = (profit - baseline) / self.rewardScale
+        reward = profit / self.rewardScale
 
         self.totals["revenue"] += revenue
         self.totals["degradation"] += degradationCost
