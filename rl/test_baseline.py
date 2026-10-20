@@ -48,6 +48,9 @@ def fakeSolve(monkeypatch):
         )
 
     monkeypatch.setattr(baseline, "solve", solve)
+    # In-process, so the calls land in this list rather than in a forked child's copy.
+    monkeypatch.setattr(baseline, "_withDeadline",
+                        lambda seconds, function, *a, **k: function(*a, **k))
     return calls
 
 
@@ -140,6 +143,79 @@ class TestSolveWindow:
             model=paper, cacheDir=tmp_path,
         )
         assert fakeSolve[0]["discretePower"] is True
+
+
+def _quick(value):
+    return value
+
+
+def _hang():
+    import time
+    time.sleep(60)
+
+
+class TestWithDeadline:
+    def test_returns_what_the_function_returns(self):
+        assert baseline._withDeadline(30, _quick, 7) == 7
+
+    def test_kills_a_function_that_overruns(self):
+        with pytest.raises(TimeoutError):
+            baseline._withDeadline(0.5, _hang)
+
+
+class TestFallback:
+    @pytest.fixture
+    def overruns(self, monkeypatch, fakeSolve):
+        """Make the first `count` attempts overrun."""
+        def install(count):
+            def deadline(seconds, function, *a, **k):
+                if len(fakeSolve) < count:
+                    function(*a, **k)
+                    raise TimeoutError
+                return function(*a, **k)
+            monkeypatch.setattr(baseline, "_withDeadline", deadline)
+        return install
+
+    def test_kills_past_the_limit_plus_grace(self, paper, series, monkeypatch, fakeSolve,
+                                             tmp_path):
+        seen = []
+        monkeypatch.setattr(baseline, "_withDeadline", lambda seconds, function, *a, **k:
+                            seen.append(seconds) or function(*a, **k))
+        baseline.solveWindow(series.to_numpy(), list(series.index), "SA1",
+                             horizon=len(series), model=paper, cacheDir=tmp_path,
+                             timeLimit=100)
+        assert seen == [100 + baseline.killGrace]
+
+    def test_a_clean_solve_is_not_a_fallback(self, paper, series, fakeSolve, tmp_path):
+        record = baseline.solveWindow(series.to_numpy(), list(series.index), "SA1",
+                                      horizon=len(series), model=paper, cacheDir=tmp_path)
+        assert record["fallback"] is None
+        assert baseline.timedOut([record], 0.01) == []
+
+    def test_retries_with_restarts_off(self, paper, series, fakeSolve, overruns, tmp_path):
+        overruns(1)
+        record = baseline.solveWindow(series.to_numpy(), list(series.index), "SA1",
+                                      horizon=len(series), model=paper, cacheDir=tmp_path)
+        assert record["fallback"] == "noRestart"
+        assert fakeSolve[1]["options"] == {"mip_allow_restart": False}
+        assert fakeSolve[1]["discretePower"] is True
+
+    def test_then_falls_back_to_the_continuous_bound(self, paper, series, fakeSolve,
+                                                    overruns, tmp_path):
+        overruns(2)
+        record = baseline.solveWindow(series.to_numpy(), list(series.index), "SA1",
+                                      horizon=len(series), model=paper, cacheDir=tmp_path)
+        assert record["fallback"] == "continuous"
+        assert fakeSolve[2]["discretePower"] is False
+        assert baseline.timedOut([record], 0.01) == [record]
+
+    def test_gives_up_after_every_attempt_overruns(self, paper, series, fakeSolve,
+                                                   overruns, tmp_path):
+        overruns(3)
+        with pytest.raises(TimeoutError):
+            baseline.solveWindow(series.to_numpy(), list(series.index), "SA1",
+                                 horizon=len(series), model=paper, cacheDir=tmp_path)
+        assert list(tmp_path.glob("*.json")) == []
 
 
 class TestBuildBaseline:

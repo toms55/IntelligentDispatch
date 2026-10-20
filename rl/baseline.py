@@ -1,6 +1,7 @@
 """Per-window oracle solutions, solved once and cached (TODO.txt step 1 chunking)."""
 import hashlib
 import json
+import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
@@ -48,9 +49,9 @@ def solveWindow(prices, timestamps, region, horizon=config.episode_intervals,
     if path.exists():
         return json.loads(path.read_text())
 
-    schedule = solve(list(prices), model, initialSoc=initialSoc, dtHours=dtHours,
-                     calendar=calendar, discretePower=discretePower,
-                     timeLimit=timeLimit, gap=gap, threads=threads)
+    common = dict(initialSoc=initialSoc, dtHours=dtHours, calendar=calendar,
+                  timeLimit=timeLimit, gap=gap, threads=threads)
+    schedule, fallback = _solveWithFallback(list(prices), model, discretePower, common)
     record = {
         "start": timestamps[0].isoformat(),
         "profitPerInterval": list(schedule.profitPerInterval),
@@ -65,10 +66,67 @@ def solveWindow(prices, timestamps, region, horizon=config.episode_intervals,
         "degradationCost": schedule.degradationCost,
         "status": schedule.status,
         "mipGap": schedule.mipGap,
+        "fallback": fallback,
     }
     directory.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(record))
     return record
+
+
+# HiGHS 1.14 can stop checking its time limit after a MIP restart: NSW1 2023-11-02 ran
+# 19 hours against an 1800s limit, holding up a whole oracle job. So every limited solve
+# runs in a child that is killed past the limit plus this grace, and a killed solve is
+# retried with restarts off, then as the continuous oracle. The continuous optimum is
+# never below the discrete one, so its dual bound is still a valid, looser, bound.
+killGrace = 300
+
+
+def _solveWithFallback(prices, model, discretePower, common):
+    """(Schedule, None) normally, else (Schedule, the fallback that produced it)."""
+    attempts = [(None, dict(discretePower=discretePower))]
+    if discretePower:
+        attempts += [
+            ("noRestart", dict(discretePower=True,
+                               options={"mip_allow_restart": False})),
+            ("continuous", dict(discretePower=False)),
+        ]
+    timeLimit = common["timeLimit"]
+    for name, settings in attempts:
+        if timeLimit is None:
+            return solve(prices, model, **common, **settings), name
+        try:
+            return _withDeadline(timeLimit + killGrace, solve, prices, model,
+                                 **common, **settings), name
+        except TimeoutError:
+            continue
+    raise TimeoutError(f"every oracle attempt overran {timeLimit}s + {killGrace}s")
+
+
+def _runInChild(connection, function, args, kwargs):
+    connection.send(function(*args, **kwargs))
+    connection.close()
+
+
+def _withDeadline(seconds, function, *args, **kwargs):
+    """function(*args, **kwargs) in a forked child, killed after `seconds`."""
+    context = multiprocessing.get_context("fork")
+    receiver, sender = context.Pipe(duplex=False)
+    child = context.Process(target=_runInChild, args=(sender, function, args, kwargs))
+    child.start()
+    sender.close()
+    try:
+        if not receiver.poll(seconds):
+            raise TimeoutError(f"{function.__name__} overran {seconds}s")
+        return receiver.recv()
+    except EOFError:
+        child.join()
+        raise RuntimeError(f"{function.__name__} died with exit code "
+                           f"{child.exitcode}") from None
+    finally:
+        if child.is_alive():
+            child.kill()
+        child.join()
+        receiver.close()
 
 
 def buildBaseline(prices, region=config.default_region,
@@ -126,6 +184,7 @@ def timedOut(records, requestedGap):
     return [
         record for record in records
         if record["mipGap"] is None or record["mipGap"] > requestedGap + 1e-9
+        or record.get("fallback")
     ]
 
 
