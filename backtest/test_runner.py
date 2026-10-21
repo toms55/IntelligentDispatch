@@ -366,7 +366,7 @@ class TestForecastSource:
 
 
 class TestManifest:
-    # The refresh changes what a forecast arm sees, so a forecast result set records it.
+    # The refresh changes what a forecast-priced run sees, so a forecast result set records it.
     def test_a_forecast_run_records_the_refresh(self, config):
         cfg = config._replace(priceSources=("realised", "forecast"))
         assert runner.manifestOf(cfg)["forecastEvery"] == 48

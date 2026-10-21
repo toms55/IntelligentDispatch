@@ -8,6 +8,11 @@
 #     qsub -W depend=afterok:<oracle job ids> scripts/rolling2023_folds.pbs
 #     qsub scripts/rolling2023_folds.pbs        # the cache is already complete
 #     qsub -v OUT=/abs/runs/x,RESULTS=/abs/results/x scripts/rolling2023_folds.pbs
+#     qsub -v TRAIN_MODES=cold,OUT=...,RESULTS=... scripts/rolling2023_folds.pbs
+#
+# TRAIN_MODES=cold fits every fold fresh at the cold budget instead of continuing the
+# previous fold's checkpoint. Give it its own OUT and RESULTS, because a result set
+# records its train modes.
 #
 # Each seed's chain is independent, so each seed runs in its own process. They write to
 # separate result directories, because the runner rewrites a fold CSV whole and two
@@ -28,6 +33,7 @@ PY=.venv/bin/python
 
 SEEDS=${SEEDS:-"0 1 2 3 4"}
 REGION=${REGION:-NSW1}   # pass -v REGION=SA1 etc.
+TRAIN_MODES=${TRAIN_MODES:-warm}   # warm, cold, or "warm cold"
 # Not runs/rolling2023: those names belonged to the oracle-baselined reward.
 OUT=${OUT:-runs/rolling2023_profit}
 RESULTS=${RESULTS:-results/rolling2023_profit}
@@ -38,7 +44,7 @@ mkdir -p "$OUT"
 pids=()
 for seed in $SEEDS; do
   $PY -u -m cli rolling --split "all=2023-01-01T04:00..2026-10-01T04:00" --region "$REGION" \
-    --train-weeks 52 --test-weeks 1 --step-weeks 1 --algo maskableppo \
+    --train-weeks 52 --test-weeks 1 --step-weeks 1 --algo maskableppo --train-modes $TRAIN_MODES \
     --cap-date 2026-10-01T04:00 --baseline-oracle discrete --no-calendar \
     --gap 0.02 --time-limit 1800 --price-source both --seeds "$seed" \
     --out "$OUT" --results "$RESULTS/seed$seed" > "$OUT/seed$seed.log" 2>&1 &
