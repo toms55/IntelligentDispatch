@@ -4,12 +4,14 @@ Every function is a pure function of a frame and returns numbers or a Plotly fig
 none of it needs a running server. No number is computed here: the tiles call
 `backtest.metrics`, which is the only module in the project that divides.
 
-Colour follows the job the data does. Profit has polarity, so the calendar uses the
-diverging blue-to-red pair with a neutral grey at zero. The high-volatility marker
-carries no hue at all: it is a dot in primary ink with a surface ring. A third hue has
-nowhere to sit beside a diverging scale that already holds a cool and a warm pole, and
-every candidate failed the colour-vision separation check against the red pole.
+Colour follows the job the data does. Profit has polarity, so a calendar cell is green
+above zero and red below, with a neutral grey at zero. The high-volatility dot is amber,
+which is the one hue that separates from both poles under red-green colour blindness. It
+also sits under the date rather than over the fill, so the two never have to be told
+apart by hue alone.
 """
+import calendar as calendarModule
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -23,8 +25,9 @@ secondaryInk = "#52514e"
 mutedInk = "#898781"
 gridline = "#e1e0d9"
 axisLine = "#c3c2b7"
-profitPole = "#2a78d6"
+profitPole = "#1f9d6a"
 lossPole = "#e34948"
+volDot = "#e8a33a"
 neutral = "#f0efec"
 series = {"realised": "#2a78d6", "forecast": "#eb6834",
           "agent": "#1baf7a", "oracle": "#4a3aa7"}
@@ -62,57 +65,6 @@ def summaryTiles(frame):
              "raw": raw, "sub": sub} for label, value, raw, sub in rows]
 
 
-def volatilityTiles(frame):
-    """The same summary split on the volatility label. Both sides are always present."""
-    buckets = metrics.byBucket(frame)
-    total = sum(side["oracleProfit"] for side in buckets.values())
-    out = []
-    for high, name in ((True, "High volatility"), (False, "Other days")):
-        side = buckets[high]
-        out.append({
-            "bucket": name, "days": side["days"],
-            "agentProfit": side["agentProfit"], "oracleProfit": side["oracleProfit"],
-            "captured": side["captured"],
-            "oracleShare": side["oracleProfit"] / total if total else float("nan"),
-        })
-    return out
-
-
-def modelPanel(manifest):
-    """The model and MDP description, read from the manifest so a new algorithm needs
-    no change here."""
-    def listed(key, default="--"):
-        value = manifest.get(key)
-        if value in (None, [], ()):
-            return default
-        return ", ".join(str(item) for item in value) if isinstance(
-            value, (list, tuple)) else str(value)
-
-    weeks = manifest.get("trainWeeks")
-    return [
-        ("Algorithm", listed("algos")),
-        ("Arm", listed("arms")),
-        ("Seeds", listed("seeds")),
-        ("Training window", "--" if weeks is None else f"{weeks} weeks"),
-        ("Test window", f"{manifest.get('testWeeks', '--')} week(s), "
-                        f"step {manifest.get('stepWeeks', '--')}"),
-        ("Timesteps", f"{manifest.get('coldTimesteps', '--')} cold, "
-                      f"{manifest.get('warmTimesteps', '--')} warm top-up"),
-        ("Price source", listed("priceSources")),
-        ("Price cap pinned to", str(manifest.get("capDate", "--"))),
-        ("Observation", f"{config.observation_size} slots: state of charge, "
-                        f"{config.five_minute_interval_count} five-minute prices, "
-                        f"{config.price_bucket_count} half-hour means, intervals left"),
-        ("Actions", "3: charge at the rated power, idle, discharge at the rated power"),
-        ("Reward", "interval profit after degradation, less the oracle baseline, "
-                   f"scaled by {manifest.get('rewardScale', '--')}"),
-        ("Oracle", f"perfect foresight MILP, calendar aging "
-                   f"{'on' if manifest.get('calendar') else 'off'}, "
-                   f"{'discrete' if manifest.get('discretePower') else 'continuous'} "
-                   f"power, gap {manifest.get('gap', '--')}"),
-    ]
-
-
 def _emptyFigure(message):
     figure = go.Figure()
     figure.add_annotation(text=message, showarrow=False, x=0.5, y=0.5,
@@ -133,109 +85,128 @@ def _layout(**extra):
     return base
 
 
-calendarMetrics = {
-    "captured": dict(label="Captured", tickformat=".0%", hover="%{z:.1%} captured"),
-    "agentProfit": dict(label="Profit $", tickformat="$,.0f", hover="$%{z:,.2f}"),
-}
+def monthFigure(frame, month, selected=None):
+    """One calendar month, weekdays across and weeks down.
 
+    Fill is the day's profit, green above zero and red below, so a loss can never read
+    as a win. An amber dot under the date marks a high-volatility day. A day the backtest
+    never tested is left unfilled but still carries its number, so the grid reads as a
+    month rather than as a chart.
 
-def calendarFigure(frame, metric="captured"):
-    """One cell per test day, weeks down and weekdays across.
-
-    Fill is diverging and centred on zero, so a loss can never read as a win. A dot in
-    primary ink marks a high-volatility day.
-
-    Captured share is the default rather than dollars because day profit is heavily
-    tailed: a handful of spike days are worth twenty times a normal one, and on a dollar
-    scale every other day collapses to the midpoint. Captured carries the same sign, so
-    the profitable and unprofitable reading is unchanged. Either way the scale clamps at
-    the 95th percentile of absolute value, and the hover carries both true figures.
+    Day profit is heavily tailed: a few spike days are worth twenty times a normal one,
+    and on a raw scale every other day collapses to the midpoint. The scale therefore
+    clamps at the 95th percentile of absolute profit, and the hover carries the true
+    figures.
     """
+    month = pd.Timestamp(month)
+    first = month.normalize().replace(day=1)
+    weekdayOffset = int(first.dayofweek)
+    length = calendarModule.monthrange(first.year, first.month)[1]
+    rows = -(-(weekdayOffset + length) // 7)
+
     days = metrics.perDay(frame)
-    if days.empty:
-        return _emptyFigure("no days in this selection")
-    days = days.groupby("testDay", as_index=False).agg(
-        agentProfit=("agentProfit", "sum"), oracleProfit=("oracleProfit", "sum"),
-        highVol=("highVol", "first"), fold=("fold", "first")).sort_values("testDay")
-    days["captured"] = np.where(days.oracleProfit > 0,
-                                days.agentProfit / days.oracleProfit, np.nan)
-    style = calendarMetrics[metric]
+    if not days.empty:
+        days = days.groupby("testDay", as_index=False).agg(
+            agentProfit=("agentProfit", "sum"), oracleProfit=("oracleProfit", "sum"),
+            highVol=("highVol", "first"), fold=("fold", "first"))
 
-    stamps = pd.to_datetime(days.testDay)
-    firstMonday = (stamps.min()
-                   - pd.Timedelta(days=int(stamps.min().dayofweek))).normalize()
-    column = stamps.dt.dayofweek.to_numpy()
-    row = ((stamps.dt.normalize() - firstMonday).dt.days // 7).to_numpy()
-    weeks = int(row.max()) + 1
+    profit = {}
+    for row in days.to_dict("records"):
+        profit[pd.Timestamp(row["testDay"]).day] = row
 
-    grid = np.full((weeks, 7), np.nan)
-    extra = np.empty((weeks, 7, 4), dtype=object)
+    grid = np.full((rows, 7), np.nan)
+    extra = np.empty((rows, 7, 4), dtype=object)
     extra[:] = ""
-    grid[row, column] = days[metric].to_numpy(dtype=float)
-    extra[row, column, 0] = stamps.dt.date.astype(str).to_numpy()
-    extra[row, column, 1] = days.fold.astype(int).to_numpy()
-    extra[row, column, 2] = days.agentProfit.to_numpy(dtype=float)
-    extra[row, column, 3] = days.oracleProfit.to_numpy(dtype=float)
+    for number in range(1, length + 1):
+        cell = weekdayOffset + number - 1
+        row, column = divmod(cell, 7)
+        found = profit.get(number)
+        extra[row, column] = [str(first.replace(day=number).date()),
+                              "" if found is None else int(found["fold"]),
+                              np.nan if found is None else found["agentProfit"],
+                              np.nan if found is None else found["oracleProfit"]]
+        if found is not None:
+            grid[row, column] = found["agentProfit"]
 
-    # A metric that is NaN everywhere (every oracle day at or below zero) would make
-    # the percentile NaN, and a NaN colour range draws nothing.
+    # A month the agent made nothing on would give a NaN percentile, and a NaN colour
+    # range draws no fill at all.
     limit = (float(np.nanpercentile(np.abs(grid), 95))
              if np.isfinite(grid).any() else 1.0) or 1.0
-    weekLabels = [f"{(firstMonday + pd.Timedelta(weeks=n)):%-d %b}"
-                  for n in range(weeks)]
 
     figure = go.Figure()
     figure.add_trace(go.Heatmap(
-        z=grid, x=weekdayNames, y=weekLabels, customdata=extra,
+        z=grid, x=list(range(7)), y=list(range(rows)), customdata=extra,
         zmid=0, zmin=-limit, zmax=limit,
         colorscale=[[0.0, lossPole], [0.5, neutral], [1.0, profitPole]],
-        # A 2px surface gap between fills, as the mark spec asks.
-        xgap=2, ygap=2, hoverongaps=False,
-        colorbar=dict(title=dict(text=style["label"], side="top"), thickness=10,
-                      outlinewidth=0, tickcolor=axisLine, tickformat=style["tickformat"],
-                      tickfont=dict(color=mutedInk)),
+        xgap=3, ygap=3, hoverongaps=False, showscale=False,
         hovertemplate=("%{customdata[0]} · fold %{customdata[1]}<br>"
-                       + style["hover"]
-                       + "<br>agent $%{customdata[2]:,.2f}"
+                       "profit $%{customdata[2]:,.2f}"
                        "<br>oracle $%{customdata[3]:,.2f}<extra></extra>"),
     ))
 
-    marked = days.highVol.to_numpy(dtype=bool)
+    numbers = dict(x=[], y=[], text=[], colour=[], customdata=[])
+    dots = dict(x=[], y=[], customdata=[])
+    for number in range(1, length + 1):
+        row, column = divmod(weekdayOffset + number - 1, 7)
+        found = profit.get(number)
+        filled = found is not None
+        # White on a saturated fill, ink on a pale one. Judged against the clamped
+        # range, which is what the fill actually uses.
+        strong = filled and abs(found["agentProfit"]) > limit * 0.55
+        numbers["x"].append(column)
+        numbers["y"].append(row - 0.22)
+        numbers["text"].append(str(number))
+        numbers["colour"].append(surface if strong else
+                                 (ink if filled else mutedInk))
+        numbers["customdata"].append(extra[row, column])
+        if filled and bool(found["highVol"]):
+            dots["x"].append(column)
+            dots["y"].append(row + 0.2)
+            dots["customdata"].append(extra[row, column])
+
     figure.add_trace(go.Scatter(
-        x=[weekdayNames[index] for index in column[marked]],
-        y=[weekLabels[index] for index in row[marked]],
-        mode="markers", name="High volatility",
-        marker=dict(symbol="circle", size=9, color=ink,
-                    line=dict(color=surface, width=2)),
-        hoverinfo="skip", showlegend=True,
-    ))
+        x=numbers["x"], y=numbers["y"], mode="text", text=numbers["text"],
+        textfont=dict(color=numbers["colour"], size=13),
+        customdata=numbers["customdata"], hoverinfo="skip", showlegend=False))
+    if dots["x"]:
+        figure.add_trace(go.Scatter(
+            x=dots["x"], y=dots["y"], mode="markers", name="High volatility",
+            marker=dict(symbol="circle", size=8, color=volDot),
+            customdata=dots["customdata"], hoverinfo="skip", showlegend=True))
+
+    shapes = []
+    if selected is not None:
+        chosen = pd.Timestamp(selected)
+        if (chosen.year, chosen.month) == (first.year, first.month):
+            row, column = divmod(weekdayOffset + chosen.day - 1, 7)
+            shapes = [dict(type="rect", x0=column - 0.5, x1=column + 0.5,
+                           y0=row - 0.5, y1=row + 0.5, line=dict(color=ink, width=2),
+                           fillcolor="rgba(0,0,0,0)")]
 
     figure.update_layout(**_layout(
-        height=140 + 44 * weeks, margin=dict(l=76, r=24, t=34, b=56),
-        # The weekday row sits on top, so the legend goes under the grid rather than
-        # colliding with it.
+        height=120 + 62 * rows, margin=dict(l=24, r=24, t=34, b=46), shapes=shapes,
         legend=dict(orientation="h", yanchor="top", y=-0.04, x=0,
                     font=dict(color=secondaryInk)),
     ))
     figure.update_xaxes(side="top", showgrid=False, zeroline=False, showline=False,
-                        tickfont=dict(color=mutedInk))
+                        tickmode="array", tickvals=list(range(7)), ticktext=weekdayNames,
+                        range=[-0.5, 6.5], tickfont=dict(color=mutedInk))
     figure.update_yaxes(autorange="reversed", showgrid=False, zeroline=False,
-                        showline=False, tickfont=dict(color=mutedInk),
-                        title=dict(text="Week starting",
-                                   font=dict(color=mutedInk, size=12)))
+                        showline=False, showticklabels=False)
     return figure
 
 
-def dayFigure(trajectory, day, algo=None, arm=None):
+def dayFigure(trajectory, day, algo=None, trainMode=None, priceSource=None):
     """One test day: the price paths on top, the state of charge below.
 
     Two panels rather than two y-scales. Price in $/MWh and state of charge in 0-1 do
-    not share an axis. The oracle series the runner writes is kept whichever agent arm
+    not share an axis. The oracle series the runner writes is kept whichever agent train mode
     is selected, so the day always shows what perfect foresight would have done.
     """
     rows = trajectory
-    oracle = rows[rows.arm == "oracle"] if not rows.empty else rows
-    for column, wanted in (("algo", algo), ("arm", arm)):
+    oracle = rows[rows.trainMode == "oracle"] if not rows.empty else rows
+    for column, wanted in (("algo", algo), ("trainMode", trainMode),
+                           ("priceSource", priceSource)):
         if wanted is not None and not rows.empty:
             rows = rows[rows[column] == wanted]
     if rows.empty:

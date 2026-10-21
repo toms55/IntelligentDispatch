@@ -19,12 +19,12 @@ def frame():
     return pd.DataFrame(dayRows()).astype({"testDay": "datetime64[ns]"})
 
 
-def trajectoryRows(algo="maskableppo", arm="warm", sources=("realised", "forecast")):
+def trajectoryRows(algo="maskableppo", trainMode="warm", sources=("realised", "forecast")):
     rows = []
     for source in sources:
         for step in range(288):
             rows.append({
-                "fold": 0, "algo": algo, "arm": arm, "seed": 0,
+                "fold": 0, "algo": algo, "trainMode": trainMode, "seed": 0,
                 "priceSource": source, "testDay": DAY, "interval": step,
                 "settlementdate": DAY + timedelta(minutes=5 * (step + 1)),
                 "price": 50.0 + step, "observedPrice": 50.0 + step + 3.0,
@@ -35,14 +35,14 @@ def trajectoryRows(algo="maskableppo", arm="warm", sources=("realised", "forecas
 
 @pytest.fixture
 def trajectory():
-    """One day for the realised and the forecast arm, as the runner writes it."""
+    """One day for the realised and the forecast price source, as the runner writes it."""
     return pd.DataFrame(trajectoryRows())
 
 
 @pytest.fixture
 def withOracle(trajectory):
-    """The same day plus the arm="oracle" series the runner writes beside the agent."""
-    oracle = pd.DataFrame(trajectoryRows(algo="oracle", arm="oracle",
+    """The same day plus the trainMode="oracle" series the runner writes beside the agent."""
+    oracle = pd.DataFrame(trajectoryRows(algo="oracle", trainMode="oracle",
                                          sources=("realised",)))
     oracle["soc"] = np.linspace(0.5, 0.9, 288)
     return pd.concat([trajectory, oracle], ignore_index=True)
@@ -58,82 +58,98 @@ class TestSummaryTiles:
         assert tiles["Win rate"] == pytest.approx(wanted["winRate"])
 
     # The high and low volatility split is always shown, both sides present.
-    def test_both_volatility_buckets_are_reported(self, frame):
-        buckets = figures.volatilityTiles(frame)
-        assert [row["bucket"] for row in buckets] == ["High volatility", "Other days"]
-        assert buckets[0]["days"] + buckets[1]["days"] == len(metrics.perDay(frame))
-
-    # An empty selection gives tiles that say so rather than raising.
     def test_an_empty_frame_renders_a_message(self, frame):
         tiles = figures.summaryTiles(frame.iloc[0:0])
         assert all(tile["value"] == "no data" for tile in tiles)
 
 
-class TestModelPanel:
-    # Every row is read from the manifest, so config.py cannot drift from the display.
-    def test_it_reads_the_manifest(self):
-        rows = dict(figures.modelPanel({"algos": ["dqn"], "trainWeeks": 26,
-                                        "warmTimesteps": 1, "coldTimesteps": 2,
-                                        "seeds": [0, 1], "arms": ["warm"],
-                                        "horizon": 288, "capDate": "2026-01-01T04:00:00",
-                                        "priceSources": ["realised"]}))
-        assert rows["Algorithm"] == "dqn"
-        assert rows["Training window"] == "26 weeks"
-
-    # An algorithm the dashboard has never seen renders without any change to it.
-    def test_an_unknown_algorithm_renders(self):
-        rows = dict(figures.modelPanel({"algos": ["sac"]}))
-        assert rows["Algorithm"] == "sac"
-
-    # The MDP description is fixed by config.py and states the observation layout.
-    def test_the_mdp_rows_state_the_observation_layout(self):
-        rows = dict(figures.modelPanel({}))
-        assert "60" in rows["Observation"]
-        assert "3" in rows["Actions"]
+def _traces(figure, mode):
+    """The scatter traces drawn in one mode. The heatmap has no mode at all."""
+    return [trace for trace in figure.data if getattr(trace, "mode", None) == mode]
 
 
-class TestCalendar:
-    # One filled cell per test day, no gaps and no extras.
-    def test_one_cell_per_test_day(self, frame):
-        grid = figures.calendarFigure(frame).data[0].z
-        assert int(np.isfinite(np.asarray(grid, dtype=float)).sum()) == len(
-            metrics.perDay(frame))
+class TestMonth:
+    # The grid holds whole weeks, and every day of the month carries its number.
+    def test_it_draws_one_cell_per_day_of_the_month(self, frame):
+        figure = figures.monthFigure(frame, DAY)
+        grid = np.array(figure.data[0].z)
+        assert grid.shape[1] == 7 and grid.size % 7 == 0
+        numbers = _traces(figure, "text")[0]
+        assert list(numbers.text) == [str(n) for n in range(1, 32)]
 
-    # The high-volatility marker sits on exactly the flagged days.
-    def test_the_marker_marks_only_high_volatility_days(self, frame):
-        figure = figures.calendarFigure(frame)
-        marked = [trace for trace in figure.data if trace.name == "High volatility"][0]
-        assert len(marked.x) == int(metrics.perDay(frame).highVol.sum())
+    # A day the backtest never tested has no fill, but keeps its number.
+    def test_an_untested_day_is_unfilled(self, frame):
+        figure = figures.monthFigure(frame, DAY)
+        grid = np.array(figure.data[0].z, dtype=float)
+        # The fixture writes 14 days from the 1st, so the 20th was never tested.
+        assert np.isfinite(grid).sum() == 14
+        numbers = _traces(figure, "text")[0]
+        assert "20" in list(numbers.text)
 
-    # Each cell carries its day and fold so the click callback knows what was picked.
-    def test_each_cell_carries_its_day_and_fold(self, frame):
-        cells = figures.calendarFigure(frame).data[0]
-        stamped = {str(entry[0]) for week in cells.customdata for entry in week}
-        assert str(pd.Timestamp(DAY).date()) in stamped
-        assert np.asarray(cells.customdata).shape[:2] == np.asarray(cells.z).shape
-
-    # Profit polarity is a diverging scale centred on zero, so a loss cannot read as a win.
+    # Fill is profit, and the scale is centred on zero so a loss cannot read as a win.
     def test_the_colour_scale_is_centred_on_zero(self, frame):
-        cells = figures.calendarFigure(frame).data[0]
-        assert cells.zmid == 0 and cells.zmin == -cells.zmax
+        figure = figures.monthFigure(frame, DAY)
+        heatmap = figure.data[0]
+        assert heatmap.zmid == 0 and heatmap.zmin == -heatmap.zmax
+        grid = np.array(heatmap.z, dtype=float)
+        assert np.nanmax(grid) == frame.agentProfit.max()
 
-    # One outlier day must not flatten every other cell to the midpoint.
+    # Green above zero and red below, as the top of the scale and the bottom.
+    def test_green_is_the_upper_pole(self, frame):
+        scale = figures.monthFigure(frame, DAY).data[0].colorscale
+        assert scale[0][1] == figures.lossPole and scale[-1][1] == figures.profitPole
+
+    # An outlier day cannot flatten every other day to the midpoint.
     def test_the_scale_clamps_on_an_outlier(self, frame):
-        spiked = frame.copy()
-        spiked.loc[spiked.index[0], "agentProfit"] = 10_000.0
-        figure = figures.calendarFigure(spiked, metric="agentProfit")
-        assert figure.data[0].zmax < spiked.agentProfit.max()
+        loud = frame.copy()
+        loud.loc[0, "agentProfit"] = 10000.0
+        assert (figures.monthFigure(loud, DAY).data[0].zmax
+                < figures.monthFigure(loud, DAY).data[0].z[0][2])
 
-    # Captured share is the default, because day profit is too skewed to colour raw.
-    def test_captured_is_the_default_metric(self, frame):
-        cells = figures.calendarFigure(frame).data[0]
-        assert cells.zmax <= 1.0
-        assert "Captured" in cells.colorbar.title.text
+    # The amber dot marks the high-volatility days and nothing else.
+    def test_the_dot_marks_only_high_volatility_days(self, frame):
+        figure = figures.monthFigure(frame, DAY)
+        dots = _traces(figure, "markers")[0]
+        assert dots.marker.color == figures.volDot
+        assert len(dots.x) == int(frame.highVol.sum())
 
-    # An empty selection renders an explicit message rather than an empty grid.
-    def test_an_empty_frame_renders_a_message(self, frame):
-        figure = figures.calendarFigure(frame.iloc[0:0])
-        assert figure.layout.annotations and "no" in figure.layout.annotations[0].text
+    # The dot sits under the date, so hue is never the only thing that separates them.
+    def test_the_dot_sits_under_the_number(self, frame):
+        figure = figures.monthFigure(frame, DAY)
+        numbers = _traces(figure, "text")[0]
+        dots = _traces(figure, "markers")[0]
+        assert dots.y[0] > numbers.y[0]
+
+    # A month with no high-volatility day draws no marker trace at all.
+    def test_a_quiet_month_has_no_dot(self, frame):
+        quiet = frame.copy()
+        quiet["highVol"] = False
+        assert not _traces(figures.monthFigure(quiet, DAY), "markers")
+
+    # Every cell carries the date the click handler reads, and its fold.
+    def test_each_cell_carries_its_day_and_fold(self, frame):
+        extra = np.array(figures.monthFigure(frame, DAY).data[0].customdata,
+                         dtype=object)
+        # 1 January 2025 is a Wednesday, so it sits in the third column.
+        assert extra[0][2][0] == "2025-01-01"
+        assert extra[0][2][1] == 0
+
+    # The selected day is outlined, so the stepper and the field show where they are.
+    def test_the_selected_day_is_outlined(self, frame):
+        figure = figures.monthFigure(frame, DAY, selected="2025-01-08")
+        assert len(figure.layout.shapes) == 1
+        assert not figures.monthFigure(frame, DAY).layout.shapes
+
+    # A day outside the drawn month cannot be outlined.
+    def test_a_selection_in_another_month_draws_nothing(self, frame):
+        assert not figures.monthFigure(frame, DAY, selected="2025-02-08").layout.shapes
+
+    # A month with no results still draws the month rather than an error.
+    def test_an_empty_frame_still_draws_the_month(self, frame):
+        figure = figures.monthFigure(frame.iloc[0:0], DAY)
+        numbers = _traces(figure, "text")[0]
+        assert len(numbers.text) == 31
+
 
 
 class TestDayView:
@@ -148,9 +164,9 @@ class TestDayView:
         figure = figures.dayFigure(withOracle, DAY)
         assert "Oracle SoC" in [trace.name for trace in figure.data]
 
-    # Selecting one agent arm must not filter the oracle series out with it.
+    # Selecting one agent train mode must not filter the oracle series out with it.
     def test_an_arm_filter_keeps_the_oracle(self, withOracle):
-        figure = figures.dayFigure(withOracle, DAY, algo="maskableppo", arm="warm")
+        figure = figures.dayFigure(withOracle, DAY, algo="maskableppo", trainMode="warm")
         names = [trace.name for trace in figure.data]
         assert "Oracle SoC" in names and "Agent SoC" in names
 

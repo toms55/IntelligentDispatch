@@ -20,7 +20,7 @@ def dayRows(count=14, folds=2):
     for index in range(count):
         day = DAY + timedelta(days=index)
         rows.append({
-            "fold": index // (count // folds), "algo": "maskableppo", "arm": "warm",
+            "fold": index // (count // folds), "algo": "maskableppo", "trainMode": "warm",
             "seed": 0, "priceSource": "realised", "testDay": day,
             "agentProfit": 10.0 - index, "agentRevenue": 12.0, "agentDegradation": 2.0,
             "oracleDualBound": 40.0, "oracleGap": 0.01, "spikeIntensity": 5.0 * (index % 2),
@@ -38,7 +38,7 @@ def run(tmp_path):
         records.writeFold(tmp_path, REGION, fold,
                           [row for row in rows if row["fold"] == fold])
     records.writeManifest(tmp_path, REGION, {
-        "region": REGION, "algos": ["maskableppo"], "arms": ["warm"],
+        "region": REGION, "algos": ["maskableppo"], "trainModes": ["warm"],
         "trainWeeks": 52, "warmTimesteps": 30000, "coldTimesteps": 300000,
         "seeds": [0], "capDate": "2026-01-01T04:00:00", "horizon": 288,
         "priceSources": ["realised"], "battery": [100.0, 200.0, 300000.0],
@@ -72,7 +72,7 @@ class TestSelectors:
     # The controls list what the data holds, never what config.py declares.
     def test_it_lists_only_what_is_present(self, run):
         got = data.selectors(data.loadRun(REGION, run).days)
-        assert got == {"algo": ["maskableppo"], "arm": ["warm"],
+        assert got == {"algo": ["maskableppo"], "trainMode": ["warm"],
                        "priceSource": ["realised"], "seed": [0]}
 
     # A second algorithm appears without any dashboard change.

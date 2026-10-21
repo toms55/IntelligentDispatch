@@ -16,6 +16,13 @@ from backtest import records
 defaultResults = Path("results/rolling")
 weekDays = 7
 
+# A dashboard entry is one trained model scored one way.
+modelFields = ("algo", "trainMode", "seed", "priceSource")
+
+# Every episode starts at 04:00, the NEM trading day boundary, so a calendar date must
+# be offset by this before it matches a testDay stamp.
+dayStartHour = 4
+
 
 class Run(NamedTuple):
     region: str
@@ -41,7 +48,7 @@ def loadRun(region, resultsDir=defaultResults):
 def selectors(frame):
     """The control values the data actually holds, not the ones config.py declares."""
     return {column: sorted(frame[column].unique().tolist())
-            for column in ("algo", "arm", "priceSource", "seed")}
+            for column in ("algo", "trainMode", "priceSource", "seed")}
 
 
 def scope(frame, day=None, week=None):
@@ -64,7 +71,7 @@ def foldOfDay(frame, day):
 
 
 def trajectories(run, day):
-    """Every per-interval series written for `day`, across arms and price sources."""
+    """Every per-interval series written for `day`, across train modes and price sources."""
     fold = foldOfDay(run.days, day)
     if fold is None:
         return pd.DataFrame(columns=list(records.trajectoryColumns))
@@ -74,3 +81,42 @@ def trajectories(run, day):
     frame = pd.read_parquet(path)
     return frame[pd.to_datetime(frame.testDay) == pd.Timestamp(day)]
 
+
+
+def availableRegions(resultsDir=defaultResults):
+    """Every region with at least one finished fold under `resultsDir`."""
+    root = Path(resultsDir)
+    if not root.is_dir():
+        return []
+    return sorted(child.name for child in root.iterdir()
+                  if child.is_dir() and any(child.glob("fold*.csv")))
+
+
+def modelLabel(algo, trainMode, seed, priceSource):
+    return f"{algo}-{trainMode}-s{int(seed)}-{priceSource}"
+
+
+def models(frame):
+    """One entry per trained model scored one way.
+
+    Seed and price source belong in the name because each is a separate run on disk,
+    not a separate view of one run.
+    """
+    unique = (frame[list(modelFields)].drop_duplicates()
+              .sort_values(list(modelFields)))
+    return [modelLabel(*row) for row in unique.to_numpy().tolist()]
+
+
+def modelRows(frame, label):
+    """The rows of one model entry, found by the label `models` built."""
+    if frame.empty:
+        return frame
+    keys = frame[list(modelFields)].to_numpy().tolist()
+    return frame[[modelLabel(*key) == label for key in keys]]
+
+
+def monthScope(frame, month):
+    """The rows whose test day falls in the calendar month holding `month`."""
+    if frame.empty:
+        return frame
+    return frame[frame.testDay.dt.to_period("M") == pd.Period(pd.Timestamp(month), "M")]
