@@ -10,11 +10,14 @@ data_cache/
 model/
 runs/
 
-# --- experiment outputs: only each run's actions CSV (backtest/actions.py) is kept ---
-results/*
-!results/*/
-results/*/*
-!results/*/actions_*.csv
+# --- experiment outputs: the per-fold records, not the bulk ---
+results/**
+!results/**/
+!results/**/actions_*.csv
+!results/**/fold*.csv
+!results/**/fold*.parquet
+!results/**/manifest.json
+!results/*.md
 
 # --- CLI outputs: <module>_<region>_<date>.csv/.png land in the cwd ---
 lp_*.csv
