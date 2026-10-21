@@ -163,6 +163,21 @@ class TestWithDeadline:
             baseline._withDeadline(0.5, _hang)
 
 
+def _allocate():
+    return bytearray(2**30)
+
+
+class TestMemoryCap:
+    def test_a_runaway_child_dies_alone(self, monkeypatch):
+        monkeypatch.setattr(baseline, "memoryCap", 256 * 2**20)
+        with pytest.raises(RuntimeError, match="died"):
+            baseline._withDeadline(30, _allocate)
+
+    def test_a_small_child_is_unaffected(self, monkeypatch):
+        monkeypatch.setattr(baseline, "memoryCap", 256 * 2**20)
+        assert baseline._withDeadline(30, _quick, 7) == 7
+
+
 class TestFallback:
     @pytest.fixture
     def overruns(self, monkeypatch, fakeSolve):
@@ -208,6 +223,18 @@ class TestFallback:
         assert record["fallback"] == "continuous"
         assert fakeSolve[2]["discretePower"] is False
         assert baseline.timedOut([record], 0.01) == [record]
+
+    def test_a_dead_child_falls_back_like_an_overrun(self, paper, series, fakeSolve,
+                                                     monkeypatch, tmp_path):
+        def deadline(seconds, function, *a, **k):
+            if len(fakeSolve) < 1:
+                function(*a, **k)
+                raise RuntimeError("solve died with exit code -9")
+            return function(*a, **k)
+        monkeypatch.setattr(baseline, "_withDeadline", deadline)
+        record = baseline.solveWindow(series.to_numpy(), list(series.index), "SA1",
+                                      horizon=len(series), model=paper, cacheDir=tmp_path)
+        assert record["fallback"] == "noRestart"
 
     def test_gives_up_after_every_attempt_overruns(self, paper, series, fakeSolve,
                                                    overruns, tmp_path):

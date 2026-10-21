@@ -79,6 +79,11 @@ def solveWindow(prices, timestamps, region, horizon=config.episode_intervals,
 # retried with restarts off, then as the continuous oracle. The continuous optimum is
 # never below the discrete one, so its dual bound is still a valid, looser, bound.
 killGrace = 300
+# Memory a solve may add on top of what the worker already holds. A normal discrete day
+# peaks near 1.2GB; some VIC1 days ran a worker past 8GB in minutes, and fifteen of them
+# took a 64GB-129GB job down. Hitting the cap kills that child alone, and the fallback
+# treats it like an overrun.
+memoryCap = 8 * 2**30
 
 
 def _solveWithFallback(prices, model, discretePower, common):
@@ -91,18 +96,30 @@ def _solveWithFallback(prices, model, discretePower, common):
             ("continuous", dict(discretePower=False)),
         ]
     timeLimit = common["timeLimit"]
+    failure = None
     for name, settings in attempts:
         if timeLimit is None:
             return solve(prices, model, **common, **settings), name
         try:
             return _withDeadline(timeLimit + killGrace, solve, prices, model,
                                  **common, **settings), name
-        except TimeoutError:
-            continue
-    raise TimeoutError(f"every oracle attempt overran {timeLimit}s + {killGrace}s")
+        except (TimeoutError, RuntimeError) as error:
+            failure = error
+    raise TimeoutError(f"every oracle attempt overran {timeLimit}s + {killGrace}s "
+                       f"or died (last: {failure})")
+
+
+def _capMemory(extra):
+    """Limit this process's address space to what it holds now plus `extra` bytes."""
+    import resource
+    with open("/proc/self/statm") as statm:
+        held = int(statm.read().split()[0]) * resource.getpagesize()
+    resource.setrlimit(resource.RLIMIT_AS, (held + extra, resource.RLIM_INFINITY))
 
 
 def _runInChild(connection, function, args, kwargs):
+    if memoryCap:
+        _capMemory(memoryCap)
     connection.send(function(*args, **kwargs))
     connection.close()
 
