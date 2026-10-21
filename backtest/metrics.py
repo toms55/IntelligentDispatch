@@ -69,6 +69,17 @@ def summarise(frame):
     }
 
 
+def dayFacts(frame):
+    """One day's revenue, degradation cost and spike intensity, seeds averaged."""
+    if frame.empty:
+        return {"revenue": float("nan"), "degradation": float("nan"),
+                "spikeIntensity": float("nan"), "highVol": False}
+    return {"revenue": frame.agentRevenue.mean(),
+            "degradation": frame.agentDegradation.mean(),
+            "spikeIntensity": frame.spikeIntensity.mean(),
+            "highVol": bool(frame.highVol.iloc[0])}
+
+
 def byBucket(frame):
     """The summary split on the volatility label. Both sides are always present."""
     return {high: summarise(frame[frame.highVol == high] if not frame.empty else frame)

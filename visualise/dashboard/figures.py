@@ -45,7 +45,11 @@ def _percent(value):
 
 
 def summaryTiles(frame):
-    """The headline numbers for whatever scope is selected, straight from metrics."""
+    """The headline numbers for whatever scope is selected, straight from metrics.
+
+    One day holds one row, so a win rate and a spread across folds would say nothing.
+    The last three tiles therefore describe the day itself in that case.
+    """
     got = metrics.summarise(frame)
     empty = got["days"] == 0
     rows = [
@@ -55,12 +59,26 @@ def summaryTiles(frame):
          "after degradation"),
         ("Oracle profit", _money(got["oracleProfit"]), got["oracleProfit"],
          "perfect foresight bound"),
-        ("Win rate", _percent(got["winRate"]), got["winRate"], "days above zero"),
-        ("Fold median", _percent(got["foldMedian"]), got["foldMedian"],
-         f"IQR {_percent(got['foldIqr'])}"),
-        ("Days", "no data" if empty else f"{got['days']:,}", float(got["days"]),
-         "in this scope"),
     ]
+    if got["days"] == 1:
+        facts = metrics.dayFacts(frame)
+        rows += [
+            ("Revenue", _money(facts["revenue"]), facts["revenue"],
+             "before degradation"),
+            ("Degradation", _money(facts["degradation"]), facts["degradation"],
+             "cost of the day's cycling"),
+            ("Spike intensity", _money(facts["spikeIntensity"]),
+             facts["spikeIntensity"],
+             "high volatility day" if facts["highVol"] else "a normal day"),
+        ]
+    else:
+        rows += [
+            ("Win rate", _percent(got["winRate"]), got["winRate"], "days above zero"),
+            ("Fold median", _percent(got["foldMedian"]), got["foldMedian"],
+             f"IQR {_percent(got['foldIqr'])}"),
+            ("Days", "no data" if empty else f"{got['days']:,}", float(got["days"]),
+             "in this scope"),
+        ]
     return [{"label": label, "value": "no data" if empty else value,
              "raw": raw, "sub": sub} for label, value, raw, sub in rows]
 

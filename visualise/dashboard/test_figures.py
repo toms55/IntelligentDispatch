@@ -57,6 +57,15 @@ class TestSummaryTiles:
         assert tiles["Agent profit"] == pytest.approx(wanted["agentProfit"])
         assert tiles["Win rate"] == pytest.approx(wanted["winRate"])
 
+    # One day has no spread across folds, so it gets tiles about the day itself.
+    def test_one_day_describes_the_day(self, frame):
+        one = frame[frame.testDay == frame.testDay.iloc[0]].iloc[0:1]
+        tiles = {tile["label"]: tile["raw"] for tile in figures.summaryTiles(one)}
+        assert "Win rate" not in tiles and "Days" not in tiles
+        assert tiles["Revenue"] == pytest.approx(one.agentRevenue.iloc[0])
+        assert tiles["Degradation"] == pytest.approx(one.agentDegradation.iloc[0])
+        assert tiles["Spike intensity"] == pytest.approx(one.spikeIntensity.iloc[0])
+
     # The high and low volatility split is always shown, both sides present.
     def test_an_empty_frame_renders_a_message(self, frame):
         tiles = figures.summaryTiles(frame.iloc[0:0])
