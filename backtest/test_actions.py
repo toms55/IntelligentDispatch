@@ -33,3 +33,14 @@ class TestActionRows:
     def test_an_older_run_reads_one_run_all_day(self):
         got = actions.actionRows(trajectory(), "NSW1")
         assert (got.forecastRunTime == pd.Timestamp("2024-01-01 04:00")).all()
+
+
+class TestExportName:
+    # Every run's CSV lands in one folder, so the name alone must say which run it is.
+    def test_a_run_named_for_its_region_keeps_its_name(self):
+        assert actions.exportName("results/rolling2023_fc4h_SA1", "SA1") \
+            == "rolling2023_fc4h_SA1.csv"
+
+    def test_a_run_without_a_region_gets_one(self):
+        assert actions.exportName("results/rolling2023_profit", "NSW1") \
+            == "rolling2023_profit_NSW1.csv"

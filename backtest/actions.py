@@ -8,7 +8,10 @@ this only reshapes them.
 
     uv run python -m backtest.actions results/rolling2023 [more runs...]
 
-writes <run>/actions_<region>.csv beside each run's fold files.
+writes one CSV per run and region into results/actions/, named after the run, so every
+backtest's dispatch sits in one folder: results/actions/rolling2023_NSW1.csv,
+results/actions/rolling2023_profit_fc4h_SA1.csv. The folds job calls this once it has
+merged the seeds.
 """
 import argparse
 import json
@@ -53,20 +56,32 @@ def actionRows(trajectory, region, every=None):
     }, columns=columns)
 
 
-def exportRun(runDir):
-    """One CSV per region under runDir/all/. Returns the paths written."""
+def exportName(runDir, region):
+    """The CSV's name in the actions folder: the run's name, with the region appended
+    unless the run is already named for it."""
+    name = Path(runDir).name
+    return f"{name}.csv" if name.endswith(f"_{region}") else f"{name}_{region}.csv"
+
+
+def exportRun(runDir, outDir=None):
+    """One CSV per region under runDir/all/, written into outDir (by default the
+    actions folder beside runDir). Returns the paths written."""
+    outDir = Path(runDir).parent / "actions" if outDir is None else Path(outDir)
+    outDir.mkdir(parents=True, exist_ok=True)
     written = []
     for regionDir in sorted(Path(runDir, "all").iterdir()):
         manifest = regionDir / "manifest.json"
         every = (json.loads(manifest.read_text()).get("forecastEvery")
                  if manifest.exists() else None)
-        parts = [actionRows(pd.read_parquet(path), regionDir.name, every)
+        # Result sets from before the rename call trainMode "arm".
+        parts = [actionRows(pd.read_parquet(path).rename(columns={"arm": "trainMode"}),
+                            regionDir.name, every)
                  for path in sorted(regionDir.glob("fold*.parquet"))]
         if not parts:
             continue
         frame = (pd.concat(parts, ignore_index=True)
                  .sort_values(["seed", "algo", "trainMode", "intervalTime"]))
-        out = Path(runDir, f"actions_{regionDir.name}.csv")
+        out = outDir / exportName(runDir, regionDir.name)
         frame.to_csv(out, index=False)
         written.append(out)
     return written
@@ -75,9 +90,10 @@ def exportRun(runDir):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("runs", nargs="+", help="results/<run> directories")
+    parser.add_argument("--out", help="folder for the CSVs; default <run>/../actions")
     args = parser.parse_args(argv)
     for runDir in args.runs:
-        for path in exportRun(runDir):
+        for path in exportRun(runDir, args.out):
             print(path)
 
 

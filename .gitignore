@@ -13,7 +13,7 @@ runs/
 # --- experiment outputs: the per-fold records, not the bulk ---
 results/**
 !results/**/
-!results/**/actions_*.csv
+!results/actions/*.csv
 !results/**/fold*.csv
 !results/**/fold*.parquet
 !results/**/manifest.json

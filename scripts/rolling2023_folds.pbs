@@ -76,3 +76,6 @@ manifest = json.loads((root / "seed0" / REGION / "manifest.json").read_text())
 records.writeManifest(root / "all", REGION, {**manifest, "seeds": [int(s) for s in seeds]})
 cli._reportRolling(records.readDays(root / "all", REGION), metrics, 0.02)
 EOF
+
+# The whole backtest's dispatch as one CSV, in results/actions/ beside the run.
+$PY -m backtest.actions "$RESULTS"
