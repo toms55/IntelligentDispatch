@@ -17,11 +17,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple, Optional
 
+import numpy as np
 import pandas as pd
 
 import config
 from backtest import folds, records, volatility
-from data.forecasts import forecastMatrix, loadForecastCache
+from data.forecasts import (decisionPath, loadForecastCache, refreshMatrix,
+                            refreshRunTimes)
 from data.prices import price_series
 from degradation.schade import SchadeDegradation
 from rl.baseline import buildBaseline, cacheKey, cacheRoot
@@ -46,6 +48,7 @@ class RollingConfig(NamedTuple):
     warmTimesteps: int = 30_000
     coldTimesteps: int = 300_000
     priceSources: tuple = ("realised",)
+    forecastEvery: int = config.forecast_refresh_intervals
     horizon: int = config.episode_intervals
     rewardScale: float = config.reward_scale
     initialSoc: float = config.initial_soc
@@ -84,6 +87,10 @@ class Plan(NamedTuple):
 def manifestOf(cfg):
     """What two runs must agree on before their rows may share a result set."""
     skip = {"foldFilter", "allowSolve", "outDir", "resultsDir", "workers", "timeLimit"}
+    # The refresh only changes what a forecast-priced run sees, so a realised-only
+    # result set does not record it and stays resumable across it.
+    if "forecast" not in cfg.priceSources:
+        skip.add("forecastEvery")
     # Checkpoints trained against the old oracle-baselined reward carry no such key, so
     # this keeps a resumed run from mixing the two rewards in one result set.
     return {**{key: value for key, value in cfg._asdict().items() if key not in skip},
@@ -129,9 +136,10 @@ def _plan(cfg):
 
 
 def _forecastSource(cfg, days):
-    """The prefetched forecast paths, checked to cover every test day.
+    """The prefetched forecast paths, checked to cover every refresh run of every test
+    day, each from its run time to the episode end.
 
-    Without the check a day the prefetch missed becomes a silent NaN row, and the agent
+    Without the check a run the prefetch missed becomes a silent NaN row, and the agent
     scores as if it idled. An absent cache falls back to the live per-run path.
     """
     if "forecast" not in cfg.priceSources:
@@ -139,25 +147,34 @@ def _forecastSource(cfg, days):
     source = loadForecastCache(cfg.region)
     if source is None:
         return None
-    gaps = [day for day in days if pd.Timestamp(day) not in source.index]
+    # Each run must reach the episode end, and no further is needed.
+    needed = {run: cfg.horizon - offset for day in days
+              for offset, run in zip(range(0, cfg.horizon, cfg.forecastEvery),
+                                     refreshRunTimes(day, cfg.horizon, cfg.forecastEvery))}
+    gaps = [run for run in needed if run not in source.index]
     if gaps:
         raise ValueError(
-            f"the forecast cache for {cfg.region} is missing {len(gaps)} test day(s), "
-            f"first {gaps[0]:%Y-%m-%d}; run "
+            f"the forecast cache for {cfg.region} is missing {len(gaps)} run(s), "
+            f"first {gaps[0]:%Y-%m-%d %H:%M}; run "
             f"`cli prefetch --region {cfg.region}` over the whole span"
         )
     # A thin row is worse than a missing one: the environment zeroes the NaN padding, so
-    # the agent reads a flat $0 day and idles through it, and the loss lands in the
-    # results looking like a decision.
-    covered = source.loc[[pd.Timestamp(day) for day in days]].notna().sum(axis=1)
-    thin = covered[covered < cfg.horizon]
+    # the agent reads a flat $0 stretch and idles through it, and the loss lands in the
+    # results looking like a decision. A refresh run is never quietly replaced by the
+    # older one either, since that would change what the experiment measures.
+    runs = list(needed)
+    want = np.array([needed[run] for run in runs])
+    present = source.loc[runs].iloc[:, :cfg.horizon].notna().to_numpy()
+    covered = (present & (np.arange(cfg.horizon) < want[:, None])).sum(axis=1)
+    thin = np.flatnonzero(covered < want)
     if len(thin):
+        first = thin[0]
         raise ValueError(
-            f"{len(thin)} test day(s) carry a partial forecast, first "
-            f"{thin.index[0]:%Y-%m-%d} with {int(thin.iloc[0])} of {cfg.horizon} "
-            f"intervals; either the prefetch did not cover the whole span, or AEMO "
-            f"published no PREDISPATCH run at 04:00 that day. Drop the fold with "
-            f"--folds if it is the archive"
+            f"{len(thin)} forecast run(s) are partial, first "
+            f"{runs[first]:%Y-%m-%d %H:%M} with {int(covered[first])} of "
+            f"{int(want[first])} intervals; either the prefetch did not cover the whole "
+            f"span, or AEMO published no PREDISPATCH run at {runs[first]:%H:%M} that "
+            f"day. Drop the fold with --folds if it is the archive"
         )
     return source
 
@@ -303,9 +320,9 @@ def runRolling(cfg, onProgress=None):
                         continue
                     # allowPartial=False: a NaN row reads as a flat $0 day and the
                     # agent idles through it, so a missing run must stop the run.
-                    forecasts = (forecastMatrix(
-                        fold.testDays, cfg.region, cfg.horizon, allowPartial=False,
-                        source=plan.forecastSource)
+                    forecasts = (refreshMatrix(
+                        fold.testDays, cfg.region, cfg.horizon, cfg.forecastEvery,
+                        allowPartial=False, source=plan.forecastSource)
                         if source == "forecast" else None)
                     results = evaluateSeeds(
                         {seed: checkpoints[seed] / "agent" for seed in pending},
@@ -381,7 +398,8 @@ def _resultTrajectories(cfg, fold, algo, trainMode, source, perWindow, testPrice
     out = []
     for record in perWindow:
         day = fold.testDays[record["window"]]
-        observed = None if forecasts is None else forecasts[record["window"]]
+        observed = (None if forecasts is None
+                    else decisionPath(forecasts[record["window"]]))
         out += list(_trajectoryRows(cfg, fold.index, algo, trainMode, cfg.trajectorySeed,
                                     source, day, record["trajectory"], observed))
     return out

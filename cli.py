@@ -24,7 +24,7 @@ import pandas as pd
 
 import config
 from data.prices import price_series
-from utils import nem_interval
+from utils import nem_interval, nem_interval_hours
 from degradation.schade import SchadeDegradation
 from optimisation.lp import defaultSolver, solve
 
@@ -317,15 +317,16 @@ def _runEval(args):
 
     forecasts = None
     if args.forecast:
-        from data.forecasts import forecastMatrix
+        from data.forecasts import refreshMatrix
         from rl.baseline import chunkWindows
 
-        # Run time is one interval before the episode's first interval.
-        runTimes = [
+        # An episode opens one interval before its first interval ends.
+        dayStarts = [
             prices.index[start] - nem_interval for start in
             chunkWindows(len(prices), args.horizon)
         ]
-        forecasts = forecastMatrix(runTimes, args.region, args.horizon)
+        forecasts = refreshMatrix(dayStarts, args.region, args.horizon,
+                                  _refreshIntervals(args, args.horizon))
 
     if args.heuristic:
         from rl.env import BessEnv
@@ -403,6 +404,7 @@ def _rolling(args):
         stepWeeks=args.step_weeks, algos=tuple(args.algo), seeds=tuple(args.seeds),
         trainModes=tuple(args.trainModes), warmTimesteps=args.warm_timesteps,
         coldTimesteps=args.cold_timesteps, priceSources=sources,
+        forecastEvery=_refreshIntervals(args, args.horizon),
         horizon=args.horizon, rewardScale=args.reward_scale,
         initialSoc=args.initial_soc, calendar=not args.no_calendar,
         discretePower=args.baseline_oracle == "discrete",
@@ -435,12 +437,26 @@ def _rolling(args):
     return 0
 
 
+def _refreshIntervals(args, horizon):
+    """--forecast-refresh in dispatch intervals. Refuses one that does not divide the
+    episode, since every refresh must start on the step grid."""
+    every = args.forecast_refresh / nem_interval_hours
+    if abs(every - round(every)) > 1e-9 or round(every) <= 0 or horizon % round(every):
+        raise SystemExit(
+            f"--forecast-refresh {args.forecast_refresh:g}h must be a whole number of "
+            f"5-minute intervals that divides the {horizon}-interval episode"
+        )
+    return int(round(every))
+
+
 def _runPrefetch(args):
     from data.forecasts import prefetchForecasts
 
     start, end = _window(args)
     # Always the full episode horizon: a shorter one is a slice of this cache.
-    target = prefetchForecasts(start, end, args.region, config.episode_intervals)
+    target = prefetchForecasts(
+        start, end, args.region, config.episode_intervals,
+        every=_refreshIntervals(args, config.episode_intervals))
     print(f"wrote {target}")
     return 0
 
@@ -577,6 +593,14 @@ def main(argv=None):
                                  "the cache key does not record the limit, so a loose "
                                  f"record is permanent (default: {limitDefault})")
 
+    def addRefreshArg(parser):
+        hours = config.forecast_refresh_intervals * nem_interval_hours
+        parser.add_argument("--forecast-refresh", type=float, default=hours,
+                            metavar="HOURS",
+                            help="replace the forecast with AEMO's latest run this often "
+                                 "within an episode, from its 04:00 start; 24 is one run "
+                                 f"per day (default: {hours:g})")
+
     def addRlArgs(parser, oracleDefault=None, forecastFlag=True, algoList=False):
         parser.add_argument("--algo", default=["maskableppo"] if algoList else "maskableppo",
                             nargs="+" if algoList else None,
@@ -614,6 +638,7 @@ def main(argv=None):
                                      "published at each episode's run time, instead of "
                                      "realised prices; settlement still uses realised "
                                      "prices")
+            addRefreshArg(parser)
 
     lp = addParser("lp", "perfect-foresight MILP oracle")
     addSolverArgs(lp)
@@ -699,6 +724,7 @@ def main(argv=None):
                          default="realised",
                          help="what fills the observation's price slots; settlement always "
                               "uses realised prices (default: realised)")
+    addRefreshArg(rolling)
     rolling.add_argument("--results", default="results/rolling", metavar="DIR",
                          help="where the per-fold CSV and parquet go "
                               "(default: results/rolling)")
@@ -721,6 +747,7 @@ def main(argv=None):
     rolling.set_defaults(run=_runRolling, out="runs/rolling", no_calendar=True)
 
     prefetch = addParser("prefetch", "cache the AEMO forecast paths for a region")
+    addRefreshArg(prefetch)
     prefetch.set_defaults(run=_runPrefetch)
 
     args = parser.parse_args(argv)

@@ -1,0 +1,35 @@
+"""Tests for backtest/actions.py. Run with: uv run pytest backtest/ -q"""
+from datetime import datetime
+
+import pandas as pd
+
+from backtest import actions
+from utils import nem_interval
+
+DAY = datetime(2024, 1, 1, 4)
+
+
+def trajectory(steps=288):
+    return pd.DataFrame({
+        "fold": 0, "algo": "maskableppo", "trainMode": "warm", "seed": 0,
+        "priceSource": "forecast", "testDay": pd.Timestamp(DAY),
+        "interval": range(steps),
+        "settlementdate": [DAY + (step + 1) * nem_interval for step in range(steps)],
+        "price": 50.0, "observedPrice": 48.0, "soc": 0.5, "bought": 0.0, "sold": 0.0,
+        "profit": 0.0,
+    })
+
+
+class TestActionRows:
+    # Each decision names the run it read: the 04:00 run until 08:00, and so on.
+    def test_the_run_time_follows_the_refresh(self):
+        got = actions.actionRows(trajectory(), "NSW1", every=48)
+        assert got.forecastRunTime.iloc[0] == pd.Timestamp("2024-01-01 04:00")
+        assert got.forecastRunTime.iloc[47] == pd.Timestamp("2024-01-01 04:00")
+        assert got.forecastRunTime.iloc[48] == pd.Timestamp("2024-01-01 08:00")
+        assert got.forecastRunTime.iloc[287] == pd.Timestamp("2024-01-02 00:00")
+
+    # A result set from before the refresh read one 04:00 run all day.
+    def test_an_older_run_reads_one_run_all_day(self):
+        got = actions.actionRows(trajectory(), "NSW1")
+        assert (got.forecastRunTime == pd.Timestamp("2024-01-01 04:00")).all()

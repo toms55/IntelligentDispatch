@@ -53,6 +53,13 @@ high_vol_intensity = 1.20
 # is what makes the forecast horizon available.
 seeds = (0, 1, 2, 3, 4)
 
+# How often the agent's forecast is replaced by AEMO's latest run inside an episode, in
+# dispatch intervals. 48 is every four hours: 04:00, 08:00, 12:00, 16:00, 20:00 and
+# 00:00. Every PREDISPATCH run reaches the end of its trading day, which is the episode's
+# end, so each refresh covers the rest of the episode exactly. episode_intervals gives
+# back the single 04:00 run per day. Must divide episode_intervals.
+forecast_refresh_intervals = 48
+
 # rl/algos.py asserts its registry matches this tuple.
 algorithms = ("maskableppo", "dqn", "a2c")
 

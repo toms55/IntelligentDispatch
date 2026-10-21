@@ -411,3 +411,47 @@ class TestForecastObservations:
         obs, _ = env.reset(seed=0)
         assert env.observation_space.contains(obs)
         assert not np.isnan(obs).any()
+
+
+class TestForecastRefresh:
+    """A refresh stack: the agent reads the latest run published by each step."""
+
+    @staticmethod
+    def stack(levels, every=4):
+        horizon = len(MIXED_PRICES)
+        grid = np.full((len(levels), horizon), np.nan)
+        for refresh, level in enumerate(levels):
+            grid[refresh, refresh * every:] = level
+        return grid
+
+    def test_the_view_switches_at_each_refresh(self, paper):
+        env = makeEnv(paper, forecasts=[self.stack([100.0, 200.0, 300.0])])
+        obs, _ = env.reset(seed=0)
+        seen = [obs[1]]
+        for step in range(len(MIXED_PRICES) - 1):
+            obs, *_ = env.step(IDLE)
+            if step + 1 in (3, 4, 8):
+                seen.append(obs[1])
+        assert seen == pytest.approx([env.scaler(level)
+                                      for level in (100.0, 100.0, 200.0, 300.0)], abs=1e-6)
+
+    def test_settlement_still_uses_the_realised_price(self, paper):
+        env = makeEnv(paper, forecasts=[self.stack([999.0, 999.0, 999.0])])
+        env.reset(seed=0)
+        for step in range(5):
+            _, _, _, _, info = env.step(DISCHARGE)
+        assert info["price"] == MIXED_PRICES[4]
+
+    def test_a_stack_of_the_realised_path_scores_the_same(self, paper):
+        mirrored = np.tile(MIXED_PRICES, (3, 1))
+        actions = [CHARGE, IDLE, DISCHARGE, CHARGE, DISCHARGE, IDLE,
+                   CHARGE, DISCHARGE, IDLE, CHARGE, IDLE, DISCHARGE]
+        plain, stacked = makeEnv(paper), makeEnv(paper, forecasts=[mirrored])
+        a, _ = plain.reset(seed=0)
+        b, _ = stacked.reset(seed=0)
+        np.testing.assert_allclose(a, b)
+        for action in actions:
+            a, ra, *_ = plain.step(action)
+            b, rb, *_ = stacked.step(action)
+            np.testing.assert_allclose(a, b)
+            assert ra == pytest.approx(rb)

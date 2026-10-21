@@ -20,6 +20,14 @@ START = datetime(2024, 1, 1, 4)
 REGION = "NSW1"
 
 
+def refreshFrame(days, every=48, horizon=288):
+    """A prefetched cache holding every refresh run of `days`, fully covered."""
+    runs = [pd.Timestamp(day) + offset * nem_interval
+            for day in days for offset in range(0, horizon, every)]
+    return pd.DataFrame([[1.0] * horizon] * len(runs), index=runs,
+                        columns=[str(n) for n in range(1, horizon + 1)])
+
+
 @pytest.fixture
 def prices():
     """Ten weeks of 04:00-aligned prices, enough for a 4-week train and six folds."""
@@ -301,27 +309,68 @@ class TestForecastSource:
 
     # A test day the prefetch never reached names the prefetch command.
     def test_a_missing_day_names_the_prefetch(self, config, monkeypatch):
-        frame = pd.DataFrame([[1.0] * 288], index=[pd.Timestamp(START)],
-                             columns=[str(n) for n in range(1, 289)])
+        frame = refreshFrame([START])
         monkeypatch.setattr(runner, "loadForecastCache", lambda region: frame)
         cfg = config._replace(priceSources=("forecast",))
         with pytest.raises(ValueError, match="cli prefetch"):
             runner._forecastSource(cfg, [START, START + folds.oneDay])
 
+    # A refresh run missing from the cache is refused, never replaced by the older run.
+    def test_a_missing_refresh_run_is_refused(self, config, monkeypatch):
+        frame = refreshFrame([START])
+        frame = frame.drop(pd.Timestamp(START) + pd.Timedelta(hours=16))
+        monkeypatch.setattr(runner, "loadForecastCache", lambda region: frame)
+        cfg = config._replace(priceSources=("forecast",))
+        with pytest.raises(ValueError, match="first 2024-01-01 20:00"):
+            runner._forecastSource(cfg, [START])
+
     # A day present but only partly covered is refused, not padded to zero in silence.
     def test_a_partial_day_is_refused(self, config, monkeypatch):
-        row = [1.0] * 11 + [None] * 277
-        frame = pd.DataFrame([row], index=[pd.Timestamp(START)],
-                             columns=[str(n) for n in range(1, 289)])
+        frame = refreshFrame([START])
+        frame.iloc[0, 11:] = None
         monkeypatch.setattr(runner, "loadForecastCache", lambda region: frame)
         cfg = config._replace(priceSources=("forecast",))
         with pytest.raises(ValueError, match="11 of 288"):
             runner._forecastSource(cfg, [START])
 
-    # A fully covered day passes the cache straight through.
-    def test_a_complete_day_is_accepted(self, config, monkeypatch):
-        frame = pd.DataFrame([[1.0] * 288], index=[pd.Timestamp(START)],
-                             columns=[str(n) for n in range(1, 289)])
+    # A later run need only reach the episode end: the 16:00 run covers 144 steps.
+    def test_a_refresh_run_need_only_reach_the_episode_end(self, config, monkeypatch):
+        frame = refreshFrame([START])
+        frame.loc[pd.Timestamp(START) + pd.Timedelta(hours=12), "145":] = None
         monkeypatch.setattr(runner, "loadForecastCache", lambda region: frame)
         cfg = config._replace(priceSources=("forecast",))
         assert runner._forecastSource(cfg, [START]) is frame
+
+    # ...but one that stops short of it is refused.
+    def test_a_refresh_run_short_of_the_episode_end_is_refused(self, config, monkeypatch):
+        frame = refreshFrame([START])
+        frame.loc[pd.Timestamp(START) + pd.Timedelta(hours=12), "144":] = None
+        monkeypatch.setattr(runner, "loadForecastCache", lambda region: frame)
+        cfg = config._replace(priceSources=("forecast",))
+        with pytest.raises(ValueError, match="143 of 144"):
+            runner._forecastSource(cfg, [START])
+
+    # One run per day is still a valid design, and needs only the 04:00 run.
+    def test_a_daily_refresh_needs_only_the_0400_run(self, config, monkeypatch):
+        frame = refreshFrame([START]).iloc[:1]
+        monkeypatch.setattr(runner, "loadForecastCache", lambda region: frame)
+        cfg = config._replace(priceSources=("forecast",), forecastEvery=288)
+        assert runner._forecastSource(cfg, [START]) is frame
+
+    # A fully covered day passes the cache straight through.
+    def test_a_complete_day_is_accepted(self, config, monkeypatch):
+        frame = refreshFrame([START])
+        monkeypatch.setattr(runner, "loadForecastCache", lambda region: frame)
+        cfg = config._replace(priceSources=("forecast",))
+        assert runner._forecastSource(cfg, [START]) is frame
+
+
+class TestManifest:
+    # The refresh changes what a forecast arm sees, so a forecast result set records it.
+    def test_a_forecast_run_records_the_refresh(self, config):
+        cfg = config._replace(priceSources=("realised", "forecast"))
+        assert runner.manifestOf(cfg)["forecastEvery"] == 48
+
+    # A realised-only set does not, so it stays resumable across a refresh change.
+    def test_a_realised_only_run_does_not(self, config):
+        assert "forecastEvery" not in runner.manifestOf(config)

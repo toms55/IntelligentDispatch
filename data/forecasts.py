@@ -29,6 +29,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+import config
 from utils import nem_interval, nem_interval_hours
 
 rawCache = Path(__file__).resolve().parent.parent / "data_cache" / "forecast_raw"
@@ -322,23 +323,86 @@ def _stepColumns(horizon):
     return [str(step) for step in range(1, horizon + 1)]
 
 
+def _requireDivides(horizon, every):
+    if every <= 0 or horizon % every:
+        raise ValueError(
+            f"a forecast refresh every {every} intervals does not divide a "
+            f"{horizon}-interval episode"
+        )
+
+
+def refreshRunTimes(dayStart, horizon=config.episode_intervals,
+                    every=config.forecast_refresh_intervals):
+    """The runs an episode opening at `dayStart` reads, one every `every` intervals."""
+    _requireDivides(horizon, every)
+    dayStart = pd.Timestamp(dayStart)
+    return [dayStart + offset * nem_interval for offset in range(0, horizon, every)]
+
+
+def refreshMatrix(dayStarts, region="SA1", horizon=config.episode_intervals,
+                  every=config.forecast_refresh_intervals, allowPartial=True, source=None):
+    """Every refresh run of every episode, laid on the episode's own step grid.
+
+    Shape (days, refreshes, horizon). Row r is the run published r * every intervals in,
+    placed so column k is the episode's step k. Columns before the run are NaN, because
+    it had not been published yet, and the run is cut at the episode end, which is the
+    end of the trading day where PREDISPATCH stops anyway. every == horizon is one 04:00
+    run per day.
+    """
+    _requireDivides(horizon, every)
+    starts = [pd.Timestamp(day) for day in dayStarts]
+    grid = np.full((len(starts), horizon // every, horizon), np.nan)
+    if not starts:
+        return grid
+    for refresh, offset in enumerate(range(0, horizon, every)):
+        runs = [day + offset * nem_interval for day in starts]
+        grid[:, refresh, offset:] = forecastMatrix(
+            runs, region, horizon - offset, allowPartial=allowPartial, source=source)
+    return grid
+
+
+def activeRun(forward, step):
+    """The path the agent reads at `step`: the latest refresh published by then.
+
+    `forward` is one episode's forecast, either a single path or a refreshMatrix stack.
+    """
+    forward = np.asarray(forward, dtype=float)
+    if forward.ndim == 1:
+        return forward
+    every = forward.shape[1] // forward.shape[0]
+    return forward[min(step // every, forward.shape[0] - 1)]
+
+
+def decisionPath(forward):
+    """The forecast price of each step as the agent read it when deciding that step."""
+    forward = np.asarray(forward, dtype=float)
+    if forward.ndim == 1:
+        return forward
+    return np.array([activeRun(forward, step)[step] for step in range(forward.shape[1])])
+
+
 def liveForecast(region="SA1", horizon=288):
     """The forward path from the latest runs right now. NaN past the trading day's end,
     where PREDISPATCH stops."""
     return forecastSeries(nemNow().floor("5min"), region, horizon, allowPartial=True)
 
 
-def prefetchForecasts(runStart, runEnd, region, horizon=288, cacheDir=None):
-    """Stitch every 04:00 forward path in the span into one parquet per region.
+def prefetchForecasts(runStart, runEnd, region, horizon=288, cacheDir=None,
+                      every=config.forecast_refresh_intervals):
+    """Stitch every refresh run of every trading day in the span into one parquet per
+    region: the 04:00 run that opens the day, then one every `every` intervals.
 
     Runs are fetched a month at a time, so a month of paths costs two archive reads
-    rather than two per day. A run AEMO never published is left out.
+    rather than two per run. A run AEMO never published is left out. Each path is
+    stored from its own run time, uncut; refreshMatrix cuts it at the episode end.
     """
     directory = Path(cacheDir) if cacheDir is not None else forecastCacheRoot
     directory.mkdir(parents=True, exist_ok=True)
     runStart, runEnd = pd.Timestamp(runStart), pd.Timestamp(runEnd)
-    runTimes = pd.date_range(runStart.normalize() + timedelta(hours=4), runEnd, freq="D")
-    runTimes = runTimes[runTimes >= runStart]
+    days = pd.date_range(runStart.normalize() + timedelta(hours=4), runEnd, freq="D")
+    days = days[days >= runStart]
+    runTimes = pd.DatetimeIndex(
+        [run for day in days for run in refreshRunTimes(day, horizon, every)])
     paths = {}
     for _, chunk in pd.Series(runTimes, index=runTimes).groupby(
             [runTimes.year, runTimes.month]):
