@@ -17,7 +17,7 @@ import pandas as pd
 
 columns = (
     "forecastRunTime", "intervalTime", "action", "soc",
-    "forecastPrice", "realisedPrice", "region", "fold", "seed", "algo", "arm",
+    "forecastPrice", "realisedPrice", "region", "fold", "seed", "algo", "trainMode",
 )
 
 
@@ -41,7 +41,7 @@ def actionRows(trajectory, region):
         "fold": rows.fold,
         "seed": rows.seed,
         "algo": rows.algo,
-        "arm": rows.arm,
+        "trainMode": rows.trainMode,
     }, columns=columns)
 
 
@@ -54,7 +54,7 @@ def exportRun(runDir):
         if not parts:
             continue
         frame = (pd.concat(parts, ignore_index=True)
-                 .sort_values(["seed", "algo", "arm", "intervalTime"]))
+                 .sort_values(["seed", "algo", "trainMode", "intervalTime"]))
         out = Path(runDir, f"actions_{regionDir.name}.csv")
         frame.to_csv(out, index=False)
         written.append(out)
