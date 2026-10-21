@@ -1,4 +1,4 @@
-forecastRunTime,intervalTime,action,soc,forecastPrice,realisedPrice,region,fold,seed,algo,arm
+forecastRunTime,intervalTime,action,soc,forecastPrice,realisedPrice,region,fold,seed,algo,trainMode
 2023-12-31 04:00:00,2023-12-31 04:05:00,discharge,0.4473684210526316,24.96064,26.94861,VIC1,0,0,maskableppo,warm
 2023-12-31 04:00:00,2023-12-31 04:10:00,discharge,0.3947368421052631,24.8056,35.36447,VIC1,0,0,maskableppo,warm
 2023-12-31 04:00:00,2023-12-31 04:15:00,discharge,0.3421052631578947,25.43302,35.1718,VIC1,0,0,maskableppo,warm

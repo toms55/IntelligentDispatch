@@ -10,7 +10,8 @@
 #
 # Pass REGION=SA1 (etc.) alongside SPAN for another region; NSW1 by default.
 #
-# Stage 2, scripts/rolling2023_folds.pbs, is queued with -W depend=afterok on all four.
+# Stage 2, scripts/rolling2023_folds.pbs, needs the test days from this cache, so it
+# is queued with -W depend=afterok on all four. Its training days need no oracle.
 # Prices must already be in data_cache/: compute nodes are not assumed to reach AEMO.
 # Resumable: a rerun skips every day already cached.
 

@@ -5,7 +5,8 @@
 # scripts/rolling2023_oracle.pbs and the forecast prefetch in
 # data_cache/forecast_paths/NSW1.parquet. Training days need no oracle.
 #
-#     qsub scripts/rolling2023_folds.pbs
+#     qsub -W depend=afterok:<oracle job ids> scripts/rolling2023_folds.pbs
+#     qsub scripts/rolling2023_folds.pbs        # the cache is already complete
 #     qsub -v OUT=/abs/runs/x,RESULTS=/abs/results/x scripts/rolling2023_folds.pbs
 #
 # Each seed's chain is independent, so each seed runs in its own process. They write to
