@@ -9,7 +9,12 @@ __pycache__/
 data_cache/
 model/
 runs/
+
+# --- experiment outputs: only each run's actions CSV (backtest/actions.py) is kept ---
 results/*
+!results/*/
+results/*/*
+!results/*/actions_*.csv
 
 # --- CLI outputs: <module>_<region>_<date>.csv/.png land in the cwd ---
 lp_*.csv
