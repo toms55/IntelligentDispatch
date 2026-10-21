@@ -23,3 +23,7 @@ lp_*.csv
 *.xls
 *.xlsx
 *.zip
+
+# --- local helper and PBS job logs ---
+/id
+id-*.o[0-9]*

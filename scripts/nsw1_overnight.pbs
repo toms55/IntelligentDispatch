@@ -1,0 +1,120 @@
+#!/bin/bash
+# NSW1: train MaskablePPO on 2024, score on 2025. scripts/overnight.sh restated as one
+# PBS job for the UTS HPC, submitted from the repo root:
+#
+#     qsub -v DEADLINE="2026-10-09 06:45" scripts/nsw1_overnight.pbs
+#
+# Differences from overnight.sh:
+#   - every seed trains in its own process, in parallel, and the validation and test
+#     bounds are solved alongside training rather than after it;
+#   - the step count is set when the job starts, from the time left before DEADLINE,
+#     because the queue wait is unknown at submission;
+#   - no --forecast evaluation: nemseer finds no MMSDM tables for 2025, so the forecast
+#     path cannot be built for the test year yet;
+#   - the threshold heuristic is scored on the same windows as a rule-based control.
+#
+# Prices must already be in data_cache/: compute nodes are not assumed to reach AEMO.
+# SEEDS, OUT, TRAIN, VAL, TEST and STEP_CAP can be overridden for a smoke test.
+# Output: runs/nsw1/, with the scores in runs/nsw1/results.txt.
+
+#PBS -N id-nsw1
+#PBS -l ncpus=12
+#PBS -l mem=24GB
+#PBS -l walltime=07:30:00
+#PBS -j oe
+
+set -euo pipefail
+cd "${PBS_O_WORKDIR:-$PWD}"
+
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONWARNINGS=ignore
+PY=.venv/bin/python
+
+REGION=NSW1
+SEEDS=${SEEDS:-"0 1 2 3 4"}
+GAP=0.02
+LIMIT=300
+OUT=${OUT:-runs/nsw1}
+TRAIN_WORKERS=12   # stage 1 has the whole node
+SIDE_WORKERS=7     # oracle workers while the five seeds train: 5 + 7 = 12 cores
+
+# Measured on one core with calendar aging on: about 100 steps/s. Budget at 85.
+STEPS_PER_SEC=85
+STEP_CAP=${STEP_CAP:-1500000}
+STEP_FLOOR=${STEP_FLOOR:-50000}
+EVAL_RESERVE=1800  # seconds kept back for scoring, model loading and slack
+
+TRAIN=${TRAIN:-"train=2024-01-01T04:00..2024-11-01T04:00"}
+VAL=${VAL:-"val=2024-11-01T04:00..2025-01-01T04:00"}
+TEST=${TEST:-"test=2025-01-01T04:00..2026-01-01T04:00"}
+CAP_DATE="2026-01-01T04:00"
+
+COMMON=(--region "$REGION" --gap "$GAP" --time-limit "$LIMIT")
+
+mkdir -p "$OUT"
+RESULTS="$OUT/results.txt"
+
+say() { printf '\n========== %s  (%s) ==========\n' "$1" "$(date '+%a %H:%M')"; }
+
+deadline=$(date -d "${DEADLINE:-2026-10-09 06:45}" +%s)
+say "start on $(hostname), deadline $(date -d "@$deadline" '+%a %H:%M')"
+
+say "1/4 training baseline: continuous, no calendar, 305 windows"
+$PY -u -m cli baseline --split "$TRAIN" --continuous --no-calendar "${COMMON[@]}" \
+  --workers "$TRAIN_WORKERS" > "$OUT/baseline_train.log" 2>&1
+tail -n 5 "$OUT/baseline_train.log"
+
+left=$(( deadline - $(date +%s) - EVAL_RESERVE ))
+steps=$(( left * STEPS_PER_SEC ))
+[ "$steps" -gt "$STEP_CAP" ] && steps=$STEP_CAP
+[ "$steps" -lt "$STEP_FLOOR" ] && steps=$STEP_FLOOR
+steps=$(( steps / 576 * 576 ))   # whole PPO rollouts of 2 x 288
+say "2/4 train $steps steps per seed, seeds $SEEDS in parallel; bounds alongside"
+
+pids=()
+for seed in $SEEDS; do
+  $PY -u -m cli train --split "$TRAIN" --algo maskableppo --seeds "$seed" \
+    --timesteps "$steps" --cap-date "$CAP_DATE" \
+    --baseline-oracle continuous --baseline-no-calendar "${COMMON[@]}" \
+    --out "$OUT" > "$OUT/train_s${seed}.log" 2>&1 &
+  pids+=($!)
+done
+
+# The bounds the agent is scored against, solved while it trains. Validation is the
+# fair discrete bound with calendar aging; test is continuous and no-calendar, doubly
+# loose but affordable, as in overnight.sh.
+(
+  $PY -u -m cli baseline --split "$VAL" "${COMMON[@]}" --workers "$SIDE_WORKERS" \
+    > "$OUT/bound_val.log" 2>&1
+  $PY -u -m cli baseline --split "$TEST" --continuous --no-calendar "${COMMON[@]}" \
+    --workers "$SIDE_WORKERS" > "$OUT/bound_test.log" 2>&1
+) &
+bounds=$!
+
+failed=0
+for i in "${!pids[@]}"; do
+  wait "${pids[$i]}" || { echo "a seed FAILED, see $OUT/train_s*.log"; failed=1; }
+done
+say "training done (failed=$failed); waiting for the bounds"
+wait "$bounds" || { echo "a bound solve FAILED, see $OUT/bound_*.log"; exit 1; }
+tail -n 4 "$OUT/bound_val.log" "$OUT/bound_test.log"
+[ "$failed" -eq 0 ] || exit 1
+
+say "3/4 test 2025, realised prices" | tee -a "$RESULTS"
+# --no-calendar applies to both the oracle lookup and the environment here, so the agent
+# is scored on the same terms the bound was solved under.
+$PY -u -m cli eval --split "$TEST" --algo maskableppo --seeds $SEEDS \
+  --baseline-oracle continuous --no-calendar "${COMMON[@]}" \
+  --workers "$TRAIN_WORKERS" --out "$OUT" 2>&1 | tee -a "$RESULTS"
+$PY -u -m cli eval --split "$TEST" --heuristic \
+  --baseline-oracle continuous --no-calendar "${COMMON[@]}" \
+  --workers "$TRAIN_WORKERS" --out "$OUT" 2>&1 | tee -a "$RESULTS"
+
+say "4/4 validation Nov-Dec 2024, realised prices" | tee -a "$RESULTS"
+$PY -u -m cli eval --split "$VAL" --algo maskableppo --seeds $SEEDS \
+  --baseline-oracle discrete "${COMMON[@]}" \
+  --workers "$TRAIN_WORKERS" --out "$OUT" 2>&1 | tee -a "$RESULTS"
+$PY -u -m cli eval --split "$VAL" --heuristic \
+  --baseline-oracle discrete "${COMMON[@]}" \
+  --workers "$TRAIN_WORKERS" --out "$OUT" 2>&1 | tee -a "$RESULTS"
+
+say "done"
