@@ -3,8 +3,8 @@
 MaskablePPO is the only SB3-family algorithm that reads an action mask. DQN and A2C
 rely on the environment's clipping instead.
 
-Every algorithm runs undiscounted: the reward subtracts a per-interval LP baseline,
-and that subtraction is only policy-invariant at gamma = 1.
+Every algorithm runs undiscounted: an episode is one trading day of profit, and every
+interval of it counts the same.
 """
 from stable_baselines3 import A2C, DQN
 from stable_baselines3.common.utils import ConstantSchedule

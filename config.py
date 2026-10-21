@@ -68,16 +68,12 @@ oracle_time_limit = 600
 # entry and silently starts re-solving.
 backtest_gap = 0.02
 
-# The reward baseline only has to be a constant per window and interval, so it can use
-# the cheap continuous solve. A quoted bound must be discrete, since the agent has three
-# actions.
-baseline_discrete_power = False
+# The reward is the agent's own profit, so the oracle is a scoring device only. A quoted
+# bound must be discrete, since the agent has three actions.
 bound_discrete_power = True
 
-# The rolling backtest departs from the split above and solves one discrete oracle for
-# both roles. Paying for discrete power on the training days buys the reward baseline
-# nothing, and the cost is real, but one oracle under one set of settings produces every
-# figure the backtest quotes, and nobody has to ask which oracle a number came from.
+# The rolling backtest solves the discrete oracle over its test days only; training days
+# need none.
 #
 # The limit is 1800s rather than the 300s the oracle runs elsewhere, because cacheKey
 # does not include the time limit. A day that stops on the limit with a wide gap writes a

@@ -1,10 +1,12 @@
 #!/bin/bash
 # Stage 2 of the 2023 rolling backtest: 143 one-week folds, 52-week warm-chained
-# training, each scored on realised prices and on the AEMO 04:00 forecast. Needs the
-# oracle cache from scripts/rolling2023_oracle.pbs and the forecast prefetch in
-# data_cache/forecast_paths/NSW1.parquet.
+# training on raw profit, each scored on realised prices and on the AEMO 04:00 forecast.
+# Needs the oracle cache over the test days (2023-12-31 on) from
+# scripts/rolling2023_oracle.pbs and the forecast prefetch in
+# data_cache/forecast_paths/NSW1.parquet. Training days need no oracle.
 #
-#     qsub -W depend=afterok:<oracle job id> scripts/rolling2023_folds.pbs
+#     qsub scripts/rolling2023_folds.pbs
+#     qsub -v OUT=/abs/runs/x,RESULTS=/abs/results/x scripts/rolling2023_folds.pbs
 #
 # Each seed's chain is independent, so each seed runs in its own process. They write to
 # separate result directories, because the runner rewrites a fold CSV whole and two
@@ -25,8 +27,9 @@ PY=.venv/bin/python
 
 SEEDS=${SEEDS:-"0 1 2 3 4"}
 REGION=${REGION:-NSW1}   # pass -v REGION=SA1 etc.
-OUT=${OUT:-runs/rolling2023}
-RESULTS=${RESULTS:-results/rolling2023}
+# Not runs/rolling2023: those names belonged to the oracle-baselined reward.
+OUT=${OUT:-runs/rolling2023_profit}
+RESULTS=${RESULTS:-results/rolling2023_profit}
 mkdir -p "$OUT"
 
 # No --allow-solve: every day must already be cached, or the run stops rather than

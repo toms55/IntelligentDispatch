@@ -32,9 +32,9 @@ say "1/2 oracle cache: discrete, no calendar, 731 windows (52 folds use 728)"
 uv run python -u -m cli baseline --split "$SPAN" --region "$REGION" --no-calendar \
   --gap "$GAP" --time-limit "$LIMIT" --workers "$WORKERS" --verbose
 
-# One discrete oracle serves both roles here: the per-interval reward baseline and the
-# dual bound that `captured` divides by. --allow-solve is still passed, because a gap in
-# the cache must solve rather than stop the run at this point.
+# The discrete oracle is only the dual bound that `captured` divides by; the reward is
+# raw profit. --allow-solve is still passed, because a gap in the cache must solve rather
+# than stop the run at this point.
 say "2/2 rolling backtest: 52 folds, warm chain, realised prices then the AEMO forecast"
 uv run python -u -m cli rolling --split "$SPAN" --region "$REGION" \
   --train-weeks "$TRAIN_WEEKS" --test-weeks 1 --step-weeks 1 \

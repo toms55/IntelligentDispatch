@@ -218,23 +218,16 @@ class TestBoundary:
 
 
 class TestReward:
-    def test_the_baseline_cancels_to_regret(self, paper):
-        schedule = solve(MIXED_PRICES, paper, initialSoc=config.initial_soc,
-                         calendar=False, discretePower=True)
-        env = makeEnv(paper, baseline=[schedule.profitPerInterval])
+    def test_the_reward_is_raw_profit(self, paper):
+        env = makeEnv(paper)
         env.reset(seed=0)
-        total = 0.0
         rng = np.random.default_rng(3)
-        info = {}
         for _ in range(len(MIXED_PRICES)):
             _, reward, _, _, info = env.step(int(rng.integers(3)))
-            total += reward
-        assert total == pytest.approx(
-            info["episode_totals"]["profit"] - schedule.profit, rel=1e-9
-        )
-        assert info["regret"] == pytest.approx(-total, rel=1e-9)
+            assert reward == pytest.approx(info["profit"], rel=1e-12, abs=1e-15)
 
-    def test_the_baseline_does_not_change_which_policy_is_best(self, paper):
+    def test_the_baseline_is_reporting_only(self, paper):
+        """An oracle baseline fills lpProfit and regret, and leaves the reward alone."""
         schedule = solve(MIXED_PRICES, paper, initialSoc=config.initial_soc,
                          calendar=False, discretePower=True)
         actions = [CHARGE, IDLE, CHARGE, DISCHARGE, DISCHARGE, IDLE,
@@ -243,12 +236,12 @@ class TestReward:
         plain.reset(seed=0)
         withBaseline = makeEnv(paper, baseline=[schedule.profitPerInterval])
         withBaseline.reset(seed=0)
-        shifts = []
         for action in actions:
             _, bare, _, _, _ = plain.step(action)
-            _, shifted, _, _, _ = withBaseline.step(action)
-            shifts.append(bare - shifted)
-        assert sum(shifts) == pytest.approx(schedule.profit, rel=1e-9)
+            _, reported, _, _, info = withBaseline.step(action)
+            assert reported == bare
+        assert info["regret"] == pytest.approx(
+            schedule.profit - info["episode_totals"]["profit"], rel=1e-9)
 
     def test_idling_is_not_free_once_calendar_aging_is_on(self, paper):
         env = makeEnv(paper, values=[0.0] * 6, horizon=6, calendar=True)
