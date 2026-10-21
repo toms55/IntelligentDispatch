@@ -15,7 +15,7 @@ import pandas as pd
 
 from backtest import records
 
-dayKeys = ["fold", "algo", "arm", "priceSource", "testDay"]
+dayKeys = ["fold", "algo", "trainMode", "priceSource", "testDay"]
 Difference = namedtuple("Difference", "perFold pooled")
 
 

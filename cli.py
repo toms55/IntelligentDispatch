@@ -412,7 +412,7 @@ def _rolling(args):
         region=args.region, start=start, end=end, capDate=args.cap_date,
         trainWeeks=args.train_weeks, testWeeks=args.test_weeks,
         stepWeeks=args.step_weeks, algos=tuple(args.algo), seeds=tuple(args.seeds),
-        arms=tuple(args.arms), warmTimesteps=args.warm_timesteps,
+        trainModes=tuple(args.trainModes), warmTimesteps=args.warm_timesteps,
         coldTimesteps=args.cold_timesteps, priceSources=sources,
         horizon=args.horizon, rewardScale=args.reward_scale,
         initialSoc=args.initial_soc, calendar=not args.no_calendar,
@@ -457,13 +457,14 @@ def _runPrefetch(args):
 
 
 def _reportRolling(frame, metrics, gap):
-    # One block per (algo, arm, source): pooling them would average unlike runs.
-    for (algo, arm, source), part in frame.groupby(["algo", "arm", "priceSource"]):
+    # One block per (algo, trainMode, source): pooling them would average unlike runs.
+    for (algo, trainMode, source), part in frame.groupby(
+            ["algo", "trainMode", "priceSource"]):
         overall = metrics.summarise(part)
         days = part.drop_duplicates("testDay")
         # NaN is a solve with no gap at all, so it counts as loose too.
         loose = int((~(days.oracleGap <= gap + 1e-9)).sum())
-        print(f"\n{algo} {arm} on {source} prices")
+        print(f"\n{algo} {trainMode} on {source} prices")
         print(f"days           {overall['days']}  ({loose} with a loose bound, gap "
               f"above {gap:.2%}: captured is a floor there)")
         print(f"agent profit   {overall['agentProfit']:12.4f}")
@@ -476,10 +477,10 @@ def _reportRolling(frame, metrics, gap):
             label = "high vol" if high else "low vol "
             print(f"  {label}     {got['days']:4d} days  agent {got['agentProfit']:10.4f}  "
                   f"oracle {got['oracleProfit']:10.4f}  captured {got['captured']:7.2%}")
-    for (algo, arm), part in frame.groupby(["algo", "arm"]):
+    for (algo, trainMode), part in frame.groupby(["algo", "trainMode"]):
         if set(part.priceSource) >= {"realised", "forecast"}:
             delta = metrics.difference(part, "priceSource", "realised", "forecast")
-            print(f"\n{algo} {arm}: realised minus forecast {delta.pooled:.4f} over "
+            print(f"\n{algo} {trainMode}: realised minus forecast {delta.pooled:.4f} over "
                   f"{len(delta.perFold)} folds")
 
 
@@ -698,8 +699,8 @@ def main(argv=None):
                          help="pin the observation price scale to the market price cap in "
                               "force then; required, because a per-fold cap would make "
                               "folds either side of 1 July incomparable")
-    rolling.add_argument("--arms", nargs="+", default=["warm"],
-                         choices=["warm", "cold"],
+    rolling.add_argument("--train-modes", dest="trainModes", nargs="+",
+                         default=["warm"], choices=["warm", "cold"],
                          help="warm continues the previous fold's checkpoint, cold starts "
                               "fresh each fold (default: warm)")
     rolling.add_argument("--warm-timesteps", type=int, default=30000, metavar="N",

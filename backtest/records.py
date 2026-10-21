@@ -15,19 +15,19 @@ from pathlib import Path
 import pandas as pd
 
 dayColumns = (
-    "fold", "algo", "arm", "seed", "priceSource", "testDay",
+    "fold", "algo", "trainMode", "seed", "priceSource", "testDay",
     "agentProfit", "agentRevenue", "agentDegradation", "oracleDualBound", "oracleGap",
     "spikeIntensity", "highVol", "timesteps", "warmFrom", "writtenAt",
 )
 
 trajectoryColumns = (
-    "fold", "algo", "arm", "seed", "priceSource", "testDay",
+    "fold", "algo", "trainMode", "seed", "priceSource", "testDay",
     "interval", "settlementdate", "price", "observedPrice",
     "soc", "bought", "sold", "profit",
 )
 
 # What makes a row's work already done, for resume. One unit covers a whole test window.
-unitColumns = ("fold", "algo", "arm", "seed", "priceSource")
+unitColumns = ("fold", "algo", "trainMode", "seed", "priceSource")
 
 _dayTypes = {"fold": "int64", "seed": "int64", "timesteps": "int64",
              "highVol": "bool", "agentProfit": "float64", "agentRevenue": "float64",
@@ -93,7 +93,7 @@ def readDays(resultsDir, region):
         [pd.read_csv(path, parse_dates=["testDay"], dtype=_dayTypes,
                      keep_default_na=False) for path in paths],
         ignore_index=True,
-    ).sort_values(["fold", "algo", "arm", "seed", "priceSource", "testDay"],
+    ).sort_values(["fold", "algo", "trainMode", "seed", "priceSource", "testDay"],
                   ignore_index=True)
     keys = list(unitColumns) + ["testDay"]
     duplicated = frame[frame.duplicated(keys, keep=False)]
@@ -106,7 +106,7 @@ def readDays(resultsDir, region):
 
 
 def completedUnits(frame):
-    """The (fold, algo, arm, seed, priceSource) tuples already on disk."""
+    """The (fold, algo, trainMode, seed, priceSource) tuples already on disk."""
     if frame.empty:
         return set()
     return set(map(tuple, frame[list(unitColumns)].drop_duplicates().to_numpy().tolist()))

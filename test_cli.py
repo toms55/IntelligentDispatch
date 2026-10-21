@@ -519,7 +519,7 @@ class TestReportRolling:
     def frame(self):
         days = pd.date_range("2024-01-01 04:00", periods=7, freq="D")
         return pd.DataFrame([
-            {"fold": 0, "algo": "maskableppo", "arm": "warm", "seed": 0,
+            {"fold": 0, "algo": "maskableppo", "trainMode": "warm", "seed": 0,
              "priceSource": source, "testDay": day, "agentProfit": agent,
              "oracleDualBound": 10.0, "oracleGap": 0.5 if step == 0 else 0.01,
              "highVol": False}

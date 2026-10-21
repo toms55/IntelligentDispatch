@@ -40,7 +40,7 @@ class RollingConfig(NamedTuple):
     stepWeeks: int = 1
     algos: tuple = ("maskableppo",)
     seeds: tuple = config.seeds
-    arms: tuple = ("warm",)
+    trainModes: tuple = ("warm",)
     warmTimesteps: int = 30_000
     coldTimesteps: int = 300_000
     priceSources: tuple = ("realised",)
@@ -197,20 +197,22 @@ def _foldRecords(cfg, plan, start, dayCount):
     return chunk
 
 
-def checkpointDir(cfg, fold, arm, algo, seed):
-    return Path(cfg.outDir) / cfg.region / f"fold{fold:02d}" / arm / f"{algo}_seed{seed}"
+def checkpointDir(cfg, fold, trainMode, algo, seed):
+    return (Path(cfg.outDir) / cfg.region / f"fold{fold:02d}" / trainMode
+            / f"{algo}_seed{seed}")
 
 
-def _ensureTrained(cfg, fold, arm, algo, seed, parent, trainPrices, baselines, scaler):
+def _ensureTrained(cfg, fold, trainMode, algo, seed, parent, trainPrices, baselines,
+                   scaler):
     """Train this fold's agent unless its checkpoint is already on disk."""
-    directory = checkpointDir(cfg, fold, arm, algo, seed)
+    directory = checkpointDir(cfg, fold, trainMode, algo, seed)
     if (directory / "agent.zip").exists():
         return directory
-    warmFrom = parent if arm == "warm" else None
+    warmFrom = parent if trainMode == "warm" else None
     if warmFrom is not None and not (Path(warmFrom) / "agent.zip").exists():
         raise ValueError(
             f"fold {fold} warm starts from {warmFrom}, which holds no checkpoint. Run "
-            f"the earlier folds first, or pass arms=('cold',) to fit each fold fresh"
+            f"the earlier folds first, or pass trainModes=('cold',) to fit each fold fresh"
         )
     trainOne(
         algo, trainPrices, SchadeDegradation(*cfg.battery), baselines=baselines,
@@ -221,10 +223,10 @@ def _ensureTrained(cfg, fold, arm, algo, seed, parent, trainPrices, baselines, s
     return directory
 
 
-def _trajectoryRows(cfg, fold, algo, arm, seed, source, day, steps, observed):
+def _trajectoryRows(cfg, fold, algo, trainMode, seed, source, day, steps, observed):
     for step, info in enumerate(steps):
         yield {
-            "fold": fold, "algo": algo, "arm": arm, "seed": seed,
+            "fold": fold, "algo": algo, "trainMode": trainMode, "seed": seed,
             "priceSource": source, "testDay": day, "interval": step,
             "settlementdate": day + (step + 1) * nem_interval,
             "price": info["price"],
@@ -237,7 +239,7 @@ def _trajectoryRows(cfg, fold, algo, arm, seed, source, day, steps, observed):
 def _oracleRows(cfg, fold, day, record, prices):
     for step in range(cfg.horizon):
         yield {
-            "fold": fold, "algo": "oracle", "arm": "oracle",
+            "fold": fold, "algo": "oracle", "trainMode": "oracle",
             "seed": cfg.trajectorySeed, "priceSource": "realised", "testDay": day,
             "interval": step, "settlementdate": day + (step + 1) * nem_interval,
             "price": prices[step], "observedPrice": prices[step],
@@ -282,19 +284,19 @@ def runRolling(cfg, onProgress=None):
         gaps = [record["mipGap"] for record in testRecords]
 
         for algo in cfg.algos:
-            for arm in cfg.arms:
+            for trainMode in cfg.trainModes:
                 checkpoints = {}
                 for seed in cfg.seeds:
                     parent = (None if position == 0 else
                               checkpointDir(cfg, plan.selected[position - 1].index,
-                                            arm, algo, seed))
+                                            trainMode, algo, seed))
                     checkpoints[seed] = _ensureTrained(
-                        cfg, fold.index, arm, algo, seed, parent, trainPrices,
+                        cfg, fold.index, trainMode, algo, seed, parent, trainPrices,
                         trainBaselines, plan.scaler)
 
                 for source in cfg.priceSources:
                     pending = [seed for seed in cfg.seeds
-                               if (fold.index, algo, arm, seed, source) not in done]
+                               if (fold.index, algo, trainMode, seed, source) not in done]
                     if not pending:
                         continue
                     # allowPartial=False: a NaN row reads as a flat $0 day and the
@@ -309,22 +311,22 @@ def runRolling(cfg, onProgress=None):
                         algoName=algo, calendar=cfg.calendar, horizon=cfg.horizon,
                         rewardScale=cfg.rewardScale, forecasts=forecasts, bounds=bounds,
                     )
-                    rows += _resultRows(cfg, plan, fold, algo, arm, source, results,
+                    rows += _resultRows(cfg, plan, fold, algo, trainMode, source, results,
                                         position, gaps)
                     if cfg.trajectorySeed in results:
                         trajectories += _resultTrajectories(
-                            cfg, fold, algo, arm, source, results[cfg.trajectorySeed],
+                            cfg, fold, algo, trainMode, source, results[cfg.trajectorySeed],
                             testPrices, forecasts)
                     written += len(pending)
 
         if trajectories:
             # The parquet is replaced whole, so carry over the series this pass did not
-            # regenerate. Without it a resumed run drops every other arm and source.
-            fresh = {(row["algo"], row["arm"], row["priceSource"])
+            # regenerate. Without it a resumed run drops every other train mode and source.
+            fresh = {(row["algo"], row["trainMode"], row["priceSource"])
                      for row in trajectories} | {("oracle", "oracle", "realised")}
             kept = [row for row in records.readTrajectories(
                         cfg.resultsDir, cfg.region, fold.index)
-                    if (row["algo"], row["arm"], row["priceSource"]) not in fresh]
+                    if (row["algo"], row["trainMode"], row["priceSource"]) not in fresh]
             trajectories += [row for day, record in zip(fold.testDays, testRecords)
                              for row in _oracleRows(
                                  cfg, fold.index, day, record,
@@ -338,14 +340,14 @@ def runRolling(cfg, onProgress=None):
     return written
 
 
-def _resultRows(cfg, plan, fold, algo, arm, source, results, position, gaps):
+def _resultRows(cfg, plan, fold, algo, trainMode, source, results, position, gaps):
     stamp = datetime.now().isoformat(timespec="seconds")
 
     def parentOf(seed):
         """The checkpoint this seed warm started from, which is its own, not seed 0's."""
         return ("" if position == 0 else
                 str(checkpointDir(cfg, plan.selected[position - 1].index,
-                                  arm, algo, seed)))
+                                  trainMode, algo, seed)))
 
     out = []
     for seed, perWindow in sorted(results.items()):
@@ -354,7 +356,7 @@ def _resultRows(cfg, plan, fold, algo, arm, source, results, position, gaps):
             day = fold.testDays[record["window"]]
             stats = plan.volatility.loc[day]
             out.append({
-                "fold": fold.index, "algo": algo, "arm": arm, "seed": seed,
+                "fold": fold.index, "algo": algo, "trainMode": trainMode, "seed": seed,
                 "priceSource": source, "testDay": day,
                 "agentProfit": record["agentProfit"],
                 "agentRevenue": record["agentRevenue"],
@@ -365,19 +367,19 @@ def _resultRows(cfg, plan, fold, algo, arm, source, results, position, gaps):
                               else gaps[record["window"]]),
                 "spikeIntensity": float(stats.spikeIntensity),
                 "highVol": bool(stats.highVol),
-                "timesteps": cfg.warmTimesteps if (arm == "warm" and position)
+                "timesteps": cfg.warmTimesteps if (trainMode == "warm" and position)
                              else cfg.coldTimesteps,
-                "warmFrom": parent if arm == "warm" else "",
+                "warmFrom": parent if trainMode == "warm" else "",
                 "writtenAt": stamp,
             })
     return out
 
 
-def _resultTrajectories(cfg, fold, algo, arm, source, perWindow, testPrices, forecasts):
+def _resultTrajectories(cfg, fold, algo, trainMode, source, perWindow, testPrices, forecasts):
     out = []
     for record in perWindow:
         day = fold.testDays[record["window"]]
         observed = None if forecasts is None else forecasts[record["window"]]
-        out += list(_trajectoryRows(cfg, fold.index, algo, arm, cfg.trajectorySeed,
+        out += list(_trajectoryRows(cfg, fold.index, algo, trainMode, cfg.trajectorySeed,
                                     source, day, record["trajectory"], observed))
     return out

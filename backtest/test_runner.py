@@ -32,7 +32,7 @@ def prices():
 def config(tmp_path, prices):
     return runner.RollingConfig(
         region=REGION, start=START, end=prices.index[-1], capDate=datetime(2026, 1, 1, 4),
-        trainWeeks=4, seeds=(0, 1), arms=("warm",),
+        trainWeeks=4, seeds=(0, 1), trainModes=("warm",),
         warmTimesteps=10, coldTimesteps=100,
         # buildBaseline is faked, so nothing solves. Without this the suite reads the
         # real data_cache/lp_baseline, which is gitignored and absent on a clean clone.
@@ -180,21 +180,21 @@ class TestWarmChain:
         assert (frame[frame.fold == 2].warmFrom == "").all()
         assert (frame[frame.fold == 3].warmFrom != "").all()
 
-    # The cold arm is independent by construction and never inherits anything.
-    def test_the_cold_arm_never_warm_starts(self, config, spy):
-        runner.runRolling(config._replace(arms=("cold",), seeds=(0,)))
+    # The cold train mode is independent by construction and never inherits anything.
+    def test_the_cold_mode_never_warm_starts(self, config, spy):
+        runner.runRolling(config._replace(trainModes=("cold",), seeds=(0,)))
         assert all(call["warmFrom"] is None for call in spy["train"])
         assert all(call["timesteps"] == config.coldTimesteps for call in spy["train"])
 
 
 class TestOutput:
-    # One row per fold, day, algorithm, arm, seed and price source.
+    # One row per fold, day, algorithm, train mode, seed and price source.
     def test_one_row_per_fold_day_seed(self, config, spy):
         runner.runRolling(config)
         frame = records.readDays(config.resultsDir, REGION)
         expected = len(folds.enumerateFolds(config.start, config.end, 4)) * 7 * 2
         assert len(frame) == expected
-        assert set(frame.arm) == {"warm"} and set(frame.seed) == {0, 1}
+        assert set(frame.trainMode) == {"warm"} and set(frame.seed) == {0, 1}
 
     # The volatility label is joined onto every row, so the calendar and the high/low
     # split need nothing but the CSV.
@@ -210,7 +210,7 @@ class TestOutput:
         runner.runRolling(config._replace(trajectorySeed=1))
         written = pd.read_parquet(config.resultsDir / REGION / "fold00.parquet")
         assert set(written.seed) == {1}
-        assert set(written.arm) == {"warm", "oracle"}
+        assert set(written.trainMode) == {"warm", "oracle"}
 
     # Two algorithms get disjoint checkpoint directories, so neither overwrites the
     # other's warm chain.
@@ -275,10 +275,10 @@ class TestAuditReportsTheSelection:
 
 
 class TestForecastSource:
-    # A span with no forecast arm never touches the forecast cache.
+    # A span with no forecast price source never touches the forecast cache.
     def test_a_realised_only_run_loads_nothing(self, config, monkeypatch):
         monkeypatch.setattr(runner, "loadForecastCache",
-                            lambda region: pytest.fail("loaded without a forecast arm"))
+                            lambda region: pytest.fail("loaded without a forecast price source"))
         assert runner._forecastSource(config, [START]) is None
 
     # No prefetched cache falls back to the live per-run path.

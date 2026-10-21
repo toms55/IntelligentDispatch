@@ -16,9 +16,9 @@ REGION = "NSW1"
 DAY = datetime(2025, 1, 1, 4)
 
 
-def row(fold=0, arm="warm", seed=0, priceSource="realised", day=DAY, profit=1.5):
+def row(fold=0, trainMode="warm", seed=0, priceSource="realised", day=DAY, profit=1.5):
     return {
-        "fold": fold, "algo": "maskableppo", "arm": arm, "seed": seed,
+        "fold": fold, "algo": "maskableppo", "trainMode": trainMode, "seed": seed,
         "priceSource": priceSource, "testDay": day,
         "agentProfit": profit, "agentRevenue": 2.0, "agentDegradation": 0.5,
         "oracleDualBound": 4.0, "oracleGap": 0.01, "spikeIntensity": 3.25, "highVol": True,
@@ -59,10 +59,10 @@ class TestFoldCsv:
     # than double its rows.
     def test_rewriting_a_fold_replaces_it(self, tmp_path):
         records.writeFold(tmp_path, REGION, 0, week())
-        records.writeFold(tmp_path, REGION, 0, week() + week(arm="cold"))
+        records.writeFold(tmp_path, REGION, 0, week() + week(trainMode="cold"))
         frame = records.readDays(tmp_path, REGION)
         assert len(frame) == 14
-        assert set(frame.arm) == {"warm", "cold"}
+        assert set(frame.trainMode) == {"warm", "cold"}
 
     # The write is atomic, so an interrupted run cannot leave a partial file behind.
     def test_no_temporary_file_survives_a_write(self, tmp_path):
@@ -93,10 +93,10 @@ class TestReadDays:
 
 
 class TestCompletedUnits:
-    # A unit is one (fold, algo, arm, seed, priceSource), not one day, so a finished
+    # A unit is one (fold, algo, trainMode, seed, priceSource), not one day, so a finished
     # week collapses to a single resume key.
     def test_one_key_per_unit_not_per_day(self, tmp_path):
-        records.writeFold(tmp_path, REGION, 0, week() + week(arm="cold"))
+        records.writeFold(tmp_path, REGION, 0, week() + week(trainMode="cold"))
         got = records.completedUnits(records.readDays(tmp_path, REGION))
         assert got == {(0, "maskableppo", "warm", 0, "realised"),
                        (0, "maskableppo", "cold", 0, "realised")}
@@ -130,17 +130,17 @@ class TestTrajectories:
     # One row per interval per series, so the day view can draw agent against oracle.
     def test_one_row_per_interval_per_series(self, tmp_path):
         rows = [
-            {"fold": 0, "algo": "maskableppo", "arm": arm, "seed": 0,
+            {"fold": 0, "algo": "maskableppo", "trainMode": trainMode, "seed": 0,
              "priceSource": "realised", "testDay": DAY, "interval": n,
              "settlementdate": DAY + pd.Timedelta(minutes=5 * (n + 1)),
              "price": 50.0, "observedPrice": 48.0,
              "soc": 0.5, "bought": 0.0, "sold": 0.0, "profit": 0.0}
-            for arm in ("warm", "oracle") for n in range(288)
+            for trainMode in ("warm", "oracle") for n in range(288)
         ]
         path = records.writeTrajectories(tmp_path, REGION, 0, rows)
         frame = pd.read_parquet(path)
         assert len(frame) == 576
-        assert set(frame.arm) == {"warm", "oracle"}
+        assert set(frame.trainMode) == {"warm", "oracle"}
         assert frame.interval.max() == 287
         # What the agent was paid and what it saw are stored separately, so the day
         # view can draw the forecast against the realised price.

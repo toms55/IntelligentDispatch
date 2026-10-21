@@ -20,7 +20,7 @@ DAY = pd.Timestamp("2025-01-01 04:00")
 def rows(**overrides):
     """One day-row, defaulting to a day the agent captured half the oracle's profit."""
     base = {
-        "fold": 0, "algo": "maskableppo", "arm": "warm", "seed": 0,
+        "fold": 0, "algo": "maskableppo", "trainMode": "warm", "seed": 0,
         "priceSource": "realised", "testDay": DAY,
         "agentProfit": 5.0, "agentRevenue": 6.0, "agentDegradation": 1.0,
         "oracleDualBound": 10.0, "oracleGap": 0.01, "spikeIntensity": 3.0, "highVol": True,
@@ -137,7 +137,7 @@ class TestDifference:
     # Warm against cold, and realised against forecast, are the same comparison: a
     # matched difference over the folds where both sides ran.
     @pytest.mark.parametrize("column,left,right", [
-        ("arm", "warm", "cold"),
+        ("trainMode", "warm", "cold"),
         ("priceSource", "realised", "forecast"),
     ])
     def test_compares_matched_folds_only(self, column, left, right):
@@ -154,5 +154,5 @@ class TestDifference:
 
     # No fold ran both sides, so there is nothing to compare and the result says so.
     def test_no_matched_folds_is_an_empty_comparison(self):
-        got = metrics.difference(frameOf({"arm": "warm"}), "arm", "warm", "cold")
+        got = metrics.difference(frameOf({"trainMode": "warm"}), "trainMode", "warm", "cold")
         assert got.perFold.empty and pd.isna(got.pooled)
