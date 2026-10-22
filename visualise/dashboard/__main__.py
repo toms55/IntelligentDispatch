@@ -5,9 +5,10 @@
 It reads the one run under `results/`. Pass `--results DIR` when that directory holds
 more than one run.
 
-Backtest. Pick a model and a region at the top. Below them a date field, a month
-stepper and a calendar button drive one board, which shows either the month or one day's
-dispatch, never both. Click a day in the month to open it.
+Backtest. Pick a model and a region at the top. Below them a date field, a stepper and
+a calendar button drive one board, which shows either the month or one day's dispatch,
+never both. The stepper moves what the board shows, a month or a day, and the label
+above it names which. Click a day in the month to open it.
 
 Current forecast. Pick a model and a region, and the board draws the AEMO price path
 published right now, with the dispatch that model would run over it. This screen runs
@@ -91,6 +92,22 @@ def clickedDay(click, month):
     return str(first.replace(day=number).date())
 
 
+def stepUnit(view):
+    """What the arrows move, which is what the board shows. The calendar draws a month,
+    so they move a month. The dispatch view draws one day, so they move one day."""
+    return "month" if view == "calendar" else "day"
+
+
+def stepLabels(view):
+    """The stepper's label and the two button tooltips, which all name the same unit.
+
+    The arrows carry no unit of their own, so the screen names it. The label sits above
+    them, where every other control keeps its label.
+    """
+    unit = stepUnit(view)
+    return f"Step {unit}", f"Previous {unit}", f"Next {unit}"
+
+
 def nextState(triggered, state, click=None, text=None, region=None, models=()):
     """What the state becomes after a control fires. Pure, so it needs no server.
 
@@ -105,11 +122,10 @@ def nextState(triggered, state, click=None, text=None, region=None, models=()):
         state["view"] = "calendar"
     elif triggered in ("step-prev", "step-next"):
         step = -1 if triggered == "step-prev" else 1
-        # The arrows move the month, because the calendar is the view they drive. The
-        # date field moves one day, and a cell click picks one out of the month.
-        # `DateOffset` clamps the day to the month it lands in, so 31 January steps
-        # to 28 February and not into March.
-        moved = pd.Timestamp(state["day"]) + pd.DateOffset(months=step)
+        # `DateOffset` clamps the day to the month it lands in, so a month step off
+        # 31 January reaches 28 February and does not run into March.
+        unit = f"{stepUnit(state['view'])}s"
+        moved = pd.Timestamp(state["day"]) + pd.DateOffset(**{unit: step})
         state["day"] = str(moved.date())
     elif triggered == "day-text":
         parsed = parseDay(text)
@@ -144,11 +160,11 @@ def _controls(regions, region):
                                 placeholder=dateFormat.replace("%d", "DD")
                                 .replace("%m", "MM").replace("%Y", "YYYY"),
                                 style={**buttonStyle, "width": "140px"})]),
-            html.Div([html.Label(" ", style=labelStyle),
+            html.Div([html.Label(id="step-label", style=labelStyle),
                       html.Div([html.Button("<", id="step-prev", n_clicks=0,
-                                            title="Previous month", style=buttonStyle),
+                                            style=buttonStyle),
                                 html.Button(">", id="step-next", n_clicks=0,
-                                            title="Next month", style=buttonStyle)],
+                                            style=buttonStyle)],
                                style={"display": "flex", "gap": "6px"})]),
             html.Div([html.Label(" ", style=labelStyle),
                       html.Button("Calendar", id="show-calendar", n_clicks=0,
@@ -291,6 +307,13 @@ def register(app, loader, policyRoot=live.defaultCheckpoints):
         state = nextState(ctx.triggered_id, state, click=click, text=text,
                           region=region, models=names)
         return state, showDay(state["day"])
+
+    # The stepper is named in a callback of its own, so `redraw` keeps the three
+    # outputs the board needs and does not redraw a board for the sake of a label.
+    @app.callback(Output("step-label", "children"), Output("step-prev", "title"),
+                  Output("step-next", "title"), Input("state", "data"))
+    def nameTheStep(state):
+        return stepLabels(state["view"])
 
     @app.callback(Output("tiles", "children"), Output("board", "figure"),
                   Output("board-label", "children"), Input("state", "data"))

@@ -136,17 +136,37 @@ class TestNextState:
         got = app.nextState("show-calendar", dict(self.base, view="day"))
         assert got["view"] == "calendar" and got["day"] == self.base["day"]
 
-    # The arrows step one month at a time, which is what the calendar shows.
+    # In the calendar the arrows step one month, which is what that view draws.
     @pytest.mark.parametrize("trigger,wanted", [("step-prev", "2024-12-08"),
                                                 ("step-next", "2025-02-08")])
-    def test_the_arrows_step_one_month(self, trigger, wanted):
+    def test_the_arrows_step_a_month_in_the_calendar(self, trigger, wanted):
         assert app.nextState(trigger, self.base)["day"] == wanted
 
-    # A step into a shorter month holds the last day of it, and does not run over
-    # into the month after.
-    def test_a_step_into_a_short_month_clamps(self):
+    # In the dispatch view they step one day, which is what that view draws.
+    @pytest.mark.parametrize("trigger,wanted", [("step-prev", "2025-01-07"),
+                                                ("step-next", "2025-01-09")])
+    def test_the_arrows_step_a_day_in_the_day_view(self, trigger, wanted):
+        state = dict(self.base, view="day")
+        assert app.nextState(trigger, state)["day"] == wanted
+
+    # A day step crosses a month boundary, and leaves the view alone.
+    def test_a_day_step_crosses_the_month(self):
+        state = dict(self.base, day="2025-01-31", view="day")
+        got = app.nextState("step-next", state)
+        assert got["day"] == "2025-02-01" and got["view"] == "day"
+
+    # A month step into a shorter month holds the last day of it, and does not run
+    # over into the month after.
+    def test_a_month_step_into_a_short_month_clamps(self):
         state = dict(self.base, day="2025-01-31")
         assert app.nextState("step-next", state)["day"] == "2025-02-28"
+
+    # The stepper says what it moves, because the arrows carry no unit of their own.
+    @pytest.mark.parametrize("view,wanted", [("calendar", "month"), ("day", "day")])
+    def test_the_stepper_names_its_unit(self, view, wanted):
+        label, previous, following = app.stepLabels(view)
+        assert label == f"Step {wanted}"
+        assert (previous, following) == (f"Previous {wanted}", f"Next {wanted}")
 
     # The field is read as DD/MM/YYYY, which is the Australian order.
     def test_the_field_reads_day_first(self):
@@ -199,6 +219,15 @@ class TestRedraw:
             values.append([tile.children[1].children for tile in tiles])
         assert "Days" not in labels
         assert values[0] != values[1]
+
+    # The label is wired to the state, so the screen names the unit in both views.
+    @pytest.mark.parametrize("view,wanted", [("calendar", "Step month"),
+                                             ("day", "Step day")])
+    def test_the_stepper_label_follows_the_view(self, run, view, wanted):
+        built = app.build(REGION, run)
+        got = _callback(built, "step-label")({"region": REGION, "day": "2025-01-01",
+                                              "view": view, "model": MODEL})
+        assert got[0] == wanted
 
     # A day with no trajectory file still renders the rest of the screen.
     def test_a_day_without_a_trajectory_still_renders(self, run):
