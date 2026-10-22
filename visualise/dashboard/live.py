@@ -35,7 +35,7 @@ defaultCheckpoints = policies.defaultRoot
 # still shows a suggestion on a machine that holds no trained agent.
 thresholdLabel = "threshold rule"
 
-columns = ("settlementdate", "price", "action", "soc", "profit")
+columns = ("settlementdate", "price", "action", "soc", "revenue", "profit")
 
 
 def findCheckpoints(region, root=defaultCheckpoints):
@@ -92,8 +92,9 @@ def suggest(path, label, region, root=defaultCheckpoints,
             battery=(config.battery_mw, config.battery_mwh,
                      config.battery_replacement_cost),
             initialSoc=config.initial_soc, calendar=False):
-    """One row per forecast interval: the price, the action, and the state of charge
-    after it. An empty or one-interval path returns an empty frame."""
+    """One row per forecast interval: the price, the action, the state of charge after
+    it, and the running revenue and profit. An empty or one-interval path returns an
+    empty frame."""
     if len(path) < 2:
         return pd.DataFrame(columns=list(columns))
     agent, scaler, masking = _policy(label, path, root, region)
@@ -107,6 +108,9 @@ def suggest(path, label, region, root=defaultCheckpoints,
         "price": path.to_numpy(dtype=float),
         "action": np.select([bought > 0, sold > 0], ["charge", "discharge"], "idle"),
         "soc": [step["soc"] for step in steps],
+        # Both are run totals, so the last row covers the whole horizon. Revenue is the
+        # money the trades take. Profit is what is left after the degradation they cost.
+        "revenue": np.cumsum([step["revenue"] for step in steps]),
         "profit": np.cumsum([step["profit"] for step in steps]),
     }, columns=list(columns))
 

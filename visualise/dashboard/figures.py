@@ -89,6 +89,33 @@ def summaryTiles(frame):
              "raw": raw, "sub": sub} for label, value, raw, sub in rows]
 
 
+def forecastTiles(frame, initialSoc=config.initial_soc):
+    """The headline numbers over the forecast board: what the plan earns, and where the
+    battery starts.
+
+    `live.suggest` runs both totals forward, so the last row already covers the whole
+    horizon and nothing is summed here. The figures are an expectation over an AEMO
+    forecast and not a settled result, which is what "expected" says.
+
+    A board drawn without a policy still carries a state of charge, because the screen
+    assumes that rather than the agent choosing it. Its revenue is unknown, so it reads
+    as no data in the way every other tile does.
+    """
+    planned = not frame.empty and "revenue" in frame
+    revenue = float(frame.revenue.iloc[-1]) if planned else float("nan")
+    profit = float(frame.profit.iloc[-1]) if planned else float("nan")
+    endSoc = float(frame.soc.iloc[-1]) if planned else float("nan")
+    return [
+        {"label": "Expected revenue", "value": _money(revenue), "raw": revenue,
+         "sub": f"{_money(profit)} after degradation" if planned
+                else "no dispatch planned"},
+        {"label": "Current state of charge", "value": _percent(initialSoc),
+         "raw": initialSoc,
+         "sub": f"ends the forecast at {_percent(endSoc)}" if planned
+                else "assumed at the run time"},
+    ]
+
+
 def _wrap(text, width=84):
     """Plotly never wraps annotation text, so a long message runs off the panel."""
     return "<br>".join(textwrap.wrap(str(text), width))

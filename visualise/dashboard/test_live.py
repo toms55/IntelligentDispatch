@@ -39,6 +39,18 @@ class TestSuggest:
         frame = live.suggest(sawtooth, live.thresholdLabel, REGION)
         assert frame.soc.between(0.0, 1.0).all()
 
+    # Degradation is a cost, so a plan never keeps more than its trades take.
+    def test_profit_never_exceeds_revenue(self, sawtooth):
+        frame = live.suggest(sawtooth, live.thresholdLabel, REGION)
+        assert (frame.profit <= frame.revenue + 1e-9).all()
+        assert frame.revenue.iloc[-1] > 0
+
+    # Revenue runs forward, so an interval that trades nothing leaves the total alone.
+    def test_an_idle_interval_does_not_move_the_revenue(self, sawtooth):
+        frame = live.suggest(sawtooth, live.thresholdLabel, REGION)
+        moved = frame.revenue.diff().fillna(0.0)
+        assert (moved[frame.action == "idle"].abs() < 1e-12).all()
+
     # A forecast too short to be an episode draws nothing rather than raising.
     @pytest.mark.parametrize("length", [0, 1])
     def test_a_short_path_gives_an_empty_frame(self, length):

@@ -22,7 +22,6 @@ import pandas as pd
 from dash import Dash, Input, Output, State, ctx, dcc, html
 from dash.exceptions import PreventUpdate
 
-import config
 from visualise.dashboard import data, figures, live
 
 tileStyle = {"flex": "1 1 150px", "padding": "14px 16px", "borderRadius": "10px",
@@ -176,6 +175,10 @@ def _liveControls(regions, region):
             html.Div(id="forecast-start", style={**panelStyle, "minWidth": "300px"}),
             html.Button("Refresh", id="forecast-refresh", n_clicks=0,
                         style={**buttonStyle, "alignSelf": "flex-end"}),
+            # The cards take the rest of the row, which is empty space otherwise.
+            html.Div(id="forecast-tiles",
+                     style={"display": "flex", "gap": "12px", "flexWrap": "wrap",
+                            "flex": "1 1 320px"}),
         ], style={"display": "flex", "gap": "14px", "alignItems": "stretch",
                   "flexWrap": "wrap", "marginBottom": "18px"}),
     ])
@@ -223,17 +226,21 @@ def liveModels(region, policyRoot=live.defaultCheckpoints):
 
 
 def forecastBoard(region, model, policyRoot):
-    """The forecast figure and the box above it. Returns (figure, children).
+    """The forecast figure, the box above it and its two cards.
+
+    Returns (figure, box, tiles).
 
     The two halves fail apart. The prices are AEMO's and need no agent, so a model
     whose checkpoint is not on this machine still gets its price path, with the reason
     the blocks are missing written over it. Only a failed fetch empties the board, and
     that is a network fault: AEMO has not published the run, or NEMWeb is unreachable.
     """
+    empty = pd.DataFrame()
     try:
         path = live.forecastPath(region)
     except Exception as error:  # noqa: BLE001 - the message is the output
-        return figures.forecastFigure(pd.DataFrame(), note=str(error)), _liveBox(None)
+        return (figures.forecastFigure(empty, note=str(error)), _liveBox(None),
+                figures.forecastTiles(empty))
     note = None
     try:
         frame = live.suggest(path, model, region, root=policyRoot)
@@ -241,7 +248,8 @@ def forecastBoard(region, model, policyRoot):
         frame, note = live.priceFrame(path), str(error)
     figure = figures.forecastFigure(frame, live.blocks(frame), region=region,
                                     model=model, note=note)
-    return figure, _liveBox(None if frame.empty else frame.settlementdate.iloc[0])
+    return (figure, _liveBox(None if frame.empty else frame.settlementdate.iloc[0]),
+            figures.forecastTiles(frame))
 
 
 def _liveBox(start):
@@ -254,9 +262,8 @@ def _liveBox(start):
         html.Div("Forecast begins", style=labelStyle),
         html.Div(start.strftime(f"{dateFormat} %H:%M"),
                  style={"fontSize": "20px", "fontWeight": 600}),
-        html.Div(f"NEM time · state of charge starts at {config.initial_soc:.0%}",
-                 style={"color": figures.mutedInk, "fontSize": "12px",
-                        "marginTop": "2px"}),
+        html.Div("NEM time", style={"color": figures.mutedInk, "fontSize": "12px",
+                                    "marginTop": "2px"}),
     ]
 
 
@@ -330,11 +337,13 @@ def register(app, loader, policyRoot=live.defaultCheckpoints):
     # opened and on demand, never on every callback the other screen fires.
     @app.callback(Output("forecast-board", "figure"),
                   Output("forecast-start", "children"),
+                  Output("forecast-tiles", "children"),
                   Input("live-state", "data"))
     def redrawForecast(state):
         if state["screen"] != "live":
             raise PreventUpdate
-        return forecastBoard(state["region"], state["model"], policyRoot)
+        figure, box, tiles = forecastBoard(state["region"], state["model"], policyRoot)
+        return figure, box, [_tile(tile) for tile in tiles]
 
 
 def build(region, resultsDir, policyRoot=live.defaultCheckpoints):

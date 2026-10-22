@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import config
 from backtest import metrics
 from visualise.dashboard import figures
 from visualise.dashboard.test_data import DAY, dayRows, run, REGION  # noqa: F401
@@ -70,6 +71,57 @@ class TestSummaryTiles:
     def test_an_empty_frame_renders_a_message(self, frame):
         tiles = figures.summaryTiles(frame.iloc[0:0])
         assert all(tile["value"] == "no data" for tile in tiles)
+
+
+class TestForecastTiles:
+    def planned(self):
+        """Two rows of a finished suggestion, with both totals already run forward."""
+        return pd.DataFrame({
+            "settlementdate": pd.date_range("2025-01-01 10:05", periods=2, freq="5min"),
+            "price": [10.0, 300.0], "action": ["charge", "discharge"],
+            "soc": [0.55, 0.40], "revenue": [-0.05, 1.45], "profit": [-0.07, 1.20],
+        })
+
+    # The screen names both cards, so neither number has to be guessed at.
+    def test_it_names_the_two_cards(self):
+        labels = [tile["label"] for tile in figures.forecastTiles(self.planned())]
+        assert labels == ["Expected revenue", "Current state of charge"]
+
+    # The last row is the whole horizon, so the card reads it rather than summing again.
+    def test_the_revenue_is_the_last_running_total(self):
+        frame = self.planned()
+        tiles = {tile["label"]: tile for tile in figures.forecastTiles(frame)}
+        assert tiles["Expected revenue"]["raw"] == pytest.approx(1.45)
+        assert tiles["Expected revenue"]["value"] == "$1.45"
+        # Profit sits under it, because revenue alone does not pay for the cycling.
+        assert "$1.20 after degradation" == tiles["Expected revenue"]["sub"]
+
+    # The card reports where the battery starts, which the screen assumes.
+    def test_the_state_of_charge_is_the_starting_one(self):
+        tiles = {tile["label"]: tile for tile in figures.forecastTiles(self.planned())}
+        assert tiles["Current state of charge"]["raw"] == pytest.approx(config.initial_soc)
+        assert tiles["Current state of charge"]["value"] == "50.0%"
+        assert "40.0%" in tiles["Current state of charge"]["sub"]
+
+    # A caller may hold a real battery state, so the starting point is not hard coded.
+    def test_the_starting_state_of_charge_is_given(self):
+        tiles = figures.forecastTiles(self.planned(), initialSoc=0.25)
+        assert tiles[1]["value"] == "25.0%"
+
+    # No forecast means no revenue, read the way every other tile reads no data.
+    def test_an_empty_frame_has_no_revenue(self):
+        tiles = figures.forecastTiles(pd.DataFrame())
+        assert tiles[0]["value"] == "no data"
+        # The state of charge is still known: the screen assumes it, the agent does not
+        # choose it.
+        assert tiles[1]["value"] == "50.0%"
+
+    # A model with no checkpoint still draws prices, and those carry no dispatch.
+    def test_a_price_only_frame_has_no_revenue(self):
+        frame = pd.DataFrame({"settlementdate": [pd.Timestamp("2025-01-01 10:05")],
+                              "price": [10.0]})
+        tiles = figures.forecastTiles(frame)
+        assert tiles[0]["value"] == "no data" and tiles[0]["sub"] == "no dispatch planned"
 
 
 def _traces(figure, mode):

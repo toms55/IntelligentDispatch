@@ -10,7 +10,7 @@ from visualise.dashboard import __main__ as app
 from rl import policies
 from visualise.dashboard import data, live
 from visualise.dashboard.test_data import DAY, REGION, run  # noqa: F401
-from visualise.dashboard.test_live import path
+from visualise.dashboard.test_live import path, sawtooth  # noqa: F401
 
 MODEL = "maskableppo-warm-s0-realised"
 LIVE_MODEL = "maskableppo-warm-s0"
@@ -235,18 +235,30 @@ class TestForecastScreen:
     # The box over the board names the interval the forecast starts on.
     def test_the_box_names_the_start_of_the_forecast(self, monkeypatch, tmp_path):
         monkeypatch.setattr(live, "forecastPath", lambda region: path([10.0, 300.0]))
-        figure, box = app.forecastBoard(REGION, live.thresholdLabel, tmp_path)
+        figure, box, _ = app.forecastBoard(REGION, live.thresholdLabel, tmp_path)
         assert figure.data[0].name == "AEMO forecast"
         assert box[1].children == "01/01/2025 10:05"
 
     # The prices are AEMO's, so a model with no agent still gets its price path.
     def test_an_unpublished_model_still_draws_the_prices(self, monkeypatch, tmp_path):
         monkeypatch.setattr(live, "forecastPath", lambda region: path([10.0, 300.0]))
-        figure, box = app.forecastBoard(REGION, MODEL, tmp_path)
+        figure, box, _ = app.forecastBoard(REGION, MODEL, tmp_path)
         assert figure.data[0].name == "AEMO forecast"
         assert not [s for s in figure.layout.shapes if s.type == "rect"]
         assert "not published" in figure.layout.annotations[0].text
         assert box[1].children == "01/01/2025 10:05"
+
+    # The cards come back with the board, so one network read fills the whole screen.
+    def test_the_board_returns_the_cards(self, monkeypatch, sawtooth, tmp_path):
+        monkeypatch.setattr(live, "forecastPath", lambda region: sawtooth)
+        _, _, tiles = app.forecastBoard(REGION, live.thresholdLabel, tmp_path)
+        assert [tile["label"] for tile in tiles] == ["Expected revenue",
+                                                     "Current state of charge"]
+        assert tiles[0]["raw"] > 0
+
+    # The cards have somewhere to be drawn.
+    def test_the_cards_are_in_the_layout(self, run):
+        assert "forecast-tiles" in _ids(app.build(REGION, run).layout)
 
     # A NEMWeb failure is written on the board, not swallowed into an empty chart.
     def test_a_failed_fetch_says_why(self, monkeypatch, tmp_path):
@@ -254,9 +266,10 @@ class TestForecastScreen:
             raise ValueError("AEMO has not published this run")
 
         monkeypatch.setattr(live, "forecastPath", refuse)
-        figure, box = app.forecastBoard(REGION, live.thresholdLabel, tmp_path)
+        figure, box, tiles = app.forecastBoard(REGION, live.thresholdLabel, tmp_path)
         assert "not published" in figure.layout.annotations[0].text
         assert box[1].children == "no run"
+        assert tiles[0]["value"] == "no data"
 
 
 class TestParseDay:
