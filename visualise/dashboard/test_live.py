@@ -4,10 +4,13 @@ import pandas as pd
 import pytest
 
 from rl import policies
+from rl.features import scalerFor
+from rl.heuristic import ThresholdPolicy
 from utils import nem_interval
 from visualise.dashboard import figures, live
 
 REGION = "NSW1"
+MODEL = "maskableppo-warm-s0"
 
 
 def path(prices, start="2025-01-01 10:05"):
@@ -25,42 +28,61 @@ def sawtooth():
     return path(list(np.linspace(10.0, 50.0, 12)) + list(np.linspace(300.0, 200.0, 12)))
 
 
+@pytest.fixture
+def standIn(monkeypatch):
+    """A policy in place of a published agent.
+
+    `suggest` loads the weights off disk, and a test machine holds none. What the
+    screen owns is the rollout and the frame it builds, so the rule from
+    `rl/heuristic.py` stands in for an agent. The screen itself offers published
+    agents only.
+    """
+    scaler = scalerFor(pd.DatetimeIndex([pd.Timestamp("2025-01-01")]))
+    monkeypatch.setattr(live, "_policy",
+                        lambda *args, **kwargs: (ThresholdPolicy(), scaler, True))
+
+
 class TestSuggest:
-    # The rule control needs no checkpoint, so the screen works on a bare machine.
-    def test_the_rule_charges_low_and_discharges_high(self, sawtooth):
-        frame = live.suggest(sawtooth, live.thresholdLabel, REGION)
+    # The frame follows the policy: it buys in the cheap half and sells in the dear one.
+    def test_it_follows_the_policy(self, sawtooth, standIn):
+        frame = live.suggest(sawtooth, MODEL, REGION)
         assert len(frame) == len(sawtooth)
         assert set(frame.action) <= {"charge", "discharge", "idle"}
         assert "charge" in set(frame.action[:12])
         assert "discharge" in set(frame.action[12:])
 
     # The state of charge stays inside the battery at every interval.
-    def test_the_state_of_charge_stays_in_range(self, sawtooth):
-        frame = live.suggest(sawtooth, live.thresholdLabel, REGION)
+    def test_the_state_of_charge_stays_in_range(self, sawtooth, standIn):
+        frame = live.suggest(sawtooth, MODEL, REGION)
         assert frame.soc.between(0.0, 1.0).all()
 
     # Degradation is a cost, so a plan never keeps more than its trades take.
-    def test_profit_never_exceeds_revenue(self, sawtooth):
-        frame = live.suggest(sawtooth, live.thresholdLabel, REGION)
+    def test_profit_never_exceeds_revenue(self, sawtooth, standIn):
+        frame = live.suggest(sawtooth, MODEL, REGION)
         assert (frame.profit <= frame.revenue + 1e-9).all()
         assert frame.revenue.iloc[-1] > 0
 
     # Revenue runs forward, so an interval that trades nothing leaves the total alone.
-    def test_an_idle_interval_does_not_move_the_revenue(self, sawtooth):
-        frame = live.suggest(sawtooth, live.thresholdLabel, REGION)
+    def test_an_idle_interval_does_not_move_the_revenue(self, sawtooth, standIn):
+        frame = live.suggest(sawtooth, MODEL, REGION)
         moved = frame.revenue.diff().fillna(0.0)
         assert (moved[frame.action == "idle"].abs() < 1e-12).all()
 
     # A forecast too short to be an episode draws nothing rather than raising.
     @pytest.mark.parametrize("length", [0, 1])
     def test_a_short_path_gives_an_empty_frame(self, length):
-        frame = live.suggest(path([10.0] * length), live.thresholdLabel, REGION)
+        frame = live.suggest(path([10.0] * length), MODEL, REGION)
         assert frame.empty and list(frame.columns) == list(live.columns)
 
     # A label with no checkpoint behind it names the directory it looked in.
     def test_a_missing_checkpoint_names_the_directory(self, sawtooth, tmp_path):
         with pytest.raises(FileNotFoundError, match=REGION):
-            live.suggest(sawtooth, "maskableppo-warm-s0", REGION, root=tmp_path)
+            live.suggest(sawtooth, MODEL, REGION, root=tmp_path)
+
+    # A machine that published no agent has no model to run, and says so.
+    def test_no_model_names_the_directory(self, sawtooth, tmp_path):
+        with pytest.raises(FileNotFoundError, match="No agent is published"):
+            live.suggest(sawtooth, None, REGION, root=tmp_path)
 
 
 class TestCheckpoints:
@@ -109,15 +131,15 @@ class TestBlocks:
 
 class TestForecastFigure:
     # The key names both blocks, so the colours never have to be guessed.
-    def test_the_key_names_both_blocks(self, sawtooth):
-        frame = live.suggest(sawtooth, live.thresholdLabel, REGION)
+    def test_the_key_names_both_blocks(self, sawtooth, standIn):
+        frame = live.suggest(sawtooth, MODEL, REGION)
         figure = figures.forecastFigure(frame, live.blocks(frame), region=REGION)
         names = [trace.name for trace in figure.data]
         assert names == ["AEMO forecast", "Discharge: sell", "Charge: buy"]
 
     # Red stands above the mean price line and blue hangs below it.
-    def test_discharge_sits_above_the_rule_and_charge_below(self, sawtooth):
-        frame = live.suggest(sawtooth, live.thresholdLabel, REGION)
+    def test_discharge_sits_above_the_rule_and_charge_below(self, sawtooth, standIn):
+        frame = live.suggest(sawtooth, MODEL, REGION)
         figure = figures.forecastFigure(frame, live.blocks(frame))
         rule = float(np.mean(frame.price))
         for shape in figure.layout.shapes:
@@ -141,8 +163,8 @@ class TestForecastFigure:
         assert {stamp.minute for stamp in stamps[11:]} == {0, 30}
 
     # A dispatch price holds flat across its interval, so the line steps, never ramps.
-    def test_the_line_steps(self, sawtooth):
-        frame = live.suggest(sawtooth, live.thresholdLabel, REGION)
+    def test_the_line_steps(self, sawtooth, standIn):
+        frame = live.suggest(sawtooth, MODEL, REGION)
         assert figures.forecastFigure(frame).data[0].line.shape == "vh"
 
     def test_no_forecast_draws_a_message(self):
