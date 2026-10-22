@@ -14,7 +14,10 @@ import pandas as pd
 
 from backtest import records
 
-defaultResults = Path("results/rolling")
+resultsRoot = Path("results")
+# Where `cli rolling` writes when it is not told otherwise. A run of its own name sits
+# beside it, so `findResults` looks for one when this is not there.
+defaultResults = resultsRoot / "rolling"
 weekDays = 7
 
 # A dashboard entry is one trained model scored one way.
@@ -126,6 +129,33 @@ def availableRegions(resultsDir=defaultResults):
         return []
     return sorted(child.name for child in root.iterdir()
                   if child.is_dir() and any(child.glob("fold*.csv")))
+
+
+def findResults(given=None, root=resultsRoot):
+    """The records directory to read, when the command line does not name one.
+
+    `cli rolling --results` names each experiment, so a machine holds its runs under
+    names of their own (`results/rolling2023_profit_all`) and the fixed default misses.
+    The dashboard therefore looks under `root` for a directory that holds finished
+    folds. One candidate is used. Several candidates raise, because picking one of two
+    experiments for the reader would show numbers from a run they did not ask for.
+    """
+    if given is not None:
+        return Path(given)
+    if availableRegions(defaultResults):
+        return Path(defaultResults)
+    root = Path(root)
+    found = sorted(child for child in root.iterdir()
+                   if availableRegions(child)) if root.is_dir() else []
+    if len(found) == 1:
+        return found[0]
+    if not found:
+        raise FileNotFoundError(
+            f"no rolling results under {root}; run `cli rolling` first, or pass "
+            "--results")
+    names = ", ".join(str(item) for item in found)
+    raise FileNotFoundError(f"several runs under {root}: {names}. Pass --results to "
+                            "name one")
 
 
 def modelLabel(algo, trainMode, seed, priceSource):

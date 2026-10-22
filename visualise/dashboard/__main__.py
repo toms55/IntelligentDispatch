@@ -1,6 +1,9 @@
 """The dashboard. Two screens, picked by the tabs at the top.
 
-    uv run python -m visualise.dashboard --results results/rolling2023_profit_all
+    uv run python -m visualise.dashboard
+
+It reads the one run under `results/`. Pass `--results DIR` when that directory holds
+more than one run.
 
 Backtest. Pick a model and a region at the top. Below them a date field, a day stepper
 and a calendar button drive one board, which shows either the month or one day's
@@ -343,6 +346,8 @@ def build(region, resultsDir, policyRoot=live.defaultCheckpoints):
         return runs[name]
 
     regions = data.availableRegions(resultsDir) or [region]
+    # A run the agent never trained on NSW1 for still opens, on a region it holds.
+    region = region if region in regions else regions[0]
     first = loader(region)
     day = str(pd.Timestamp(first.days.testDay.max()).date())
     app = Dash(__name__, title=f"{region} rolling backtest")
@@ -355,13 +360,17 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="visualise.dashboard",
                                      description=__doc__.splitlines()[0])
     parser.add_argument("--region", default="NSW1")
-    parser.add_argument("--results", default=str(data.defaultResults))
+    parser.add_argument("--results", default=None,
+                        help="the backtest records to read (default: the one run "
+                             f"under {data.resultsRoot}/)")
     parser.add_argument("--policies", default=str(live.defaultCheckpoints),
                         help="where training published its final agents "
                              f"(default: {live.defaultCheckpoints})")
     parser.add_argument("--port", type=int, default=8050)
     args = parser.parse_args(argv)
-    build(args.region, args.results, args.policies).run(port=args.port)
+    resultsDir = data.findResults(args.results)
+    print(f"reading {resultsDir}")
+    build(args.region, resultsDir, args.policies).run(port=args.port)
 
 
 if __name__ == "__main__":

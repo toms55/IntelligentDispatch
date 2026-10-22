@@ -129,6 +129,37 @@ class TestFoldOfDay:
         assert data.foldOfDay(frame, datetime(2020, 1, 1, 4)) is None
 
 
+class TestFindResults:
+    def make(self, root, name="rolling2023_profit_all"):
+        """One finished run under `root`, named as an experiment of its own."""
+        records.writeFold(root / name, REGION, 0, dayRows(2, folds=1))
+        return root / name
+
+    # A named directory is taken as it is, whatever else sits beside it.
+    def test_a_named_directory_wins(self, run):
+        assert data.findResults(run) == run
+
+    # `cli rolling --results` names each experiment, so the run on disk is the one to
+    # read even though its name is not the default one. The exports beside it are not
+    # a run and must not be offered as one.
+    def test_the_one_run_is_found(self, tmp_path):
+        wanted = self.make(tmp_path)
+        (tmp_path / "actions").mkdir()
+        assert data.findResults(None, root=tmp_path) == wanted
+
+    # Two experiments cannot be chosen between, so the message names both.
+    def test_several_runs_name_themselves(self, tmp_path):
+        self.make(tmp_path)
+        self.make(tmp_path, "rolling2023_fc4h")
+        with pytest.raises(FileNotFoundError, match="several runs"):
+            data.findResults(None, root=tmp_path)
+
+    # An empty tree says what to run, not which path is missing.
+    def test_an_empty_tree_says_what_to_run(self, tmp_path):
+        with pytest.raises(FileNotFoundError, match="cli rolling"):
+            data.findResults(None, root=tmp_path / "gone")
+
+
 class TestTrajectories:
     # A day with no trajectory file gives an empty frame with the right columns.
     def test_a_missing_parquet_is_empty(self, run):

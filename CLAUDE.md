@@ -177,7 +177,9 @@ cover.
 - **`visualise/dashboard/`** — the Dash app. Two screens behind tabs. `data.py` reads
   the rolling results, `figures.py` draws, `live.py` runs a published agent over the
   AEMO path published right now. `--results` points at the records, `--policies` at
-  `trainedPolicies/`.
+  `trainedPolicies/`. With no `--results`, `data.findResults` reads the one run under
+  `results/`, because `cli rolling --results` names each experiment and so the fixed
+  default misses. Two runs there raise and name both.
 
 - **`conftest.py`** — exists only to put the repo root on `sys.path` so
   `degradation/schade.py` can resolve `from utils import ...` during collection.
