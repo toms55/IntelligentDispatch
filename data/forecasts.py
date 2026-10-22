@@ -406,11 +406,15 @@ def prefetchForecasts(runStart, runEnd, region, horizon=288, cacheDir=None,
     paths = {}
     for _, chunk in pd.Series(runTimes, index=runTimes).groupby(
             [runTimes.year, runTimes.month]):
-        coarse = runRows("PREDISPATCH", chunk)
+        # PREDISPATCH runs only on the half-hour; floor as predispatchForecast does, or a
+        # 5-minute refresh misses every run and falls through to the NEMWeb reports.
+        coarse = runRows("PREDISPATCH", chunk.index.floor("30min"))
         fine = runRows("P5MIN", chunk)
+        coarse, fine = (rows[rows.REGIONID == region] for rows in (coarse, fine))
         for runTime in chunk:
             merged = _stitch(
-                _series(coarse, region, runTime, runTime + horizon * nem_interval),
+                _series(coarse, region, runTime.floor("30min"),
+                        runTime + horizon * nem_interval),
                 _series(fine, region, runTime, runTime + p5minIntervals * nem_interval))
             if len(merged):
                 wanted = pd.DatetimeIndex(
