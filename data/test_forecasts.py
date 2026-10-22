@@ -409,6 +409,22 @@ class TestPrefetch:
         forecasts.forecastMatrix(PREFETCH_RUNS, "SA1", source=source)
         assert len(fakeMonths.asked) == before
 
+    # A 5-minute refresh reads the half-hourly PREDISPATCH run at or before each run time,
+    # from the months alone, and matches the live path.
+    def test_a_five_minute_refresh_floors_predispatch(self, monkeypatch, tmp_path):
+        state = {"PREDISPATCH": predispatchFrame(
+                     pd.date_range(JAN, periods=48, freq="30min")),
+                 "P5MIN": p5minFrame(pd.date_range(JAN, periods=288, freq="5min"))}
+        asked = installFakeArchive(monkeypatch, state)
+        forecasts.prefetchForecasts(JAN, JAN, "SA1", cacheDir=tmp_path, every=1)
+        assert not [entry for entry in asked if entry[0] == "report"]
+        source = forecasts.loadForecastCache("SA1", cacheDir=tmp_path)
+        runs = list(pd.date_range(JAN, periods=288, freq="5min"))
+        cached = forecasts.forecastMatrix(runs, "SA1", source=source)
+        assert not np.isnan(cached[:, 0]).any()
+        np.testing.assert_allclose(cached, forecasts.forecastMatrix(runs, "SA1"),
+                                   equal_nan=True)
+
     # The cached matrix equals what the live per-run path produces.
     def test_the_cached_matrix_matches_the_live_one(self, fakeMonths, tmp_path):
         forecasts.prefetchForecasts(JAN, pd.Timestamp("2024-02-29 04:00"), "SA1",

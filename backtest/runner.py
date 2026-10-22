@@ -13,6 +13,7 @@ The checkpoint on disk is the training record and the fold CSV is the completion
 so resume needs no separate log.
 """
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple, Optional
@@ -148,9 +149,47 @@ def _forecastSource(cfg, days):
     if source is None:
         return None
     # Each run must reach the episode end, and no further is needed.
-    needed = {run: cfg.horizon - offset for day in days
-              for offset, run in zip(range(0, cfg.horizon, cfg.forecastEvery),
-                                     refreshRunTimes(day, cfg.horizon, cfg.forecastEvery))}
+    needed, opener = {}, {}
+    for day in days:
+        for offset, run in zip(range(0, cfg.horizon, cfg.forecastEvery),
+                               refreshRunTimes(day, cfg.horizon, cfg.forecastEvery)):
+            needed[run], opener[run] = cfg.horizon - offset, pd.Timestamp(day)
+    runs = list(needed)
+    want = np.array([needed[run] for run in runs])
+
+    def coverage(frame):
+        present = frame.reindex(runs).iloc[:, :cfg.horizon].notna().to_numpy()
+        return (present & (np.arange(cfg.horizon) < want[:, None])).sum(axis=1)
+
+    # A run AEMO never published, or one whose PREDISPATCH half it skipped (both on
+    # 2024-09-05 from 14:00 in every region), is filled from the latest earlier run of the
+    # same episode, which is all a live agent would have had. Runs are in time order, so
+    # an earlier run is already filled when a later one reads it. The episode's opening
+    # run has nothing to hold, so a gap there is still refused below.
+    filled = {}
+    for index in np.flatnonzero(coverage(source) < want):
+        run = runs[index]
+        before = source.index.searchsorted(run) - 1
+        if before < 0 or source.index[before] < opener[run]:
+            continue
+        earlier = source.index[before]
+        lag = (run - earlier) // nem_interval
+        prior = filled.get(earlier)
+        if prior is None:
+            prior = source.loc[earlier].to_numpy(dtype=float)
+        held = np.concatenate([prior[lag:], np.full(lag, np.nan)])
+        own = (source.loc[run].to_numpy(dtype=float) if run in source.index
+               else np.full(len(source.columns), np.nan))
+        filled[run] = np.where(np.isnan(own), held, own)
+        print(f"forecast run {run:%Y-%m-%d %H:%M} incomplete, holding {earlier:%H:%M} "
+              f"for {int(np.isnan(own[:needed[run]]).sum())} step(s)",
+              file=sys.stderr, flush=True)
+    if filled:
+        source = pd.concat([
+            source.drop(index=[run for run in filled if run in source.index]),
+            pd.DataFrame.from_dict(filled, orient="index", columns=source.columns),
+        ]).sort_index()
+
     gaps = [run for run in needed if run not in source.index]
     if gaps:
         raise ValueError(
@@ -160,12 +199,8 @@ def _forecastSource(cfg, days):
         )
     # A thin row is worse than a missing one: the environment zeroes the NaN padding, so
     # the agent reads a flat $0 stretch and idles through it, and the loss lands in the
-    # results looking like a decision. A refresh run is never quietly replaced by the
-    # older one either, since that would change what the experiment measures.
-    runs = list(needed)
-    want = np.array([needed[run] for run in runs])
-    present = source.loc[runs].iloc[:, :cfg.horizon].notna().to_numpy()
-    covered = (present & (np.arange(cfg.horizon) < want[:, None])).sum(axis=1)
+    # results looking like a decision.
+    covered = coverage(source)
     thin = np.flatnonzero(covered < want)
     if len(thin):
         first = thin[0]

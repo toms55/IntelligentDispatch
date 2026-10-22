@@ -10,6 +10,7 @@ done when its rows are in the fold CSV, and training is done when agent.zip exis
 """
 from datetime import datetime, timedelta
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -315,13 +316,26 @@ class TestForecastSource:
         with pytest.raises(ValueError, match="cli prefetch"):
             runner._forecastSource(cfg, [START, START + folds.oneDay])
 
-    # A refresh run missing from the cache is refused, never replaced by the older run.
-    def test_a_missing_refresh_run_is_refused(self, config, monkeypatch):
+    # A refresh run AEMO never published is held at the latest earlier run, shifted onto
+    # its own run time, as a live agent would have seen it.
+    def test_a_missing_refresh_run_holds_the_earlier_one(self, config, monkeypatch):
         frame = refreshFrame([START])
-        frame = frame.drop(pd.Timestamp(START) + pd.Timedelta(hours=16))
+        earlier = pd.Timestamp(START) + pd.Timedelta(hours=12)
+        frame.loc[earlier] = np.arange(1.0, 289.0)
+        lost = pd.Timestamp(START) + pd.Timedelta(hours=16)
+        frame = frame.drop(lost)
         monkeypatch.setattr(runner, "loadForecastCache", lambda region: frame)
         cfg = config._replace(priceSources=("forecast",))
-        with pytest.raises(ValueError, match="first 2024-01-01 20:00"):
+        source = runner._forecastSource(cfg, [START])
+        np.testing.assert_array_equal(source.loc[lost].iloc[:240], np.arange(49.0, 289.0))
+        assert source.loc[lost].iloc[240:].isna().all()
+
+    # The episode's opening run has nothing earlier to hold, so its absence is refused.
+    def test_a_missing_opening_run_is_refused(self, config, monkeypatch):
+        frame = refreshFrame([START]).drop(pd.Timestamp(START))
+        monkeypatch.setattr(runner, "loadForecastCache", lambda region: frame)
+        cfg = config._replace(priceSources=("forecast",))
+        with pytest.raises(ValueError, match="first 2024-01-01 04:00"):
             runner._forecastSource(cfg, [START])
 
     # A day present but only partly covered is refused, not padded to zero in silence.
@@ -341,14 +355,17 @@ class TestForecastSource:
         cfg = config._replace(priceSources=("forecast",))
         assert runner._forecastSource(cfg, [START]) is frame
 
-    # ...but one that stops short of it is refused.
-    def test_a_refresh_run_short_of_the_episode_end_is_refused(self, config, monkeypatch):
+    # ...and one that stops short of it, as when AEMO skipped the PREDISPATCH run, keeps
+    # its own steps and takes the rest from the earlier run.
+    def test_a_refresh_run_short_of_the_episode_end_holds_the_tail(self, config, monkeypatch):
         frame = refreshFrame([START])
-        frame.loc[pd.Timestamp(START) + pd.Timedelta(hours=12), "144":] = None
+        frame.loc[pd.Timestamp(START) + pd.Timedelta(hours=8)] = 2.0
+        short = pd.Timestamp(START) + pd.Timedelta(hours=12)
+        frame.loc[short, "144":] = None
         monkeypatch.setattr(runner, "loadForecastCache", lambda region: frame)
         cfg = config._replace(priceSources=("forecast",))
-        with pytest.raises(ValueError, match="143 of 144"):
-            runner._forecastSource(cfg, [START])
+        row = runner._forecastSource(cfg, [START]).loc[short]
+        assert (row.iloc[:143] == 1.0).all() and row.iloc[143] == 2.0
 
     # One run per day is still a valid design, and needs only the 04:00 run.
     def test_a_daily_refresh_needs_only_the_0400_run(self, config, monkeypatch):

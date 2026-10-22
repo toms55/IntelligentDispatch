@@ -24,7 +24,7 @@ import pandas as pd
 
 import config
 from data.prices import price_series
-from utils import nem_interval, nem_interval_hours
+from utils import nem_interval
 from degradation.schade import SchadeDegradation
 from optimisation.lp import defaultSolver, solve
 
@@ -438,15 +438,15 @@ def _rolling(args):
 
 
 def _refreshIntervals(args, horizon):
-    """--forecast-refresh in dispatch intervals. Refuses one that does not divide the
-    episode, since every refresh must start on the step grid."""
-    every = args.forecast_refresh / nem_interval_hours
-    if abs(every - round(every)) > 1e-9 or round(every) <= 0 or horizon % round(every):
+    """--forecast-refresh minutes in dispatch intervals. Refuses one that does not divide
+    the episode, since every refresh must start on the step grid."""
+    every, rest = divmod(args.forecast_refresh, 5)
+    if rest or every <= 0 or horizon % every:
         raise SystemExit(
-            f"--forecast-refresh {args.forecast_refresh:g}h must be a whole number of "
-            f"5-minute intervals that divides the {horizon}-interval episode"
+            f"--forecast-refresh {args.forecast_refresh} minutes must be a whole number "
+            f"of 5-minute intervals that divides the {horizon}-interval episode"
         )
-    return int(round(every))
+    return every
 
 
 def _runPrefetch(args):
@@ -594,12 +594,12 @@ def main(argv=None):
                                  f"record is permanent (default: {limitDefault})")
 
     def addRefreshArg(parser):
-        hours = config.forecast_refresh_intervals * nem_interval_hours
-        parser.add_argument("--forecast-refresh", type=float, default=hours,
-                            metavar="HOURS",
+        minutes = config.forecast_refresh_intervals * 5
+        parser.add_argument("--forecast-refresh", type=int, default=minutes,
+                            metavar="MINUTES",
                             help="replace the forecast with AEMO's latest run this often "
-                                 "within an episode, from its 04:00 start; 24 is one run "
-                                 f"per day (default: {hours:g})")
+                                 "within an episode, from its 04:00 start; 5 is every "
+                                 f"interval, 1440 one run per day (default: {minutes})")
 
     def addRlArgs(parser, oracleDefault=None, forecastFlag=True, algoList=False):
         parser.add_argument("--algo", default=["maskableppo"] if algoList else "maskableppo",
