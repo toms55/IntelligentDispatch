@@ -1,4 +1,4 @@
-fold,algo,arm,seed,priceSource,testDay,agentProfit,agentRevenue,agentDegradation,oracleDualBound,oracleGap,spikeIntensity,highVol,timesteps,warmFrom,writtenAt
+fold,algo,trainMode,seed,priceSource,testDay,agentProfit,agentRevenue,agentDegradation,oracleDualBound,oracleGap,spikeIntensity,highVol,timesteps,warmFrom,writtenAt
 99,maskableppo,warm,0,forecast,2025-11-23 04:00:00,2.0994812050476024,7.151671542874998,5.052190337827393,8.916514997210513,0.0100340968624149,0.0,False,30000,/shared/homes/u168687/IntelligentDispatch/runs/rolling2023_profit_TAS1/TAS1/fold98/warm/maskableppo_seed0,2026-10-21T10:26:58
 99,maskableppo,warm,0,forecast,2025-11-24 04:00:00,-2.673227208578827,1.648322031375,4.321549239953826,5.942513433805464,0.0230123442097918,0.0,False,30000,/shared/homes/u168687/IntelligentDispatch/runs/rolling2023_profit_TAS1/TAS1/fold98/warm/maskableppo_seed0,2026-10-21T10:26:58
 99,maskableppo,warm,0,forecast,2025-11-25 04:00:00,-0.4068219646838166,3.0140822162499994,3.420904180933816,5.965762963338732,0.0040567768828962,0.0,False,30000,/shared/homes/u168687/IntelligentDispatch/runs/rolling2023_profit_TAS1/TAS1/fold98/warm/maskableppo_seed0,2026-10-21T10:26:58

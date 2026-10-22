@@ -159,12 +159,14 @@ def register(app, loader):
         run = loader(state["region"])
         chosen = data.modelRows(run.days, state["model"])
         day = pd.Timestamp(state["day"]) + pd.Timedelta(hours=data.dayStartHour)
+        # The tiles report the selected day in both views, so stepping the day or
+        # clicking a calendar cell always moves them.
+        scoped = data.scope(chosen, day=day)
         if state["view"] == "calendar":
-            scoped = data.monthScope(chosen, day)
-            board = figures.monthFigure(scoped, day, selected=state["day"])
+            board = figures.monthFigure(data.monthScope(chosen, day), day,
+                                        selected=state["day"])
             label = f"{day:%B %Y}"
         else:
-            scoped = data.scope(chosen, day=day)
             row = chosen.iloc[0] if not chosen.empty else {}
             board = figures.dayFigure(
                 data.trajectories(run, day), day,

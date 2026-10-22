@@ -133,14 +133,27 @@ class TestRedraw:
                                          "view": view, "model": MODEL})
         assert len(got) == 3 and all(item is not None for item in got)
 
-    # The month view is scoped to its own month, not to the whole job.
-    def test_the_month_view_counts_only_that_month(self, run):
+    # The month view still names its own month.
+    def test_the_month_view_names_its_month(self, run):
         built = app.build(REGION, run)
         tiles, _, label = _callback(built, "tiles")(
             {"region": REGION, "day": "2025-02-01", "view": "calendar",
              "model": MODEL})
         assert label == "February 2025"
-        assert tiles[-1].children[1].children == "no data"
+        assert tiles[0].children[1].children == "no data"
+
+    # The tiles follow the selected day in the month view, not the month.
+    def test_the_tiles_follow_the_day_in_the_month_view(self, run):
+        built = app.build(REGION, run)
+        redraw = _callback(built, "tiles")
+        values = []
+        for day in ("2025-01-01", "2025-01-02"):
+            tiles, _, _ = redraw({"region": REGION, "day": day, "view": "calendar",
+                                  "model": MODEL})
+            labels = [tile.children[0].children for tile in tiles]
+            values.append([tile.children[1].children for tile in tiles])
+        assert "Days" not in labels
+        assert values[0] != values[1]
 
     # A day with no trajectory file still renders the rest of the screen.
     def test_a_day_without_a_trajectory_still_renders(self, run):
