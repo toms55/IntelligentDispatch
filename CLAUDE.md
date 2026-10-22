@@ -106,6 +106,14 @@ The current forecast screen runs the agent now, so it needs the weights. Its mod
 list comes from `trainedPolicies/` and from nowhere else. Never fill it from the
 results: that offers a model the screen cannot load.
 
+### One dispatch chart, drawn once
+
+A charge or discharge run reads the same way on both screens. `figures._dispatchFigure`
+is the only code that draws it, and `live.blocks` is the only code that finds the runs.
+The backtest day view feeds it realised prices from `data.dispatchPath`. The forecast
+view feeds it the AEMO path. Do not write a second dispatch chart, and do not give a
+block a second colour.
+
 ## Architecture
 
 Flat package layout at the repo root — no `src/`. Tests sit beside the code they
