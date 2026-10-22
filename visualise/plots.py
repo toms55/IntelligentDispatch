@@ -130,26 +130,79 @@ def plotBestSeedVsOracle(sections, ax, source=None):
     return section, seed
 
 
-def buildBestSeedFigure(sections, region, algo, trainWindow=None, source=None):
-    """One figure: the single best seed against the oracle. Titled with the test
-    window from the results file and, if given, the train window beside it -- the
-    results file itself never records what a checkpoint trained on, only what it
-    was scored on, so the caller has to supply that half."""
-    import matplotlib.pyplot as plt
+def _windowTitle(section, region, algo, trainWindow=None):
+    """The three-line header over a best-seed panel: the algo and region, the test
+    window from the results file, and the train window if the caller gives one. The
+    results file never records what a checkpoint trained on, only what it was scored
+    on, so the caller has to supply that half.
 
-    figure, ax = plt.subplots(figsize=(5, 5.5))
-    section, seed = plotBestSeedVsOracle(sections, ax, source=source)
-
+    `trainWindow` is a (start, end) pair for one fixed split. It is a plain string for
+    a rolling backtest, which retrains before every test week and so has no one window
+    to print.
+    """
     testRange = (
         f"{_shortTimestamp(section.windowStart)} to {_shortTimestamp(section.windowEnd)}"
     )
     title = f"{algo} on {region}\ntest: {testRange}"
-    if trainWindow:
+    if isinstance(trainWindow, str):
+        title += f"\ntrain: {trainWindow}"
+    elif trainWindow:
         trainStart, trainEnd = trainWindow
         title += f"\ntrain: {_shortTimestamp(trainStart)} to {_shortTimestamp(trainEnd)}"
-    figure.suptitle(title)
+    return title
+
+
+def buildBestSeedFigure(sections, region, algo, trainWindow=None, source=None):
+    """One figure, one panel: the single best seed against the oracle."""
+    import matplotlib.pyplot as plt
+
+    figure, ax = plt.subplots(figsize=(5, 5.5))
+    section, seed = plotBestSeedVsOracle(sections, ax, source=source)
+    figure.suptitle(_windowTitle(section, region, algo, trainWindow))
     figure.tight_layout()
     return figure
+
+
+def buildSourceComparisonFigure(sections, region, algo, trainWindow=None,
+                                sources=("realised", "forecast")):
+    """One figure, one panel per price source, side by side: each source's best seed
+    against the oracle. Every panel keeps its own header and its own captured share,
+    so the realised-price run and the forecast run read as the same chart twice.
+
+    Each panel is a subfigure rather than a plain subplot, because a panel needs two
+    stacked titles -- the window header above the captured share -- and only a
+    subfigure carries a suptitle of its own.
+    """
+    import matplotlib.pyplot as plt
+
+    figure = plt.figure(figsize=(5 * len(sources), 5.5))
+    panels = figure.subfigures(1, len(sources))
+    if len(sources) == 1:
+        panels = [panels]
+    for panel, source in zip(panels, sources):
+        ax = panel.subplots()
+        section, _ = plotBestSeedVsOracle(sections, ax, source=source)
+        panel.suptitle(_windowTitle(section, region, algo, trainWindow), y=0.98,
+                       verticalalignment="top")
+        # tight_layout cannot see a subfigure suptitle, so the axes is placed by hand:
+        # the header needs the top fifth, and the y label the left margin.
+        panel.subplots_adjust(top=0.80, bottom=0.12, left=0.17, right=0.97)
+    return figure
+
+
+def saveSourceComparisonFigure(sections, region, algo, destination, trainWindow=None,
+                               sources=("realised", "forecast")):
+    """Render buildSourceComparisonFigure to PATH. Agg backend first, as saveFigure
+    does."""
+    import matplotlib
+    matplotlib.use("Agg")
+
+    figure = buildSourceComparisonFigure(
+        sections, region, algo, trainWindow=trainWindow, sources=sources
+    )
+    figure.savefig(destination, dpi=120)
+    import matplotlib.pyplot as plt
+    plt.close(figure)
 
 
 def saveBestSeedFigure(sections, region, algo, destination, trainWindow=None, source=None):
