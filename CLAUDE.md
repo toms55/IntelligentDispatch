@@ -60,6 +60,52 @@ uv run python -m cli lp --help
 uv run pytest
 ```
 
+## Conventions (mandatory)
+
+These are rules, not defaults. Break one and the training machine and the dashboard
+machine stop agreeing.
+
+### A trained agent lives in `trainedPolicies/`
+
+Training runs on one machine and the dashboard runs on another, so the agents have to
+travel. There is exactly one layout for a finished agent:
+
+```
+trainedPolicies/<region>/<algo>-<trainMode>-s<seed>/
+    agent.zip      the weights
+    scaler.json    the price transform the weights were trained under
+    policy.json    which command wrote it, from which window, and when
+```
+
+Rules:
+
+1. Never build that path by hand. `rl/policies.py` is the only definition of it. Call
+   `policies.publish(...)` to write and `policies.available(region)` to read.
+2. Every command that trains an agent publishes its final agent there before it exits.
+   `cli train` publishes each seed. `cli rolling` publishes the last fold of the run.
+3. Always copy `scaler.json` with the weights. The transform is pinned to a market
+   price cap. Weights read under a different cap mean something else.
+4. The directory name is the dashboard label. Do not add a second naming scheme.
+5. Working state stays out. The rolling backtest keeps one checkpoint per fold under
+   `--out` (`runs/rolling`), because it warm starts the next fold from the last one.
+   Those are not published, and nothing reads them across machines.
+6. `trainedPolicies/` is gitignored. Move it with `rsync` or `scp`, not with git.
+
+To move a trained agent to the dashboard machine, copy one region directory:
+
+```bash
+rsync -a trainedPolicies/NSW1/ dashboard-host:~/IntelligentDispatch/trainedPolicies/NSW1/
+```
+
+### The two dashboard screens read different things
+
+The backtest screen reads finished rows from `--results`. It replays numbers already
+written, so it needs no weights and its model list comes from the results.
+
+The current forecast screen runs the agent now, so it needs the weights. Its model
+list comes from `trainedPolicies/` and from nowhere else. Never fill it from the
+results: that offers a model the screen cannot load.
+
 ## Architecture
 
 Flat package layout at the repo root — no `src/`. Tests sit beside the code they
@@ -108,6 +154,8 @@ cover.
   - `baseline.py` — per-window oracle solutions, cached on disk under `data_cache/`.
   - `algos.py` — the `--algo` registry: MaskablePPO, DQN, A2C.
   - `train.py`, `evaluate.py` — one run per seed, and regret against the oracle.
+  - `policies.py` — `trainedPolicies/`: the layout of a finished agent, and the only
+    code that writes or lists one. See the convention above.
 
 - **`config.py`** — experiment design pinned in one place: episode horizon, SoC reset,
   seeds, splits, the observation layout constants, and the two oracle roles. Module
@@ -125,6 +173,11 @@ cover.
   resumable because the oracle cache is keyed on its own parameters.
 - **`scripts/rolling.sh`** — the two stages of the rolling-origin backtest: the discrete
   oracle cache over the whole span, then the 52 folds.
+
+- **`visualise/dashboard/`** — the Dash app. Two screens behind tabs. `data.py` reads
+  the rolling results, `figures.py` draws, `live.py` runs a published agent over the
+  AEMO path published right now. `--results` points at the records, `--policies` at
+  `trainedPolicies/`.
 
 - **`conftest.py`** — exists only to put the repo root on `sys.path` so
   `degradation/schade.py` can resolve `from utils import ...` during collection.

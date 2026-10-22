@@ -28,6 +28,7 @@ from data.forecasts import (decisionPath, loadForecastCache, refreshMatrix,
 from data.prices import price_series
 from degradation.schade import SchadeDegradation
 from rl.baseline import buildBaseline, cacheKey, cacheRoot
+from rl import policies
 from rl.evaluate import evaluateSeeds
 from rl.features import PriceScaler
 from rl.train import trainOne
@@ -71,6 +72,9 @@ class RollingConfig(NamedTuple):
     allowSolve: bool = False
     outDir: Path = Path("runs/rolling")
     resultsDir: Path = Path("results/rolling")
+    # Where the last fold's agent is published when the run finishes. The per-fold
+    # checkpoints under outDir are working state; this is the one a reader looks for.
+    policyRoot: Path = policies.defaultRoot
 
 
 class Plan(NamedTuple):
@@ -391,7 +395,32 @@ def runRolling(cfg, onProgress=None):
         records.writeFold(cfg.resultsDir, cfg.region, fold.index, rows)
         if onProgress:
             onProgress(position + 1, len(plan.selected), fold)
+    publishFinal(cfg, plan.selected[-1])
     return written
+
+
+def publishFinal(cfg, fold):
+    """Copy the last fold's agents into `trainedPolicies/`.
+
+    A warm chain ends on the fold that saw the most recent prices, so that fold is the
+    trained model of the whole run. The dashboard reads only this directory, which is
+    what lets one machine train and another draw the result.
+    """
+    published = []
+    for algo in cfg.algos:
+        for trainMode in cfg.trainModes:
+            for seed in cfg.seeds:
+                checkpoint = checkpointDir(cfg, fold.index, trainMode, algo, seed)
+                if not (checkpoint / "agent.zip").exists():
+                    continue
+                published.append(policies.publish(
+                    checkpoint, cfg.region, algo, trainMode, seed,
+                    root=cfg.policyRoot, command="rolling", fold=fold.index,
+                    trainWindow=[fold.trainStart.isoformat(), fold.trainEnd.isoformat()],
+                    testWindow=[fold.testStart.isoformat(), fold.testEnd.isoformat()],
+                    capDate=cfg.capDate.isoformat(),
+                ))
+    return published
 
 
 def _resultRows(cfg, plan, fold, algo, trainMode, source, results, position, gaps):

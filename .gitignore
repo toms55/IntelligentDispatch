@@ -10,6 +10,9 @@ data_cache/
 model/
 runs/
 
+# --- the published agents: binary weights, moved between machines with rsync ---
+trainedPolicies/
+
 # --- experiment outputs: the per-fold records, not the bulk ---
 results/**
 !results/**/

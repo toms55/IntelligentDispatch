@@ -27,6 +27,7 @@ from data.prices import price_series
 from utils import nem_interval
 from degradation.schade import SchadeDegradation
 from optimisation.lp import defaultSolver, solve
+from rl import policies
 
 
 DEFAULT_PATH = ""  # --csv / --plot given without a PATH; filled in by _outputPath
@@ -293,6 +294,15 @@ def _runTrain(args):
                 scaler=scaler,
             )
         print(f"wrote          {path}.zip")
+        # One fit from fresh weights is a cold agent, which is the train mode the
+        # rolling backtest gives the same thing. The dashboard reads this directory.
+        published = policies.publish(
+            path.parent, args.region, args.algo, "cold", seed,
+            root=args.policies, command="train", timesteps=args.timesteps,
+            window=[args.start.isoformat(), args.end.isoformat()],
+            priceCap=scaler.cap,
+        )
+        print(f"published      {published}")
     return 0
 
 
@@ -383,6 +393,26 @@ def _parseFolds(value):
     return frozenset(chosen)
 
 
+def _runPublish(args):
+    """Put an existing checkpoint under trainedPolicies/.
+
+    Training publishes on its own. This is for the agents trained before the
+    convention, and for an agent moved between machines by hand.
+    """
+    if len(args.seeds) != len(args.checkpoint):
+        raise SystemExit(
+            f"{len(args.checkpoint)} directories against {len(args.seeds)} seeds: "
+            f"give one --seeds value per directory, in the same order"
+        )
+    for seed, checkpoint in zip(args.seeds, args.checkpoint):
+        published = policies.publish(
+            checkpoint, args.region, args.algo, args.train_mode, seed,
+            root=args.policies, command="publish",
+        )
+        print(f"published      {checkpoint} -> {published}")
+    return 0
+
+
 def _runRolling(args):
     # A bad span, a cold oracle cache and a changed manifest are all the operator's to
     # fix, so they exit with the message rather than a traceback.
@@ -413,7 +443,7 @@ def _rolling(args):
         trajectorySeed=None if args.trajectory_seed < 0 else args.trajectory_seed,
         foldFilter=None if args.folds is None else _parseFolds(args.folds),
         allowSolve=args.allow_solve, outDir=Path(args.out),
-        resultsDir=Path(args.results),
+        resultsDir=Path(args.results), policyRoot=Path(args.policies),
     )
 
     audit = runner.auditPlan(cfg)
@@ -433,6 +463,8 @@ def _rolling(args):
     frame = records.readDays(cfg.resultsDir, cfg.region)
     print(f"wrote          {written} new unit(s), {len(frame)} rows in "
           f"{records.regionDir(cfg.resultsDir, cfg.region)}")
+    print(f"published      {len(cfg.algos) * len(cfg.trainModes) * len(cfg.seeds)} "
+          f"agent(s) to {Path(args.policies) / cfg.region}")
     _reportRolling(frame, metrics, cfg.gap)
     return 0
 
@@ -620,6 +652,11 @@ def main(argv=None):
                             help=f"fixed divisor on the reward (default: {config.reward_scale})")
         parser.add_argument("--out", default="runs", metavar="DIR",
                             help="where checkpoints live (default: runs)")
+        parser.add_argument("--policies", default=str(policies.defaultRoot),
+                            metavar="DIR",
+                            help=f"where the final trained agent of each run is "
+                                 f"published, and where the dashboard reads it "
+                                 f"(default: {policies.defaultRoot})")
         parser.add_argument("--verbose", action="store_true",
                             help="show an elapsed-time ticker per run")
         if oracleDefault is None:
@@ -745,6 +782,29 @@ def main(argv=None):
                          help="keep calendar aging; every oracle window then misses the "
                               "cache and must be re-solved")
     rolling.set_defaults(run=_runRolling, out="runs/rolling", no_calendar=True)
+
+    # Not addParser: this command takes directories, not a window, and the shared
+    # parser's optional start/end positionals would swallow the first one.
+    publish = subcommands.add_parser(
+        "publish", formatter_class=_formatter,
+        help="put an existing checkpoint under trainedPolicies/")
+    publish.add_argument("checkpoint", nargs="+", metavar="DIR",
+                         help="one training output directory per seed, each holding "
+                              "agent.zip and scaler.json, in the order of --seeds")
+    publish.add_argument("--region", default=config.default_region, metavar="ID",
+                         help=f"NEM region the agent was trained for "
+                              f"(default: {config.default_region})")
+    publish.add_argument("--algo", default="maskableppo",
+                         choices=list(config.algorithms),
+                         help="which algorithm trained it (default: maskableppo)")
+    publish.add_argument("--train-mode", default="warm", choices=["warm", "cold"],
+                         help="warm continued an earlier checkpoint, cold started fresh "
+                              "(default: warm)")
+    publish.add_argument("--seeds", type=int, nargs="+", default=[0], metavar="N",
+                         help="the seed each DIR was trained on (default: 0)")
+    publish.add_argument("--policies", default=str(policies.defaultRoot), metavar="DIR",
+                         help=f"where to publish (default: {policies.defaultRoot})")
+    publish.set_defaults(run=_runPublish)
 
     prefetch = addParser("prefetch", "cache the AEMO forecast paths for a region")
     addRefreshArg(prefetch)

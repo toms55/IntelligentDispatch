@@ -135,3 +135,49 @@ class TestTrajectories:
         loaded = data.loadRun(REGION, run)
         got = data.trajectories(loaded, DAY)
         assert got.empty and list(got.columns) == list(records.trajectoryColumns)
+
+
+class TestDispatchPath:
+    def path(self, **overrides):
+        """One hour of intervals: charge, then idle, then discharge."""
+        rows = []
+        for step in range(12):
+            bought = 1.0 if step < 3 else 0.0
+            sold = 1.0 if step >= 9 else 0.0
+            rows.append({
+                "fold": 0, "algo": "maskableppo", "trainMode": "warm", "seed": 0,
+                "priceSource": "realised", "testDay": DAY, "interval": step,
+                "settlementdate": DAY + timedelta(minutes=5 * (step + 1)),
+                "price": 50.0 + step, "observedPrice": 90.0, "soc": 0.5,
+                "bought": bought, "sold": sold, "profit": 0.1, **overrides,
+            })
+        return pd.DataFrame(rows)
+
+    # A buy is a charge interval and a sale is a discharge one, which is the same
+    # reading the forecast screen takes off its own rollout.
+    def test_bought_and_sold_become_actions(self):
+        got = data.dispatchPath(self.path())
+        assert list(got.action[:3]) == ["charge"] * 3
+        assert list(got.action[3:9]) == ["idle"] * 6
+        assert list(got.action[9:]) == ["discharge"] * 3
+
+    # The price is the realised price the agent was paid, never the one it observed.
+    def test_the_price_is_the_realised_one(self):
+        got = data.dispatchPath(self.path())
+        assert list(got.price) == [50.0 + step for step in range(12)]
+
+    # The chart reads the intervals in order, whatever order the file holds them in.
+    def test_the_rows_come_back_in_interval_order(self):
+        shuffled = self.path().sort_values("price", ascending=False)
+        got = data.dispatchPath(shuffled)
+        assert list(got.price) == [50.0 + step for step in range(12)]
+
+    # Picking one model must leave the other models rows out of the chart.
+    def test_it_filters_to_one_model(self):
+        both = pd.concat([self.path(), self.path(algo="dqn")], ignore_index=True)
+        assert len(data.dispatchPath(both, algo="maskableppo")) == 12
+
+    # A day with no rows gives an empty frame with the columns the chart expects.
+    def test_an_empty_trajectory_is_empty(self):
+        got = data.dispatchPath(self.path().iloc[0:0])
+        assert got.empty and list(got.columns) == list(data.dispatchColumns)

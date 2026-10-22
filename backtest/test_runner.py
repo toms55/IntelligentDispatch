@@ -15,6 +15,7 @@ import pandas as pd
 import pytest
 
 from backtest import folds, records, runner
+from rl import policies
 from utils import nem_interval
 
 START = datetime(2024, 1, 1, 4)
@@ -47,6 +48,7 @@ def config(tmp_path, prices):
         # real data_cache/lp_baseline, which is gitignored and absent on a clean clone.
         allowSolve=True,
         outDir=tmp_path / "runs", resultsDir=tmp_path / "results",
+        policyRoot=tmp_path / "trainedPolicies",
     )
 
 
@@ -72,6 +74,9 @@ def spy(monkeypatch, prices):
         directory = kwargs["outDir"] / f"{algo}_seed{kwargs['seed']}"
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "agent.zip").write_bytes(b"")
+        # The real trainOne writes the transform beside the weights, and publishing
+        # refuses a checkpoint that holds only one of the two.
+        (directory / "scaler.json").write_text('{"cap": 23200.0}')
         return None, directory / "agent"
 
     def fakeEvaluate(checkpoints, testPrices, model, **kwargs):
@@ -239,6 +244,30 @@ class TestOutput:
         runner.runRolling(config._replace(algos=("maskableppo", "dqn"), seeds=(0,)))
         written = {call["outDir"] / f"{call['algo']}_seed0" for call in spy["train"]}
         assert len({path.name for path in written}) == 2
+
+
+class TestPublishesTheFinalAgent:
+    # The run ends by putting its last fold under trainedPolicies/, which is the only
+    # place the dashboard looks. The per-fold checkpoints stay working state.
+    def test_the_last_fold_is_published(self, config, spy):
+        runner.runRolling(config)
+        found = policies.available(REGION, config.policyRoot)
+        assert sorted(found) == ["maskableppo-warm-s0", "maskableppo-warm-s1"]
+
+    # policy.json says which fold it came from, because the weights do not.
+    def test_it_records_the_fold_it_came_from(self, config, spy):
+        runner.runRolling(config)
+        facts = policies.describe(
+            policies.policyDir(REGION, "maskableppo", "warm", 0, config.policyRoot))
+        last = runner._plan(config).selected[-1]
+        assert facts["fold"] == last.index and facts["command"] == "rolling"
+
+    # A resumed run that trains nothing still publishes, so a run finished in two
+    # passes still leaves the dashboard an agent to read.
+    def test_a_resumed_run_still_publishes(self, config, spy):
+        runner.runRolling(config)
+        assert runner.runRolling(config) == 0
+        assert policies.available(REGION, config.policyRoot)
 
 
 class TestResume:

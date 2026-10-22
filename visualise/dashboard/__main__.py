@@ -1,17 +1,25 @@
-"""The rolling backtest dashboard. One screen.
+"""The dashboard. Two screens, picked by the tabs at the top.
 
-    uv run python -m visualise.dashboard --region NSW1
+    uv run python -m visualise.dashboard --results results/rolling2023_profit_all
 
-Pick a model and a region at the top. Below them a date field, a day stepper and a
-calendar button drive one board, which shows either the month or one day's dispatch,
-never both. Click a day in the month to open it.
+Backtest. Pick a model and a region at the top. Below them a date field, a day stepper
+and a calendar button drive one board, which shows either the month or one day's
+dispatch, never both. Click a day in the month to open it.
+
+Current forecast. Pick a model and a region, and the board draws the AEMO price path
+published right now, with the dispatch that model would run over it. This screen runs
+the agent itself, so its model list is what `trainedPolicies/` holds on this machine,
+not what the backtest scored. See `visualise/dashboard/live.py` for what the two
+screens do not share.
 """
 import argparse
 
 import pandas as pd
 from dash import Dash, Input, Output, State, ctx, dcc, html
+from dash.exceptions import PreventUpdate
 
-from visualise.dashboard import data, figures
+import config
+from visualise.dashboard import data, figures, live
 
 tileStyle = {"flex": "1 1 150px", "padding": "14px 16px", "borderRadius": "10px",
              "border": f"1px solid {figures.gridline}",
@@ -118,22 +126,110 @@ def _controls(regions, region):
     ])
 
 
+def _liveControls(regions, region):
+    """The forecast screen's own controls. The date field, the stepper and the calendar
+    button have no meaning here, so the box in their place names the run instead."""
+    return html.Div([
+        html.Div([
+            html.Div([html.Label("Model", style=labelStyle),
+                      dcc.Dropdown(id="pick-live-model", clearable=False,
+                                   style={"minWidth": "260px"})]),
+            html.Div([html.Label("Region", style=labelStyle),
+                      dcc.Dropdown(id="pick-live-region", value=region, clearable=False,
+                                   options=[{"label": name, "value": name}
+                                            for name in regions],
+                                   style={"minWidth": "120px"})]),
+        ], style={"display": "flex", "gap": "14px", "justifyContent": "flex-end",
+                  "marginBottom": "20px", "flexWrap": "wrap"}),
+        html.Div([
+            html.Div(id="forecast-start", style={**panelStyle, "minWidth": "300px"}),
+            html.Button("Refresh", id="forecast-refresh", n_clicks=0,
+                        style={**buttonStyle, "alignSelf": "flex-end"}),
+        ], style={"display": "flex", "gap": "14px", "alignItems": "stretch",
+                  "flexWrap": "wrap", "marginBottom": "18px"}),
+    ])
+
+
 def layout(regions, region, day):
     return html.Div([
         dcc.Store(id="state", data={"region": region, "day": day, "view": "calendar",
                                     "model": None}),
-        _controls(regions, region),
-        html.Div(id="tiles", style={"display": "flex", "gap": "12px",
-                                    "flexWrap": "wrap", "marginBottom": "18px"}),
-        html.Div([dcc.Graph(id="board", config={"displayModeBar": False})],
-                 style=panelStyle),
+        dcc.Tabs(id="screen", value="backtest", style={"marginBottom": "20px"},
+                 children=[dcc.Tab(label="Backtest", value="backtest"),
+                           dcc.Tab(label="Current forecast", value="live")]),
+        # Both screens stay mounted and one is hidden, so a tab change costs no rebuild
+        # and the day a reader opened is still there when they come back.
+        html.Div(id="backtest-screen", children=[
+            _controls(regions, region),
+            html.Div(id="tiles", style={"display": "flex", "gap": "12px",
+                                        "flexWrap": "wrap", "marginBottom": "18px"}),
+            html.Div([dcc.Graph(id="board", config={"displayModeBar": False})],
+                     style=panelStyle),
+        ]),
+        dcc.Store(id="live-state",
+                  data={"screen": "backtest", "region": region, "model": None,
+                        "clicks": 0}),
+        html.Div(id="live-screen", style={"display": "none"}, children=[
+            _liveControls(regions, region),
+            html.Div([dcc.Graph(id="forecast-board",
+                                config={"displayModeBar": False})],
+                     style=panelStyle),
+        ]),
     ], style={"maxWidth": "1180px", "margin": "0 auto", "padding": "28px 20px",
               "background": "#f9f9f7", "minHeight": "100vh",
               "fontFamily": 'system-ui, -apple-system, "Segoe UI", sans-serif',
               "color": figures.ink})
 
 
-def register(app, loader):
+def liveModels(region, policyRoot=live.defaultCheckpoints):
+    """The forecast screen's model list: what `trainedPolicies/` holds for `region`.
+
+    Not the backtest screen's list. That one names runs already scored and needs no
+    weights, so it offers models this screen cannot load. The rule leads, because it
+    needs no agent and so is always there.
+    """
+    return [live.thresholdLabel] + sorted(live.findCheckpoints(region, policyRoot))
+
+
+def forecastBoard(region, model, policyRoot):
+    """The forecast figure and the box above it. Returns (figure, children).
+
+    The two halves fail apart. The prices are AEMO's and need no agent, so a model
+    whose checkpoint is not on this machine still gets its price path, with the reason
+    the blocks are missing written over it. Only a failed fetch empties the board, and
+    that is a network fault: AEMO has not published the run, or NEMWeb is unreachable.
+    """
+    try:
+        path = live.forecastPath(region)
+    except Exception as error:  # noqa: BLE001 - the message is the output
+        return figures.forecastFigure(pd.DataFrame(), note=str(error)), _liveBox(None)
+    note = None
+    try:
+        frame = live.suggest(path, model, region, root=policyRoot)
+    except (FileNotFoundError, ValueError) as error:
+        frame, note = live.priceFrame(path), str(error)
+    figure = figures.forecastFigure(frame, live.blocks(frame), region=region,
+                                    model=model, note=note)
+    return figure, _liveBox(None if frame.empty else frame.settlementdate.iloc[0])
+
+
+def _liveBox(start):
+    """The box in the calendar button's place: when the forecast path starts."""
+    if start is None:
+        return [html.Div("Forecast", style=labelStyle),
+                html.Div("no run", style={"fontSize": "20px", "fontWeight": 600})]
+    start = pd.Timestamp(start)
+    return [
+        html.Div("Forecast begins", style=labelStyle),
+        html.Div(start.strftime(f"{dateFormat} %H:%M"),
+                 style={"fontSize": "20px", "fontWeight": 600}),
+        html.Div(f"NEM time · state of charge starts at {config.initial_soc:.0%}",
+                 style={"color": figures.mutedInk, "fontSize": "12px",
+                        "marginTop": "2px"}),
+    ]
+
+
+def register(app, loader, policyRoot=live.defaultCheckpoints):
     @app.callback(Output("pick-model", "options"), Output("pick-model", "value"),
                   Input("pick-region", "value"), State("pick-model", "value"))
     def fillModels(region, current):
@@ -168,15 +264,49 @@ def register(app, loader):
             label = f"{day:%B %Y}"
         else:
             row = chosen.iloc[0] if not chosen.empty else {}
-            board = figures.dayFigure(
-                data.trajectories(run, day), day,
+            # `live.blocks` turns the actions into blocks for both screens, so a
+            # backtest day and a live forecast read the same way.
+            path = data.dispatchPath(
+                data.trajectories(run, day),
                 algo=row.get("algo"), trainMode=row.get("trainMode"),
                 priceSource=row.get("priceSource"))
+            board = figures.dayFigure(path, live.blocks(path), day,
+                                      region=state["region"], model=state["model"])
             label = f"{day:%A %-d %B %Y}, 04:00 to 04:00"
         return [_tile(tile) for tile in figures.summaryTiles(scoped)], board, label
 
+    @app.callback(Output("backtest-screen", "style"), Output("live-screen", "style"),
+                  Input("screen", "value"))
+    def showScreen(screen):
+        hidden, shown = {"display": "none"}, {}
+        return (hidden, shown) if screen == "live" else (shown, hidden)
 
-def build(region, resultsDir):
+    # One callback settles the region and the model together, as the backtest screen
+    # does. Two callbacks would let the board fetch a model against a region that does
+    # not hold it, which is one wasted NEMWeb read per region change.
+    @app.callback(Output("live-state", "data"), Output("pick-live-model", "options"),
+                  Output("pick-live-model", "value"),
+                  Input("screen", "value"), Input("pick-live-region", "value"),
+                  Input("pick-live-model", "value"),
+                  Input("forecast-refresh", "n_clicks"))
+    def setLiveState(screen, region, model, clicks):
+        names = liveModels(region, policyRoot)
+        model = model if model in names else names[0]
+        return ({"screen": screen, "region": region, "model": model, "clicks": clicks},
+                [{"label": name, "value": name} for name in names], model)
+
+    # The forecast is fetched over the network, so it is drawn when the screen is
+    # opened and on demand, never on every callback the other screen fires.
+    @app.callback(Output("forecast-board", "figure"),
+                  Output("forecast-start", "children"),
+                  Input("live-state", "data"))
+    def redrawForecast(state):
+        if state["screen"] != "live":
+            raise PreventUpdate
+        return forecastBoard(state["region"], state["model"], policyRoot)
+
+
+def build(region, resultsDir, policyRoot=live.defaultCheckpoints):
     runs = {}
 
     def loader(name):
@@ -189,7 +319,7 @@ def build(region, resultsDir):
     day = str(pd.Timestamp(first.days.testDay.max()).date())
     app = Dash(__name__, title=f"{region} rolling backtest")
     app.layout = layout(regions, region, day)
-    register(app, loader)
+    register(app, loader, policyRoot)
     return app
 
 
@@ -198,9 +328,12 @@ def main(argv=None):
                                      description=__doc__.splitlines()[0])
     parser.add_argument("--region", default="NSW1")
     parser.add_argument("--results", default=str(data.defaultResults))
+    parser.add_argument("--policies", default=str(live.defaultCheckpoints),
+                        help="where training published its final agents "
+                             f"(default: {live.defaultCheckpoints})")
     parser.add_argument("--port", type=int, default=8050)
     args = parser.parse_args(argv)
-    build(args.region, args.results).run(port=args.port)
+    build(args.region, args.results, args.policies).run(port=args.port)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import NamedTuple
 
+import numpy as np
 import pandas as pd
 
 from backtest import records
@@ -81,6 +82,36 @@ def trajectories(run, day):
     frame = pd.read_parquet(path)
     return frame[pd.to_datetime(frame.testDay) == pd.Timestamp(day)]
 
+
+
+# What a dispatch chart reads: one row per interval, in the layout the forecast screen
+# also returns, so `live.blocks` turns either one into the same blocks.
+dispatchColumns = ("settlementdate", "price", "action", "soc")
+
+
+def dispatchPath(trajectory, algo=None, trainMode=None, priceSource=None):
+    """One model's intervals for a day: the realised price, and the action it took.
+
+    The action comes from `bought` and `sold`, the same two numbers the forecast screen
+    reads, so both screens draw a dispatch block the same way. `price` is the realised
+    price the agent was paid, whichever price source it observed.
+    """
+    rows = trajectory
+    for column, wanted in (("algo", algo), ("trainMode", trainMode),
+                           ("priceSource", priceSource)):
+        if wanted is not None and not rows.empty:
+            rows = rows[rows[column] == wanted]
+    if rows.empty:
+        return pd.DataFrame(columns=list(dispatchColumns))
+    rows = rows.sort_values("interval")
+    bought = rows.bought.to_numpy(dtype=float)
+    sold = rows.sold.to_numpy(dtype=float)
+    return pd.DataFrame({
+        "settlementdate": pd.to_datetime(rows.settlementdate).to_numpy(),
+        "price": rows.price.to_numpy(dtype=float),
+        "action": np.select([bought > 0, sold > 0], ["charge", "discharge"], "idle"),
+        "soc": rows.soc.to_numpy(dtype=float),
+    }, columns=list(dispatchColumns))
 
 
 def availableRegions(resultsDir=defaultResults):

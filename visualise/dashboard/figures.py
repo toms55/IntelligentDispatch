@@ -9,8 +9,13 @@ above zero and red below, with a neutral grey at zero. The high-volatility dot i
 which is the one hue that separates from both poles under red-green colour blindness. It
 also sits under the date rather than over the fill, so the two never have to be told
 apart by hue alone.
+
+A dispatch block keeps one colour on both screens: blue to buy, red to sell. The day
+view and the forecast view call `_dispatchFigure`, so neither screen teaches a second
+key.
 """
 import calendar as calendarModule
+import textwrap
 
 import numpy as np
 import pandas as pd
@@ -18,6 +23,7 @@ import plotly.graph_objects as go
 
 import config
 from backtest import metrics
+from data.forecasts import p5minIntervals
 
 surface = "#fcfcfb"
 ink = "#0b0b0b"
@@ -29,9 +35,9 @@ profitPole = "#1f9d6a"
 lossPole = "#e34948"
 volDot = "#e8a33a"
 neutral = "#f0efec"
-series = {"realised": "#2a78d6", "forecast": "#eb6834",
-          "agent": "#1baf7a", "oracle": "#4a3aa7"}
-
+# Opaque enough to read as a block, open enough to keep the price path visible.
+chargeBlock = "rgba(42,120,214,0.42)"
+dischargeBlock = "rgba(227,73,72,0.42)"
 weekdayNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 highVolKey = f"spike intensity at or above ${config.high_vol_intensity:.2f}"
 
@@ -83,9 +89,14 @@ def summaryTiles(frame):
              "raw": raw, "sub": sub} for label, value, raw, sub in rows]
 
 
+def _wrap(text, width=84):
+    """Plotly never wraps annotation text, so a long message runs off the panel."""
+    return "<br>".join(textwrap.wrap(str(text), width))
+
+
 def _emptyFigure(message):
     figure = go.Figure()
-    figure.add_annotation(text=message, showarrow=False, x=0.5, y=0.5,
+    figure.add_annotation(text=_wrap(message), showarrow=False, x=0.5, y=0.5,
                           xref="paper", yref="paper",
                           font=dict(color=secondaryInk, size=14))
     figure.update_layout(**_layout(height=260))
@@ -214,72 +225,102 @@ def monthFigure(frame, month, selected=None):
     return figure
 
 
-def dayFigure(trajectory, day, algo=None, trainMode=None, priceSource=None):
-    """One test day: the price paths on top, the state of charge below.
+def dayFigure(frame, blocks=(), day=None, region=None, model=None):
+    """One test day: the realised price path, and the dispatch the agent ran over it.
 
-    Two panels rather than two y-scales. Price in $/MWh and state of charge in 0-1 do
-    not share an axis. The oracle series the runner writes is kept whichever agent train mode
-    is selected, so the day always shows what perfect foresight would have done.
+    The same figure the current forecast screen draws, over realised prices rather than
+    a forecast. `_dispatchFigure` explains how a block is placed.
     """
-    rows = trajectory
-    oracle = rows[rows.trainMode == "oracle"] if not rows.empty else rows
-    for column, wanted in (("algo", algo), ("trainMode", trainMode),
-                           ("priceSource", priceSource)):
-        if wanted is not None and not rows.empty:
-            rows = rows[rows[column] == wanted]
-    if rows.empty:
+    if frame.empty:
         return _emptyFigure(f"no trajectory written for {pd.Timestamp(day):%Y-%m-%d}")
+    clock = pd.to_datetime(frame.settlementdate)
+    # Every realised interval is its own published price, so none is thinned out.
+    drawn = np.ones(len(clock), dtype=bool)
+    return _dispatchFigure(
+        clock, frame.price.to_numpy(dtype=float), blocks, drawn,
+        name="Realised price", yTitle="Realised price $/MWh", hoverTime="%H:%M",
+        title=" · ".join(part for part in (region, model) if part))
 
-    realised = rows[rows.priceSource == "realised"]
-    forecast = rows[rows.priceSource == "forecast"]
-    spine = realised if not realised.empty else forecast
-    clock = pd.to_datetime(spine.settlementdate)
+
+def publishedIntervals(clock, fine=p5minIntervals):
+    """Which rows of a forecast path AEMO actually published as separate numbers.
+
+    P5MIN gives the first `fine` intervals one price each. PREDISPATCH gives the rest
+    one price per half hour, which `data.forecasts` then holds flat across the six
+    5-minute slots of that half hour. Drawing all six invents detail the run does not
+    have, so only the half-hour stamp is kept past the P5MIN part.
+    """
+    return (np.arange(len(clock)) < fine) | (clock.dt.minute % 30 == 0).to_numpy()
+
+
+def _dispatchFigure(clock, price, blocks, drawn, *, name, yTitle, hoverTime,
+                    title=None, note=None):
+    """A price path with the dispatch blocks of one policy over it.
+
+    The path is drawn as the step function a dispatch price is: each point holds from
+    the end of the interval before it, so a PREDISPATCH half hour reads as one flat
+    30-minute block and a 5-minute interval as one flat 5-minute block.
+
+    The horizontal rule is the mean price, which is the line the blocks are read
+    against: a discharge block stands above it and a charge block hangs below it. Each
+    block spans the intervals of one unbroken run of the same action, and reaches from
+    the rule to the furthest price inside that run. The fills sit under the price line,
+    so the path stays readable through them.
+
+    `drawn` selects which rows the line uses. The blocks and the rule always read every
+    interval, so thinning the line never moves a block.
+    """
+    rule = float(np.mean(price))
+    shapes = []
+    for action, start, end in blocks:
+        inside = price[((clock > start) & (clock <= end)).to_numpy()]
+        if not len(inside):
+            continue
+        far = float(inside.max() if action == "discharge" else inside.min())
+        shapes.append(dict(
+            type="rect", xref="x", yref="y", x0=start, x1=end, layer="below",
+            y0=min(rule, far), y1=max(rule, far), line=dict(width=0),
+            fillcolor=dischargeBlock if action == "discharge" else chargeBlock))
 
     figure = go.Figure()
     figure.add_trace(go.Scatter(
-        x=clock, y=spine.price, name="Realised price", mode="lines", yaxis="y",
-        line=dict(color=series["realised"], width=2),
-        hovertemplate="%{x|%H:%M} · $%{y:.2f}<extra>Realised price</extra>"))
-    if not forecast.empty:
+        x=clock[drawn], y=price[drawn], name=name, mode="lines",
+        line=dict(color=ink, width=2, shape="vh"),
+        hovertemplate="%%{x|%s} · $%%{y:.2f}<extra>%s</extra>" % (hoverTime, name)))
+    # Two empty traces carry the key. A shape cannot hold a legend entry of its own.
+    for label, colour in (("Discharge: sell", dischargeBlock),
+                          ("Charge: buy", chargeBlock)):
         figure.add_trace(go.Scatter(
-            x=pd.to_datetime(forecast.settlementdate), y=forecast.observedPrice,
-            name="Forecast seen", mode="lines", yaxis="y",
-            line=dict(color=series["forecast"], width=2, dash="dot"),
-            hovertemplate="%{x|%H:%M} · $%{y:.2f}<extra>Forecast seen</extra>"))
-
-    for source, label, dash in (("realised", "Agent SoC", "solid"),
-                                ("forecast", "Agent SoC on forecast", "dot")):
-        side = rows[rows.priceSource == source]
-        if side.empty:
-            continue
-        figure.add_trace(go.Scatter(
-            x=pd.to_datetime(side.settlementdate), y=side.soc, name=label,
-            mode="lines", yaxis="y2",
-            line=dict(color=series["agent"], width=2, dash=dash),
-            hovertemplate="%%{x|%%H:%%M} · %%{y:.1%%}<extra>%s</extra>" % label))
-
-    if not oracle.empty:
-        oracle = oracle[oracle.priceSource == oracle.priceSource.iloc[0]]
-        figure.add_trace(go.Scatter(
-            x=pd.to_datetime(oracle.settlementdate), y=oracle.soc,
-            name="Oracle SoC", mode="lines", yaxis="y2",
-            line=dict(color=series["oracle"], width=2),
-            hovertemplate="%{x|%H:%M} · %{y:.1%}<extra>Oracle SoC</extra>"))
+            x=[None], y=[None], mode="markers", name=label, hoverinfo="skip",
+            marker=dict(symbol="square", size=13, color=colour, line=dict(width=0)),
+            showlegend=True))
 
     figure.update_layout(**_layout(
-        height=520, hovermode="x unified",
-        # Anchored to the lower panel so the shared tick row sits under the whole
-        # figure rather than between the two panels.
-        xaxis=dict(domain=[0, 1], anchor="y2", showgrid=False, linecolor=axisLine,
-                   tickfont=dict(color=mutedInk)),
-        yaxis=dict(domain=[0.54, 1.0], anchor="free", position=0.0,
-                   title=dict(text="Price $/MWh"),
-                   gridcolor=gridline, zeroline=True, zerolinecolor=axisLine,
-                   tickfont=dict(color=mutedInk)),
-        yaxis2=dict(domain=[0.0, 0.42], title=dict(text="State of charge"),
-                    tickformat=".0%", range=[-0.02, 1.02], gridcolor=gridline,
-                    zeroline=False, tickfont=dict(color=mutedInk), anchor="x"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.04, x=0,
+        height=460, hovermode="x unified", shapes=shapes,
+        title=dict(text=title or "", x=0, font=dict(color=secondaryInk, size=13)),
+        margin=dict(l=56, r=24, t=58, b=40),
+        xaxis=dict(showgrid=False, linecolor=axisLine, tickfont=dict(color=mutedInk)),
+        yaxis=dict(title=dict(text=yTitle), gridcolor=gridline,
+                   zeroline=False, tickfont=dict(color=mutedInk)),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0,
                     font=dict(color=secondaryInk)),
     ))
+    figure.add_hline(y=rule, line=dict(color=axisLine, width=1))
+    if note:
+        figure.add_annotation(text=_wrap(note), showarrow=False, x=0, y=1.0,
+                              xanchor="left", yanchor="bottom", xref="paper",
+                              yref="paper", align="left",
+                              font=dict(color=lossPole, size=12))
     return figure
+
+
+def forecastFigure(frame, blocks=(), region=None, model=None, note=None):
+    """The forward AEMO price path, with the dispatch a policy would run over it."""
+    if frame.empty:
+        return _emptyFigure(note or "no forecast published for this run time")
+    clock = pd.to_datetime(frame.settlementdate)
+    return _dispatchFigure(
+        clock, frame.price.to_numpy(dtype=float), blocks, publishedIntervals(clock),
+        name="AEMO forecast", yTitle="Forecast price $/MWh",
+        hoverTime="%d/%m %H:%M", note=note,
+        title=" · ".join(part for part in (region, model) if part))

@@ -162,35 +162,42 @@ class TestMonth:
 
 
 class TestDayView:
-    # The price panel draws both the realised path and the forecast the agent saw.
-    def test_it_draws_both_price_paths(self, trajectory):
-        figure = figures.dayFigure(trajectory, DAY)
+    # The day view is the forecast screen's figure over realised prices, so it carries
+    # the price path and the key to the two block colours.
+    def test_it_draws_the_realised_path_and_the_block_key(self, trajectory):
+        path = data.dispatchPath(trajectory, priceSource="realised")
+        figure = figures.dayFigure(path, [], DAY)
         names = [trace.name for trace in figure.data]
-        assert "Realised price" in names and "Forecast seen" in names
+        assert names == ["Realised price", "Discharge: sell", "Charge: buy"]
 
-    # The oracle series the runner wrote is drawn beside the agent.
-    def test_the_oracle_soc_joins_the_agent(self, withOracle):
-        figure = figures.dayFigure(withOracle, DAY)
-        assert "Oracle SoC" in [trace.name for trace in figure.data]
+    # One y axis, because the figure draws price alone.
+    def test_everything_sits_on_one_axis(self, trajectory):
+        path = data.dispatchPath(trajectory, priceSource="realised")
+        figure = figures.dayFigure(path, [], DAY)
+        assert {trace.yaxis for trace in figure.data} == {None}
 
-    # Selecting one agent train mode must not filter the oracle series out with it.
-    def test_an_arm_filter_keeps_the_oracle(self, withOracle):
-        figure = figures.dayFigure(withOracle, DAY, algo="maskableppo", trainMode="warm")
-        names = [trace.name for trace in figure.data]
-        assert "Oracle SoC" in names and "Agent SoC" in names
+    # A charge block hangs below the mean price and a discharge block stands above it,
+    # which is what makes the pattern readable against the path.
+    def test_the_blocks_straddle_the_mean(self, trajectory):
+        path = data.dispatchPath(trajectory, priceSource="realised")
+        clock = pd.to_datetime(path.settlementdate)
+        rule = float(path.price.mean())
+        figure = figures.dayFigure(
+            path, [("charge", clock.iloc[0], clock.iloc[5]),
+                   ("discharge", clock.iloc[-6], clock.iloc[-1])], DAY)
+        # The mean rule is a shape too, so it trails the two blocks.
+        charge, discharge = figure.layout.shapes[:2]
+        assert charge.y0 < rule and charge.y1 == pytest.approx(rule)
+        assert discharge.y0 == pytest.approx(rule) and discharge.y1 > rule
 
-    # A run written before the oracle series existed still renders, agent alone.
-    def test_no_oracle_still_renders(self, trajectory):
-        figure = figures.dayFigure(trajectory, DAY)
-        assert "Oracle SoC" not in [trace.name for trace in figure.data]
-
-    # Price and state of charge never share one y axis.
-    def test_price_and_soc_are_separate_panels(self, trajectory):
-        figure = figures.dayFigure(trajectory, DAY)
-        axes = {trace.yaxis for trace in figure.data}
-        assert axes == {"y", "y2"}
+    # Both screens fill a block with the same colour, so neither teaches a second key.
+    def test_the_block_colours_match_the_forecast_screen(self, trajectory):
+        path = data.dispatchPath(trajectory, priceSource="realised")
+        clock = pd.to_datetime(path.settlementdate)
+        figure = figures.dayFigure(path, [("charge", clock.iloc[0], clock.iloc[5])], DAY)
+        assert figure.layout.shapes[0].fillcolor == figures.chargeBlock
 
     # A day with no trajectory rows says so rather than drawing an empty frame.
     def test_an_empty_day_renders_a_message(self, trajectory):
-        figure = figures.dayFigure(trajectory.iloc[0:0], DAY)
+        figure = figures.dayFigure(data.dispatchPath(trajectory.iloc[0:0]), [], DAY)
         assert figure.layout.annotations and "no" in figure.layout.annotations[0].text

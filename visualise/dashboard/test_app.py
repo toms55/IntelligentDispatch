@@ -2,13 +2,29 @@
 
 No server: the layout is built once and the callbacks are called as plain functions.
 """
+from pathlib import Path
+
 import pytest
 
 from visualise.dashboard import __main__ as app
-from visualise.dashboard import data
+from rl import policies
+from visualise.dashboard import data, live
 from visualise.dashboard.test_data import DAY, REGION, run  # noqa: F401
+from visualise.dashboard.test_live import path
 
 MODEL = "maskableppo-warm-s0-realised"
+LIVE_MODEL = "maskableppo-warm-s0"
+
+
+def publish(root, region=None, seed=0):
+    """One published agent under `root`, as training would leave it."""
+    source = Path(root) / "checkpoint"
+    source.mkdir(parents=True, exist_ok=True)
+    (source / policies.agentFile).write_bytes(b"")
+    (source / policies.scalerFile).write_text("{}")
+    policies.publish(source, region or REGION, "maskableppo", "warm", seed,
+                     root=Path(root) / "trainedPolicies")
+    return Path(root) / "trainedPolicies"
 
 
 def _ids(node, found=None):
@@ -161,6 +177,60 @@ class TestRedraw:
         _, board, _ = _callback(built, "tiles")(
             {"region": REGION, "day": "2025-01-03", "view": "day", "model": MODEL})
         assert board.layout.annotations
+
+
+class TestForecastScreen:
+    # The screen runs the agent itself, so it offers what trainedPolicies/ holds, not
+    # what the backtest scored. The backtest label carries a price source; this does not.
+    def test_it_offers_the_published_agents(self, run, tmp_path):
+        built = app.build(REGION, run, publish(tmp_path))
+        _, options, value = _callback(built, "live-state")("live", REGION, None, 0)
+        assert [item["value"] for item in options] == [live.thresholdLabel, LIVE_MODEL]
+        assert value == live.thresholdLabel
+
+    # A machine holding no agent still offers the rule, so the screen always works.
+    def test_a_machine_without_agents_offers_the_rule(self, run, tmp_path):
+        built = app.build(REGION, run, tmp_path)
+        _, options, _ = _callback(built, "live-state")("live", REGION, None, 0)
+        assert [item["value"] for item in options] == [live.thresholdLabel]
+
+    # A model the new region does not hold falls back before the board fetches it.
+    def test_an_unknown_model_falls_back(self, run, tmp_path):
+        built = app.build(REGION, run, tmp_path)
+        state, _, value = _callback(built, "live-state")("live", REGION, "gone", 0)
+        assert value == live.thresholdLabel and state["model"] == live.thresholdLabel
+
+    # One screen is shown and the other is hidden, never both.
+    def test_the_tabs_swap_the_screens(self, run):
+        swap = _callback(app.build(REGION, run), "backtest-screen")
+        assert swap("live") == ({"display": "none"}, {})
+        assert swap("backtest") == ({}, {"display": "none"})
+
+    # The box over the board names the interval the forecast starts on.
+    def test_the_box_names_the_start_of_the_forecast(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(live, "forecastPath", lambda region: path([10.0, 300.0]))
+        figure, box = app.forecastBoard(REGION, live.thresholdLabel, tmp_path)
+        assert figure.data[0].name == "AEMO forecast"
+        assert box[1].children == "01/01/2025 10:05"
+
+    # The prices are AEMO's, so a model with no agent still gets its price path.
+    def test_an_unpublished_model_still_draws_the_prices(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(live, "forecastPath", lambda region: path([10.0, 300.0]))
+        figure, box = app.forecastBoard(REGION, MODEL, tmp_path)
+        assert figure.data[0].name == "AEMO forecast"
+        assert not [s for s in figure.layout.shapes if s.type == "rect"]
+        assert "not published" in figure.layout.annotations[0].text
+        assert box[1].children == "01/01/2025 10:05"
+
+    # A NEMWeb failure is written on the board, not swallowed into an empty chart.
+    def test_a_failed_fetch_says_why(self, monkeypatch, tmp_path):
+        def refuse(region):
+            raise ValueError("AEMO has not published this run")
+
+        monkeypatch.setattr(live, "forecastPath", refuse)
+        figure, box = app.forecastBoard(REGION, live.thresholdLabel, tmp_path)
+        assert "not published" in figure.layout.annotations[0].text
+        assert box[1].children == "no run"
 
 
 class TestParseDay:

@@ -8,8 +8,7 @@ import config
 from rl import algos
 from rl.env import BessEnv
 from rl.features import PriceScaler, scalerFor
-
-scalerFile = "scaler.json"
+from rl.policies import scalerFile
 
 
 def saveScaler(directory, scaler):

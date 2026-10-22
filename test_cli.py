@@ -264,9 +264,13 @@ class TestRlSubcommands:
     """Argument plumbing only. Training itself is covered in rl/test_algos.py."""
 
     @pytest.fixture
-    def rlCalls(self, monkeypatch, series):
-        from rl import baseline, evaluate, train
+    def rlCalls(self, monkeypatch, series, tmp_path):
+        from rl import baseline, evaluate, policies, train
         seen = {}
+        # Training publishes its final agent, so the fake has to leave a finished
+        # checkpoint behind, and the publish must land in the temporary directory.
+        monkeypatch.setattr(policies, "defaultRoot", tmp_path / "trainedPolicies")
+        seen["policies"] = tmp_path / "trainedPolicies"
 
         def fakeBuild(prices, **kwargs):
             seen["baseline"] = kwargs
@@ -276,7 +280,11 @@ class TestRlSubcommands:
 
         def fakeTrain(algoName, prices, model, **kwargs):
             seen.setdefault("train", []).append((algoName, kwargs))
-            return None, Path("runs/fake/agent")
+            directory = tmp_path / "runs" / f"{algoName}_seed{kwargs['seed']}"
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / policies.agentFile).write_bytes(b"")
+            (directory / policies.scalerFile).write_text('{"cap": 16600.0}')
+            return None, directory / "agent"
 
         def fakeEvaluateSeeds(checkpoints, prices, model, **kwargs):
             seen["eval"] = (sorted(checkpoints), kwargs)
@@ -315,6 +323,16 @@ class TestRlSubcommands:
                   "--seeds", "0", "1", "2", "--timesteps", "10"])
         assert len(rlCalls["train"]) == 3
         assert [kwargs["seed"] for _, kwargs in rlCalls["train"]] == [0, 1, 2]
+
+    # Every trained agent ends up under trainedPolicies/, which is where the dashboard
+    # reads it. One fit from fresh weights is a cold agent.
+    def test_train_publishes_each_seed(self, rlCalls):
+        from rl import policies
+
+        cli.main(["train", "2024-01-10", "2024-01-11", "--horizon", "4",
+                  "--seeds", "0", "1", "--timesteps", "10"])
+        found = policies.available("SA1", rlCalls["policies"])
+        assert sorted(found) == ["maskableppo-cold-s0", "maskableppo-cold-s1"]
 
     def test_train_defaults_to_the_configured_seeds(self, rlCalls):
         cli.main(["train", "2024-01-10", "2024-01-11", "--horizon", "4",
