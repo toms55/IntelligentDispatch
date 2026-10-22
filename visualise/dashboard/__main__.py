@@ -219,10 +219,10 @@ def liveModels(region, policyRoot=live.defaultCheckpoints):
     """The forecast screen's model list: what `trainedPolicies/` holds for `region`.
 
     Not the backtest screen's list. That one names runs already scored and needs no
-    weights, so it offers models this screen cannot load. The rule leads, because it
-    needs no agent and so is always there.
+    weights, so it offers models this screen cannot load. A machine that holds no
+    agent for `region` gets an empty list, and the board then draws the prices alone.
     """
-    return [live.thresholdLabel] + sorted(live.findCheckpoints(region, policyRoot))
+    return sorted(live.findCheckpoints(region, policyRoot))
 
 
 def forecastBoard(region, model, policyRoot):
@@ -329,7 +329,7 @@ def register(app, loader, policyRoot=live.defaultCheckpoints):
                   Input("forecast-refresh", "n_clicks"))
     def setLiveState(screen, region, model, clicks):
         names = liveModels(region, policyRoot)
-        model = model if model in names else names[0]
+        model = model if model in names else (names[0] if names else None)
         return ({"screen": screen, "region": region, "model": model, "clicks": clicks},
                 [{"label": name, "value": name} for name in names], model)
 

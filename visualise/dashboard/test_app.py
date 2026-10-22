@@ -10,7 +10,8 @@ from visualise.dashboard import __main__ as app
 from rl import policies
 from visualise.dashboard import data, live
 from visualise.dashboard.test_data import DAY, REGION, run  # noqa: F401
-from visualise.dashboard.test_live import path, sawtooth  # noqa: F401
+from visualise.dashboard.test_live import (path, sawtooth,  # noqa: F401
+                                           standIn)
 
 MODEL = "maskableppo-warm-s0-realised"
 LIVE_MODEL = "maskableppo-warm-s0"
@@ -211,20 +212,21 @@ class TestForecastScreen:
     def test_it_offers_the_published_agents(self, run, tmp_path):
         built = app.build(REGION, run, publish(tmp_path))
         _, options, value = _callback(built, "live-state")("live", REGION, None, 0)
-        assert [item["value"] for item in options] == [live.thresholdLabel, LIVE_MODEL]
-        assert value == live.thresholdLabel
+        assert [item["value"] for item in options] == [LIVE_MODEL]
+        assert value == LIVE_MODEL
 
-    # A machine holding no agent still offers the rule, so the screen always works.
-    def test_a_machine_without_agents_offers_the_rule(self, run, tmp_path):
+    # A machine holding no agent offers nothing. Every model here needs its weights,
+    # so there is no model to put in their place.
+    def test_a_machine_without_agents_offers_nothing(self, run, tmp_path):
         built = app.build(REGION, run, tmp_path)
-        _, options, _ = _callback(built, "live-state")("live", REGION, None, 0)
-        assert [item["value"] for item in options] == [live.thresholdLabel]
+        state, options, value = _callback(built, "live-state")("live", REGION, None, 0)
+        assert options == [] and value is None and state["model"] is None
 
     # A model the new region does not hold falls back before the board fetches it.
     def test_an_unknown_model_falls_back(self, run, tmp_path):
-        built = app.build(REGION, run, tmp_path)
+        built = app.build(REGION, run, publish(tmp_path))
         state, _, value = _callback(built, "live-state")("live", REGION, "gone", 0)
-        assert value == live.thresholdLabel and state["model"] == live.thresholdLabel
+        assert value == LIVE_MODEL and state["model"] == LIVE_MODEL
 
     # One screen is shown and the other is hidden, never both.
     def test_the_tabs_swap_the_screens(self, run):
@@ -235,7 +237,7 @@ class TestForecastScreen:
     # The box over the board names the interval the forecast starts on.
     def test_the_box_names_the_start_of_the_forecast(self, monkeypatch, tmp_path):
         monkeypatch.setattr(live, "forecastPath", lambda region: path([10.0, 300.0]))
-        figure, box, _ = app.forecastBoard(REGION, live.thresholdLabel, tmp_path)
+        figure, box, _ = app.forecastBoard(REGION, None, tmp_path)
         assert figure.data[0].name == "AEMO forecast"
         assert box[1].children == "01/01/2025 10:05"
 
@@ -249,9 +251,10 @@ class TestForecastScreen:
         assert box[1].children == "01/01/2025 10:05"
 
     # The cards come back with the board, so one network read fills the whole screen.
-    def test_the_board_returns_the_cards(self, monkeypatch, sawtooth, tmp_path):
+    def test_the_board_returns_the_cards(self, monkeypatch, sawtooth, standIn,
+                                        tmp_path):
         monkeypatch.setattr(live, "forecastPath", lambda region: sawtooth)
-        _, _, tiles = app.forecastBoard(REGION, live.thresholdLabel, tmp_path)
+        _, _, tiles = app.forecastBoard(REGION, LIVE_MODEL, tmp_path)
         assert [tile["label"] for tile in tiles] == ["Expected revenue",
                                                      "Current state of charge"]
         assert tiles[0]["raw"] > 0
@@ -266,7 +269,7 @@ class TestForecastScreen:
             raise ValueError("AEMO has not published this run")
 
         monkeypatch.setattr(live, "forecastPath", refuse)
-        figure, box, tiles = app.forecastBoard(REGION, live.thresholdLabel, tmp_path)
+        figure, box, tiles = app.forecastBoard(REGION, LIVE_MODEL, tmp_path)
         assert "not published" in figure.layout.annotations[0].text
         assert box[1].children == "no run"
         assert tiles[0]["value"] == "no data"
