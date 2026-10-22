@@ -5,8 +5,8 @@
 It reads the one run under `results/`. Pass `--results DIR` when that directory holds
 more than one run.
 
-Backtest. Pick a model and a region at the top. Below them a date field, a day stepper
-and a calendar button drive one board, which shows either the month or one day's
+Backtest. Pick a model and a region at the top. Below them a date field, a month
+stepper and a calendar button drive one board, which shows either the month or one day's
 dispatch, never both. Click a day in the month to open it.
 
 Current forecast. Pick a model and a region, and the board draws the AEMO price path
@@ -105,7 +105,12 @@ def nextState(triggered, state, click=None, text=None, region=None, models=()):
         state["view"] = "calendar"
     elif triggered in ("step-prev", "step-next"):
         step = -1 if triggered == "step-prev" else 1
-        state["day"] = str((pd.Timestamp(state["day"]) + pd.Timedelta(days=step)).date())
+        # The arrows move the month, because the calendar is the view they drive. The
+        # date field moves one day, and a cell click picks one out of the month.
+        # `DateOffset` clamps the day to the month it lands in, so 31 January steps
+        # to 28 February and not into March.
+        moved = pd.Timestamp(state["day"]) + pd.DateOffset(months=step)
+        state["day"] = str(moved.date())
     elif triggered == "day-text":
         parsed = parseDay(text)
         if parsed is not None:
@@ -141,9 +146,9 @@ def _controls(regions, region):
                                 style={**buttonStyle, "width": "140px"})]),
             html.Div([html.Label(" ", style=labelStyle),
                       html.Div([html.Button("<", id="step-prev", n_clicks=0,
-                                            style=buttonStyle),
+                                            title="Previous month", style=buttonStyle),
                                 html.Button(">", id="step-next", n_clicks=0,
-                                            style=buttonStyle)],
+                                            title="Next month", style=buttonStyle)],
                                style={"display": "flex", "gap": "6px"})]),
             html.Div([html.Label(" ", style=labelStyle),
                       html.Button("Calendar", id="show-calendar", n_clicks=0,
