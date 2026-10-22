@@ -99,9 +99,35 @@ class TestNextState:
         click = {"points": [{"customdata": ["2025-01-05", 0, 12.0, 30.0]}]}
         assert app.nextState("board", state, click=click) == state
 
+    # What Dash really sends for a heatmap cell: a row and a column, and no date.
+    # Dash reads `customdata` out of the trace by the point number, and a heatmap
+    # point number is a [row, column] pair, so the date the cell carries is dropped.
+    # January 2025 starts on a Wednesday, so row 1 column 0 is the 6th.
+    def test_a_cell_click_without_customdata_opens_its_day(self):
+        click = {"points": [{"curveNumber": 0, "x": 0, "y": 1, "z": 12.0,
+                             "pointNumber": [1, 0]}]}
+        got = app.nextState("board", self.base, click=click)
+        assert got["day"] == "2025-01-06" and got["view"] == "day"
+
+    # The row and the column are read against the month the board draws, which is the
+    # month of the selected day, not the month the reader started on.
+    def test_a_cell_click_reads_the_month_on_screen(self):
+        click = {"points": [{"curveNumber": 0, "x": 0, "y": 1, "z": 12.0,
+                             "pointNumber": [1, 0]}]}
+        state = dict(self.base, day="2025-02-20")
+        # February 2025 starts on a Saturday, so row 1 column 0 is the 3rd.
+        assert app.nextState("board", state, click=click)["day"] == "2025-02-03"
+
+    # A cell outside the month, which the trailing blanks of the grid are, opens
+    # nothing.
+    def test_a_blank_cell_keeps_the_day(self):
+        click = {"points": [{"curveNumber": 0, "x": 6, "y": 5}]}
+        got = app.nextState("board", self.base, click=click)
+        assert got["day"] == self.base["day"] and got["view"] == "calendar"
+
     # A click that lands on the volatility dot carries no date to open.
     def test_a_click_without_a_date_keeps_the_day(self):
-        got = app.nextState("board", self.base, click={"points": [{"x": 2}]})
+        got = app.nextState("board", self.base, click={"points": [{"text": "7"}]})
         assert got["day"] == self.base["day"]
 
     # The calendar button comes back from a day without moving the day.

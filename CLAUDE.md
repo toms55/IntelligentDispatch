@@ -227,6 +227,17 @@ cover.
 - **A PREDISPATCH run is filed under its trading day.** The run labelled 04:00 on the
   1st is the previous trading day's last and sits in the previous month's MMSDM file;
   `fileLag` in `forecasts.py` is why `runRows` reads that month too.
+- **Dash drops a heatmap point's `customdata` on click.** It reads `customdata` out of
+  the trace by the point number, and a heatmap point number is a `[row, column]` pair
+  rather than one integer. The calendar therefore finds the clicked day from the row
+  and the column that do arrive, against the month on screen. See `clickedDay` in
+  `visualise/dashboard/__main__.py`. A per-cell date in `customdata` reaches the hover
+  template but never the callback.
+- **A fold scores every seed but writes one seed's trajectory.** `trajectorySeed` in
+  `backtest/runner.py` picks it, and it defaults to 0. The backtest screen lists every
+  seed, because every seed has day rows, so the day view of another seed is empty by
+  design. It must stay empty: drawing seed 0's dispatch under another seed's name is a
+  wrong chart, not a missing one.
 - `nemosis` downloads AEMO archive files into `data_cache/` on first use, so the first
   call for a date range is slow and network-bound while later calls are local. The
   directory is gitignored and safe to delete.

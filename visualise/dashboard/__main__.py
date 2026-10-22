@@ -13,6 +13,7 @@ not what the backtest scored. See `visualise/dashboard/live.py` for what the two
 screens do not share.
 """
 import argparse
+import calendar as calendarModule
 
 import pandas as pd
 from dash import Dash, Input, Output, State, ctx, dcc, html
@@ -61,6 +62,33 @@ def showDay(day):
     return pd.Timestamp(day).strftime(dateFormat)
 
 
+def clickedDay(click, month):
+    """The date a click on the calendar landed on, or None when it hit no cell.
+
+    The cell is found from the row and the column, not from the cell's own date. Dash
+    reads a point's `customdata` out of the trace by the point number, and a heatmap
+    point number is a [row, column] pair rather than one integer, so Dash drops the
+    date the cell carries. The row and the column always arrive, and the board draws
+    the month of `month`, which is enough to name the day.
+
+    A click on an untested cell never reaches here: `hoverongaps=False` stops the
+    figure from reporting a cell that holds no profit.
+    """
+    point = click["points"][0]
+    if point.get("customdata"):
+        return str(point["customdata"][0])
+    row, column = point.get("y"), point.get("x")
+    if row is None or column is None:
+        return None
+    first = pd.Timestamp(month).normalize().replace(day=1)
+    # Rounded, because the date and the volatility dot of a cell sit a fraction of a
+    # row above and below the centre of it.
+    number = round(row) * 7 + round(column) - int(first.dayofweek) + 1
+    if not 1 <= number <= calendarModule.monthrange(first.year, first.month)[1]:
+        return None
+    return str(first.replace(day=number).date())
+
+
 def nextState(triggered, state, click=None, text=None, region=None, models=()):
     """What the state becomes after a control fires. Pure, so it needs no server.
 
@@ -81,9 +109,9 @@ def nextState(triggered, state, click=None, text=None, region=None, models=()):
         if parsed is not None:
             state["day"] = parsed
     elif triggered == "board" and click and state["view"] == "calendar":
-        point = click["points"][0]
-        if point.get("customdata"):
-            state["day"] = str(point["customdata"][0])
+        chosen = clickedDay(click, state["day"])
+        if chosen is not None:
+            state["day"] = chosen
             state["view"] = "day"
     if state.get("model") not in models and models:
         state["model"] = models[0]
@@ -269,7 +297,7 @@ def register(app, loader, policyRoot=live.defaultCheckpoints):
             path = data.dispatchPath(
                 data.trajectories(run, day),
                 algo=row.get("algo"), trainMode=row.get("trainMode"),
-                priceSource=row.get("priceSource"))
+                seed=row.get("seed"), priceSource=row.get("priceSource"))
             board = figures.dayFigure(path, live.blocks(path), day,
                                       region=state["region"], model=state["model"])
             label = f"{day:%A %-d %B %Y}, 04:00 to 04:00"

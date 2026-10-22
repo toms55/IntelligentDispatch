@@ -89,15 +89,20 @@ def trajectories(run, day):
 dispatchColumns = ("settlementdate", "price", "action", "soc")
 
 
-def dispatchPath(trajectory, algo=None, trainMode=None, priceSource=None):
+def dispatchPath(trajectory, algo=None, trainMode=None, seed=None, priceSource=None):
     """One model's intervals for a day: the realised price, and the action it took.
 
     The action comes from `bought` and `sold`, the same two numbers the forecast screen
     reads, so both screens draw a dispatch block the same way. `price` is the realised
     price the agent was paid, whichever price source it observed.
+
+    The seed is part of the match. A fold scores every seed but writes the per-interval
+    trajectory of one of them (`backtest.runner`'s `trajectorySeed`), so a seed whose
+    trajectory is not on disk has to come back empty rather than draw another seed's
+    dispatch under its own name.
     """
     rows = trajectory
-    for column, wanted in (("algo", algo), ("trainMode", trainMode),
+    for column, wanted in (("algo", algo), ("trainMode", trainMode), ("seed", seed),
                            ("priceSource", priceSource)):
         if wanted is not None and not rows.empty:
             rows = rows[rows[column] == wanted]

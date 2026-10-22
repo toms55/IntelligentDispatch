@@ -177,6 +177,12 @@ class TestDispatchPath:
         both = pd.concat([self.path(), self.path(algo="dqn")], ignore_index=True)
         assert len(data.dispatchPath(both, algo="maskableppo")) == 12
 
+    # A fold writes one seed's trajectory, so a seed that is not on disk must come
+    # back empty rather than draw seed 0's dispatch under its own name.
+    def test_a_seed_without_a_trajectory_is_empty(self):
+        assert data.dispatchPath(self.path(), seed=3).empty
+        assert len(data.dispatchPath(self.path(), seed=0)) == 12
+
     # A day with no rows gives an empty frame with the columns the chart expects.
     def test_an_empty_trajectory_is_empty(self):
         got = data.dispatchPath(self.path().iloc[0:0])

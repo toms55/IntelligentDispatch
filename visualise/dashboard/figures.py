@@ -232,7 +232,11 @@ def dayFigure(frame, blocks=(), day=None, region=None, model=None):
     a forecast. `_dispatchFigure` explains how a block is placed.
     """
     if frame.empty:
-        return _emptyFigure(f"no trajectory written for {pd.Timestamp(day):%Y-%m-%d}")
+        named = f" under {model}" if model else ""
+        return _emptyFigure(
+            f"no trajectory written for {pd.Timestamp(day):%Y-%m-%d}{named}. A fold "
+            "scores every seed but writes the per-interval trajectory of one seed "
+            "only, so another seed of the same model holds this day.")
     clock = pd.to_datetime(frame.settlementdate)
     # Every realised interval is its own published price, so none is thinned out.
     drawn = np.ones(len(clock), dtype=bool)
