@@ -88,6 +88,9 @@ def main(argv=None):
 
     destination = args.out or (args.path / f"{args.region}.png" if args.path.is_dir()
                                 else args.path.with_suffix(".png"))
+    # `--out results/figures/x.png` names a directory the checkout may not hold, so
+    # make it rather than fail inside savefig.
+    destination.parent.mkdir(parents=True, exist_ok=True)
     if args.compare_sources:
         saveSourceComparisonFigure(sections, region, algo, destination,
                                     trainWindow=trainWindow)
