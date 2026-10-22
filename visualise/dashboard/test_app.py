@@ -135,15 +135,17 @@ class TestNextState:
         got = app.nextState("show-calendar", dict(self.base, view="day"))
         assert got["view"] == "calendar" and got["day"] == self.base["day"]
 
-    # The arrows step one day at a time, and may cross a month boundary.
-    @pytest.mark.parametrize("trigger,wanted", [("step-prev", "2025-01-07"),
-                                                ("step-next", "2025-01-09")])
-    def test_the_arrows_step_one_day(self, trigger, wanted):
+    # The arrows step one month at a time, which is what the calendar shows.
+    @pytest.mark.parametrize("trigger,wanted", [("step-prev", "2024-12-08"),
+                                                ("step-next", "2025-02-08")])
+    def test_the_arrows_step_one_month(self, trigger, wanted):
         assert app.nextState(trigger, self.base)["day"] == wanted
 
-    def test_a_step_crosses_the_month(self):
+    # A step into a shorter month holds the last day of it, and does not run over
+    # into the month after.
+    def test_a_step_into_a_short_month_clamps(self):
         state = dict(self.base, day="2025-01-31")
-        assert app.nextState("step-next", state)["day"] == "2025-02-01"
+        assert app.nextState("step-next", state)["day"] == "2025-02-28"
 
     # The field is read as DD/MM/YYYY, which is the Australian order.
     def test_the_field_reads_day_first(self):
