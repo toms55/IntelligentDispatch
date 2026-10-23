@@ -189,6 +189,9 @@ def _liveControls(regions, region):
     button have no meaning here, so the box in their place names the run instead."""
     return html.Div([
         html.Div([
+            html.Div([html.Label(" ", style=labelStyle),
+                      html.Button("Refresh", id="forecast-refresh", n_clicks=0,
+                                  style=buttonStyle)]),
             html.Div([html.Label("Model", style=labelStyle),
                       dcc.Dropdown(id="pick-live-model", clearable=False,
                                    style={"minWidth": "260px"})]),
@@ -201,8 +204,6 @@ def _liveControls(regions, region):
                   "marginBottom": "20px", "flexWrap": "wrap"}),
         html.Div([
             html.Div(id="forecast-start", style={**panelStyle, "minWidth": "300px"}),
-            html.Button("Refresh", id="forecast-refresh", n_clicks=0,
-                        style={**buttonStyle, "alignSelf": "flex-end"}),
             # The cards take the rest of the row, which is empty space otherwise.
             html.Div(id="forecast-tiles",
                      style={"display": "flex", "gap": "12px", "flexWrap": "wrap",
