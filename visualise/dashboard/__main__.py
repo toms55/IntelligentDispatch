@@ -175,7 +175,8 @@ def _controls(regions, region):
                                style={"display": "flex", "gap": "6px"})]),
             html.Div([html.Label(" ", style=labelStyle),
                       html.Button("Calendar", id="show-calendar", n_clicks=0,
-                                  style=buttonStyle)]),
+                                  style=buttonStyle)],
+                     id="calendar-control", style={"display": "none"}),
             html.Div(id="board-label",
                      style={"color": figures.secondaryInk, "fontSize": "15px",
                             "alignSelf": "flex-end", "paddingBottom": "7px"}),
@@ -319,9 +320,12 @@ def register(app, loader, policyRoot=live.defaultCheckpoints):
     # The stepper is named in a callback of its own, so `redraw` keeps the three
     # outputs the board needs and does not redraw a board for the sake of a label.
     @app.callback(Output("step-label", "children"), Output("step-prev", "title"),
-                  Output("step-next", "title"), Input("state", "data"))
+                  Output("step-next", "title"), Output("calendar-control", "style"),
+                  Input("state", "data"))
     def nameTheStep(state):
-        return stepLabels(state["view"])
+        # The calendar button only leads back from a day; on the calendar it does nothing.
+        shown = {} if state["view"] == "day" else {"display": "none"}
+        return (*stepLabels(state["view"]), shown)
 
     @app.callback(Output("tiles", "children"), Output("board", "figure"),
                   Output("board-label", "children"), Input("state", "data"))
