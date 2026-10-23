@@ -190,9 +190,9 @@ def _liveControls(regions, region):
     button have no meaning here, so the box in their place names the run instead."""
     return html.Div([
         html.Div([
-            html.Div([html.Label(" ", style=labelStyle),
-                      html.Button("Refresh", id="forecast-refresh", n_clicks=0,
-                                  style=buttonStyle)]),
+            # Bottom aligned with the dropdowns, and as tall as one (Dash's is 36px).
+            html.Button("Refresh", id="forecast-refresh", n_clicks=0,
+                        style={**buttonStyle, "height": "36px"}),
             html.Div([html.Label("Model", style=labelStyle),
                       dcc.Dropdown(id="pick-live-model", clearable=False,
                                    style={"minWidth": "260px"})]),
@@ -202,7 +202,7 @@ def _liveControls(regions, region):
                                             for name in regions],
                                    style={"minWidth": "120px"})]),
         ], style={"display": "flex", "gap": "14px", "justifyContent": "flex-end",
-                  "marginBottom": "20px", "flexWrap": "wrap"}),
+                  "alignItems": "flex-end", "marginBottom": "20px", "flexWrap": "wrap"}),
         html.Div([
             html.Div(id="forecast-start", style={**panelStyle, "minWidth": "300px"}),
             # The cards take the rest of the row, which is empty space otherwise.
