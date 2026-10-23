@@ -1,0 +1,4 @@
+# The billing guard only. It shares nothing with the dashboard image, because it runs
+# as a separate function and never imports the dashboard code.
+functions-framework==3.*
+google-api-python-client==2.*

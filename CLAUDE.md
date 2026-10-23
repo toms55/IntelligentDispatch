@@ -108,22 +108,42 @@ results: that offers a model the screen cannot load.
 
 ### One definition of the hosted dashboard
 
-The dashboard is hosted on a free Hugging Face Space, which builds `deploy/Dockerfile`
-and serves `deploy/app.py`. `scripts/publishSpace.sh` is the only code that stages the
-upload, and the upload is a subset: the packages the two screens import, one results
+The dashboard is hosted on Google Cloud Run, which builds `deploy/Dockerfile` and
+serves `deploy/app.py`. `scripts/stageDashboard.sh` is the only code that stages it,
+and the staged directory is a subset: the packages the two screens import, one results
 directory, one published agent per region, and `deploy/`.
+
+Two hosts build that one directory. `scripts/deployCloudRun.sh` is the live one.
+`scripts/publishSpace.sh` pushes the same directory to a Hugging Face Space, and stays
+because the Space works, but a Space that runs compute now needs a paid Hugging Face
+plan. Only static Spaces are free, and a Dash application is not static.
 
 Rules:
 
 1. `deploy/requirements.txt` holds the runtime dependencies of the two screens only.
    It is not a copy of `pyproject.toml`. pulp, highspy, nemosis, nemseer and matplotlib
    stay out, because no screen solves and no screen reads the AEMO archive.
-2. Stage 4 of the script builds the app with those five names blocked. If a new import
-   on the dashboard path reaches one of them, that check fails and the Space does not.
-3. The agents travel through `policies.publish`, so the Space gets the same layout every
-   other machine has. Never stage weights with `cp`.
-4. The script pushes one commit over the last one. The weights are binary, so a history
+2. Stage 4 of `stageDashboard.sh` builds the app with those five names blocked. If a
+   new import on the dashboard path reaches one of them, that check fails and no host
+   gets the change.
+3. The agents travel through `policies.publish`, so every host gets the same layout
+   every other machine has. Never stage weights with `cp`.
+4. A new host calls `stageDashboard.sh`. It never copies the staging steps, because two
+   copies of them drift and the hosts stop serving the same dashboard.
+5. The Space push is one commit over the last one. The weights are binary, so a history
    of them would grow the Space by their size on every update.
+
+The Cloud Run service is capped on purpose, and the flags in `deployCloudRun.sh` are
+the cost ceiling: one instance at most, scale to zero, and CPU allocated during a
+request only. The app needs about 606 MB to serve, which is why the memory is 2 GiB
+and why a 512 MB free tier elsewhere cannot hold it. torch is roughly 475 MB of that,
+and only the forecast screen needs it.
+
+`scripts/setupBillingGuard.sh` adds the hard stop, and runs once. A Google budget only
+sends mail, so the guard is a budget, a Pub/Sub topic and the function in
+`deploy/billingGuard/`, which removes the billing account from the project when the
+cost reaches the budget. A cost appears before its notification, so the project can run
+a little past the budget. Set the budget below what you are willing to spend.
 
 ### One dispatch chart, drawn once
 
@@ -209,7 +229,10 @@ cover.
   default misses. Two runs there raise and name both.
 
 - **`deploy/`** — the hosted dashboard: the Dockerfile, the runtime requirements, the
-  WSGI entry point and the Space card. `scripts/publishSpace.sh` stages and pushes it.
+  WSGI entry point and the card. `billingGuard/` is the function that switches the
+  Google project off when it reaches its budget, and imports none of the dashboard
+  code. `scripts/stageDashboard.sh` stages the directory, `scripts/deployCloudRun.sh`
+  runs it on Cloud Run, and `scripts/publishSpace.sh` pushes it to a Space.
   See the convention above.
 
 - **`conftest.py`** — exists only to put the repo root on `sys.path` so

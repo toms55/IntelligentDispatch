@@ -34,6 +34,10 @@ EXPOSE 7860
 # One worker: the app caches a region's rows in process memory, and a second copy of
 # torch buys nothing on two cores. Threads carry the concurrent requests. The timeout
 # is long because the forecast screen fetches from NEMWeb on the request.
-CMD ["gunicorn", "--chdir", "/app", "--pythonpath", "/app", \
-     "--bind", "0.0.0.0:7860", "--workers", "1", "--threads", "8", \
-     "--timeout", "180", "--access-logfile", "-", "deploy.app:server"]
+#
+# The bind reads `PORT` rather than a number, because Cloud Run chooses the port and
+# passes it in. The `ENV PORT` above is the default a host that sets nothing gets, and
+# is the port a Hugging Face Space expects. Shell form, so the variable expands.
+CMD exec gunicorn --chdir /app --pythonpath /app \
+    --bind "0.0.0.0:$PORT" --workers 1 --threads 8 \
+    --timeout 180 --access-logfile - deploy.app:server
