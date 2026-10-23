@@ -38,3 +38,7 @@ lp_*.csv
 # --- local helper and PBS job logs ---
 /id
 id-*.o[0-9]*
+
+# ad hoc price exports
+/forecast_*.csv
+/real_prices_*.csv
