@@ -24,6 +24,8 @@ trajectoryColumns = (
     "fold", "algo", "trainMode", "seed", "priceSource", "testDay",
     "interval", "settlementdate", "price", "observedPrice",
     "soc", "bought", "sold", "profit",
+    # The AEMO run the agent read for this decision; None where it read realised prices.
+    "forecastRunTime",
 )
 
 # What makes a row's work already done, for resume. One unit covers a whole test window.
@@ -80,7 +82,12 @@ def readTrajectories(resultsDir, region, fold):
     path = regionDir(resultsDir, region) / f"fold{fold:02d}.parquet"
     if not path.exists():
         return []
-    return pd.read_parquet(path).to_dict("records")
+    frame = pd.read_parquet(path)
+    # Rows written before forecastRunTime was recorded carry none.
+    for column in trajectoryColumns:
+        if column not in frame:
+            frame[column] = None
+    return frame.to_dict("records")
 
 
 def readDays(resultsDir, region):

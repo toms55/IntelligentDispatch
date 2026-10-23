@@ -21,7 +21,7 @@ import calendar as calendarModule
 
 import pandas as pd
 from dash import Dash, Input, Output, State, ctx, dcc, html
-from dash.exceptions import PreventUpdate
+from dash.exceptions import MissingCallbackContextException, PreventUpdate
 
 from visualise.dashboard import data, figures, live
 
@@ -193,6 +193,9 @@ def _liveControls(regions, region):
             # Bottom aligned with the dropdowns, and as tall as one (Dash's is 36px).
             html.Button("Refresh", id="forecast-refresh", n_clicks=0,
                         style={**buttonStyle, "height": "36px"}),
+            # Ticks well inside five minutes, so a refresh lands within a tick of each
+            # :00, :05, :10 boundary; `setLiveState` ignores ticks inside one slot.
+            dcc.Interval(id="forecast-clock", interval=live.clockTickMs),
             html.Div([html.Label("Model", style=labelStyle),
                       dcc.Dropdown(id="pick-live-model", clearable=False,
                                    style={"minWidth": "260px"})]),
@@ -297,6 +300,21 @@ def _liveBox(start):
     ]
 
 
+def staleTick(trigger, screen, previous, slot):
+    """True when a clock tick should not refetch: the forecast screen is not showing, or
+    the 5-minute slot the last fetch was for is still open."""
+    return trigger == "forecast-clock" and (
+        screen != "live" or (previous or {}).get("slot") == slot)
+
+
+def _trigger():
+    """The input that fired the running callback, or None when called outside one."""
+    try:
+        return ctx.triggered_id
+    except MissingCallbackContextException:
+        return None
+
+
 def register(app, loader, policyRoot=live.defaultCheckpoints):
     @app.callback(Output("pick-model", "options"), Output("pick-model", "value"),
                   Input("pick-region", "value"), State("pick-model", "value"))
@@ -375,11 +393,19 @@ def register(app, loader, policyRoot=live.defaultCheckpoints):
                   Output("pick-live-model", "value"),
                   Input("screen", "value"), Input("pick-live-region", "value"),
                   Input("pick-live-model", "value"),
-                  Input("forecast-refresh", "n_clicks"))
-    def setLiveState(screen, region, model, clicks):
+                  Input("forecast-refresh", "n_clicks"),
+                  Input("forecast-clock", "n_intervals"),
+                  State("live-state", "data"))
+    def setLiveState(screen, region, model, clicks, ticks=None, previous=None):
+        # The clock refetches only when a new 5-minute slot has opened, so the agent
+        # reruns on each AEMO dispatch interval and not on every tick.
+        slot = str(live.refreshSlot())
+        if staleTick(_trigger(), screen, previous, slot):
+            raise PreventUpdate
         names = liveModels(region, policyRoot)
         model = model if model in names else (names[0] if names else None)
-        return ({"screen": screen, "region": region, "model": model, "clicks": clicks},
+        return ({"screen": screen, "region": region, "model": model, "clicks": clicks,
+                 "slot": slot},
                 [{"label": name, "value": name} for name in names], model)
 
     # The forecast is fetched over the network, so it is drawn when the screen is

@@ -9,6 +9,7 @@ The checkpoint on disk is the training record. There is no separate ledger: a un
 done when its rows are in the fold CSV, and training is done when agent.zip exists.
 """
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -237,6 +238,19 @@ class TestOutput:
         written = pd.read_parquet(config.resultsDir / REGION / "fold00.parquet")
         assert set(written.seed) == {1}
         assert set(written.trainMode) == {"warm", "oracle"}
+
+    # A forecast-priced row names the run the agent read; a realised one names none.
+    def test_trajectories_record_the_run_read(self, config):
+        fold = SimpleNamespace(index=0, testDays=[pd.Timestamp(START)])
+        steps = [{"price": 1.0, "soc": 0.5, "bought": 0.0, "sold": 0.0, "profit": 0.0}] * 288
+        perWindow = [{"window": 0, "trajectory": steps}]
+        stack = np.zeros((1, 6, 288))
+        rows = runner._resultTrajectories(config, fold, "maskableppo", "warm", "forecast",
+                                          perWindow, None, stack)
+        assert rows[48]["forecastRunTime"] == pd.Timestamp(START) + pd.Timedelta(hours=4)
+        realised = runner._resultTrajectories(config, fold, "maskableppo", "warm",
+                                              "realised", perWindow, None, None)
+        assert realised[0]["forecastRunTime"] is None
 
     # Two algorithms get disjoint checkpoint directories, so neither overwrites the
     # other's warm chain.

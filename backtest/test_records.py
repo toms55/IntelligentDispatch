@@ -134,7 +134,8 @@ class TestTrajectories:
              "priceSource": "realised", "testDay": DAY, "interval": n,
              "settlementdate": DAY + pd.Timedelta(minutes=5 * (n + 1)),
              "price": 50.0, "observedPrice": 48.0,
-             "soc": 0.5, "bought": 0.0, "sold": 0.0, "profit": 0.0}
+             "soc": 0.5, "bought": 0.0, "sold": 0.0, "profit": 0.0,
+             "forecastRunTime": None}
             for trainMode in ("warm", "oracle") for n in range(288)
         ]
         path = records.writeTrajectories(tmp_path, REGION, 0, rows)
@@ -145,3 +146,12 @@ class TestTrajectories:
         # What the agent was paid and what it saw are stored separately, so the day
         # view can draw the forecast against the realised price.
         assert frame.price.iloc[0] == 50.0 and frame.observedPrice.iloc[0] == 48.0
+
+    # A trajectory written before forecastRunTime was recorded reads back with None, so
+    # a resumed fold rewrites it under the current schema.
+    def test_an_older_trajectory_reads_back_with_no_run(self, tmp_path):
+        path = records.regionDir(tmp_path, REGION) / "fold00.parquet"
+        path.parent.mkdir(parents=True)
+        pd.DataFrame([{"fold": 0, "interval": 0}]).to_parquet(path)
+        got = records.readTrajectories(tmp_path, REGION, 0)
+        assert got[0]["forecastRunTime"] is None

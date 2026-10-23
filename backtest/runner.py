@@ -23,7 +23,7 @@ import pandas as pd
 
 import config
 from backtest import folds, records, volatility
-from data.forecasts import (decisionPath, loadForecastCache, refreshMatrix,
+from data.forecasts import (decisionPath, decisionRuns, loadForecastCache, refreshMatrix,
                             refreshRunTimes)
 from data.prices import price_series
 from degradation.schade import SchadeDegradation
@@ -283,7 +283,8 @@ def _ensureTrained(cfg, fold, trainMode, algo, seed, parent, trainPrices, scaler
     return directory
 
 
-def _trajectoryRows(cfg, fold, algo, trainMode, seed, source, day, steps, observed):
+def _trajectoryRows(cfg, fold, algo, trainMode, seed, source, day, steps, observed,
+                    runs=None):
     for step, info in enumerate(steps):
         yield {
             "fold": fold, "algo": algo, "trainMode": trainMode, "seed": seed,
@@ -291,6 +292,7 @@ def _trajectoryRows(cfg, fold, algo, trainMode, seed, source, day, steps, observ
             "settlementdate": day + (step + 1) * nem_interval,
             "price": info["price"],
             "observedPrice": info["price"] if observed is None else observed[step],
+            "forecastRunTime": None if runs is None else runs[step],
             "soc": info["soc"], "bought": info["bought"], "sold": info["sold"],
             "profit": info["profit"],
         }
@@ -302,7 +304,7 @@ def _oracleRows(cfg, fold, day, record, prices):
             "fold": fold, "algo": "oracle", "trainMode": "oracle",
             "seed": cfg.trajectorySeed, "priceSource": "realised", "testDay": day,
             "interval": step, "settlementdate": day + (step + 1) * nem_interval,
-            "price": prices[step], "observedPrice": prices[step],
+            "price": prices[step], "observedPrice": prices[step], "forecastRunTime": None,
             "soc": record["soc"][step], "bought": record["bought"][step],
             "sold": record["sold"][step], "profit": record["profitPerInterval"][step],
         }
@@ -461,8 +463,9 @@ def _resultTrajectories(cfg, fold, algo, trainMode, source, perWindow, testPrice
     out = []
     for record in perWindow:
         day = fold.testDays[record["window"]]
-        observed = (None if forecasts is None
-                    else decisionPath(forecasts[record["window"]]))
+        observed, runs = ((None, None) if forecasts is None
+                          else (decisionPath(forecasts[record["window"]]),
+                                decisionRuns(day, forecasts[record["window"]])))
         out += list(_trajectoryRows(cfg, fold.index, algo, trainMode, cfg.trajectorySeed,
-                                    source, day, record["trajectory"], observed))
+                                    source, day, record["trajectory"], observed, runs))
     return out

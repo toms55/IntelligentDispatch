@@ -1,8 +1,9 @@
 """The agent's dispatch under forecast prices, one CSV row per decision.
 
 An episode reads the 04:00 run that opens its trading day, then a newer run every
-`forecastEvery` intervals (see data/forecasts.refreshMatrix), so forecastRunTime is the
-run each decision read. A result set whose manifest predates the refresh read one 04:00
+`forecastEvery` intervals (see data/forecasts.refreshMatrix). The backtest records the
+run each decision read in the trajectory, and the export copies it; a trajectory from
+before that has its run derived from the manifest instead. A result set whose manifest predates the refresh read one 04:00
 run all day. The fold trajectories in results/<run>/all/ already hold everything needed;
 this only reshapes them.
 
@@ -38,9 +39,14 @@ def actionRows(trajectory, region, every=None):
     rows = trajectory[(trajectory.priceSource == "forecast")
                       & (trajectory.algo != "oracle")]
     action = np.select([rows.bought > 0, rows.sold > 0], ["charge", "discharge"], "idle")
-    runTime = pd.to_datetime(rows.testDay)
-    if every is not None:
-        runTime = runTime + (rows.interval // every * every) * nem_interval
+    if "forecastRunTime" in rows and rows.forecastRunTime.notna().all():
+        # Recorded by the backtest as the run the agent actually read.
+        runTime = pd.to_datetime(rows.forecastRunTime)
+    else:
+        # A trajectory from before the backtest recorded it: derived from the manifest.
+        runTime = pd.to_datetime(rows.testDay)
+        if every is not None:
+            runTime = runTime + (rows.interval // every * every) * nem_interval
     return pd.DataFrame({
         "forecastRunTime": runTime,
         "intervalTime": rows.settlementdate,

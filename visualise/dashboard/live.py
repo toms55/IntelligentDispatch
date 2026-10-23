@@ -42,6 +42,18 @@ def findCheckpoints(region, root=defaultCheckpoints):
     return policies.available(region, root)
 
 
+# The live screen reruns the agent on every NEM dispatch interval, at minutes ending in 0
+# or 5. The clock ticks this often and refetches once a new interval has opened.
+clockTickMs = 15_000
+
+
+def refreshSlot(now=None):
+    """The dispatch interval open at `now` (default the NEM clock): its :x0 or :x5 start.
+    The forecast fetched for it is the one `forecastPath` reads by default."""
+    now = forecasts.nemNow() if now is None else pd.Timestamp(now)
+    return now.floor("5min")
+
+
 def forecastPath(region, runTime=None, horizon=config.episode_intervals):
     """The forward price path AEMO publishes now, cut where the path stops.
 
@@ -49,7 +61,7 @@ def forecastPath(region, runTime=None, horizon=config.episode_intervals):
     day returns fewer than `horizon` intervals. Trailing NaN is cut rather than dropped,
     so a gap inside the path can never close up and shift later prices earlier.
     """
-    runTime = forecasts.nemNow().floor("5min") if runTime is None else pd.Timestamp(runTime)
+    runTime = refreshSlot() if runTime is None else pd.Timestamp(runTime)
     path = forecasts.forecastSeries(runTime, region, horizon, allowPartial=True)
     good = path.notna().to_numpy()
     cut = int(good.argmin()) if not good.all() else len(good)

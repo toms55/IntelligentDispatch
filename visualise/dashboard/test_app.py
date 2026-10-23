@@ -309,3 +309,22 @@ class TestForecastScreen:
 class TestParseDay:
     def test_it_round_trips(self):
         assert app.parseDay(app.showDay("2025-03-09")) == "2025-03-09"
+
+
+class TestForecastClock:
+    # A tick inside the slot already fetched does nothing; the first tick of a new slot
+    # refetches, and so does any tick when nothing has been fetched yet.
+    def test_a_tick_refetches_only_on_a_new_slot(self):
+        held = {"slot": "2026-10-23 14:05:00"}
+        assert app.staleTick("forecast-clock", "live", held, "2026-10-23 14:05:00")
+        assert not app.staleTick("forecast-clock", "live", held, "2026-10-23 14:10:00")
+        assert not app.staleTick("forecast-clock", "live", None, "2026-10-23 14:10:00")
+
+    # The backtest screen never pays for a NEMWeb read.
+    def test_a_tick_on_the_backtest_screen_does_nothing(self):
+        assert app.staleTick("forecast-clock", "backtest", None, "2026-10-23 14:10:00")
+
+    # A click or a region change refetches whatever the clock says.
+    def test_other_inputs_always_refetch(self):
+        held = {"slot": "2026-10-23 14:05:00"}
+        assert not app.staleTick("forecast-refresh", "live", held, "2026-10-23 14:05:00")

@@ -166,3 +166,14 @@ class TestForecastFigure:
     def test_no_forecast_draws_a_message(self):
         figure = figures.forecastFigure(pd.DataFrame(), note="NEMWeb is down")
         assert figure.layout.annotations[0].text == "NEMWeb is down"
+
+
+class TestRefreshSlot:
+    # The live screen refetches on the dispatch boundaries, minutes ending in 0 or 5.
+    @pytest.mark.parametrize("now, slot", [
+        ("2026-10-23 14:07:59", "2026-10-23 14:05"),
+        ("2026-10-23 14:10:00", "2026-10-23 14:10"),
+        ("2026-10-23 14:14:59", "2026-10-23 14:10"),
+    ])
+    def test_the_slot_starts_on_a_five_minute_boundary(self, now, slot):
+        assert live.refreshSlot(now) == pd.Timestamp(slot)

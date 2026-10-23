@@ -237,7 +237,15 @@ cover.
   the manifest's `forecastEvery`, the test-day forecast pull frequency (training has
   none). `data.verifyRefresh` refuses a forecast-priced run whose manifest omits it or
   whose export disagrees with it, so the tile never describes a pull the backtest did
-  not make. Every manifest records it, realised-only runs included.
+  not make. Every manifest records it, realised-only runs included. Each forecast
+  trajectory row records the run the agent actually read (`forecastRunTime`, from
+  `forecasts.decisionRuns`), and the export copies it, so the check compares the
+  manifest against what happened. Never edit a finished manifest by hand:
+  `python -m backtest.stamp` is the only code that does, and it stamps an old run once
+  a day only when every row predates the intra-day refresh.
+  The current forecast screen refetches and reruns the agent on every NEM dispatch
+  interval, at minutes ending in 0 or 5 (`live.refreshSlot`), as a live BESS would
+  submit a new action each interval.
 
 - **`deploy/`** — the hosted dashboard: the Dockerfile, the runtime requirements, the
   WSGI entry point and the Space card. `scripts/publishSpace.sh` stages and pushes it.

@@ -29,6 +29,13 @@ class TestActionRows:
         assert got.forecastRunTime.iloc[48] == pd.Timestamp("2024-01-01 08:00")
         assert got.forecastRunTime.iloc[287] == pd.Timestamp("2024-01-02 00:00")
 
+    # A recorded run is what the agent read, so it wins over the manifest's setting.
+    def test_a_recorded_run_wins(self):
+        frame = trajectory()
+        frame["forecastRunTime"] = pd.Timestamp("2024-01-01 03:55")
+        got = actions.actionRows(frame, "NSW1", every=48)
+        assert (got.forecastRunTime == pd.Timestamp("2024-01-01 03:55")).all()
+
     # A result set from before the refresh read one 04:00 run all day.
     def test_an_older_run_reads_one_run_all_day(self):
         got = actions.actionRows(trajectory(), "NSW1")
