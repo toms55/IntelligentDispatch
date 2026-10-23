@@ -12,6 +12,7 @@
   "coldTimesteps": 300000,
   "discretePower": true,
   "end": "2026-10-01 04:00:00",
+  "forecastEvery": 288,
   "gap": 0.02,
   "horizon": 288,
   "initialSoc": 0.5,
