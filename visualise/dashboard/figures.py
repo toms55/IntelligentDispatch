@@ -333,8 +333,8 @@ def _dispatchFigure(clock, price, blocks, drawn, *, name, yTitle, hoverTime,
         xaxis=dict(showgrid=False, linecolor=axisLine, tickfont=dict(color=mutedInk)),
         yaxis=dict(title=dict(text=yTitle), gridcolor=gridline,
                    zeroline=False, tickfont=dict(color=mutedInk)),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0,
-                    font=dict(color=secondaryInk)),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=1,
+                    xanchor="right", font=dict(color=secondaryInk)),
     ))
     figure.add_hline(y=rule, line=dict(color=axisLine, width=1))
     if note:
