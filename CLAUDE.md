@@ -127,6 +127,9 @@ Rules:
    other machine has. Never stage weights with `cp`.
 4. The script pushes one commit over the last one. The weights are binary, so a history
    of them would grow the Space by their size on every update.
+5. main and the Space hold the same code. The Space is a separate git repository, so a
+   push to GitHub does not reach it. Push main with `scripts/pushMain.sh`, which pushes
+   to GitHub and then publishes the Space. Do not push main with `git push` alone.
 
 ### One dispatch chart, drawn once
 
@@ -203,6 +206,8 @@ cover.
   resumable because the oracle cache is keyed on its own parameters.
 - **`scripts/rolling.sh`** — the two stages of the rolling-origin backtest: the discrete
   oracle cache over the whole span, then the 52 folds.
+- **`scripts/pushMain.sh`** — one push for both remotes: main to GitHub, then the same
+  code to the Space through `scripts/publishSpace.sh`.
 
 - **`visualise/dashboard/`** — the Dash app. Two screens behind tabs. `data.py` reads
   the rolling results, `figures.py` draws, `live.py` runs a published agent over the
