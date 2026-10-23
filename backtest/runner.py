@@ -91,11 +91,10 @@ class Plan(NamedTuple):
 
 def manifestOf(cfg):
     """What two runs must agree on before their rows may share a result set."""
+    # forecastEvery is recorded for every run, realised-only included: it is how often a
+    # test day pulls a new AEMO forecast (training reads realised prices and never
+    # consults it), and the dashboard refuses a result set that does not state it.
     skip = {"foldFilter", "allowSolve", "outDir", "resultsDir", "workers", "timeLimit"}
-    # The refresh only changes what a forecast-priced run sees, so a realised-only
-    # result set does not record it and stays resumable across it.
-    if "forecast" not in cfg.priceSources:
-        skip.add("forecastEvery")
     # Checkpoints trained against the old oracle-baselined reward carry no such key, so
     # this keeps a resumed run from mixing the two rewards in one result set.
     return {**{key: value for key, value in cfg._asdict().items() if key not in skip},

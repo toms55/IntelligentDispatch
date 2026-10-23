@@ -65,38 +65,35 @@ def _span(delta):
     return f"{hours} hours" if hours != 1 else "hour"
 
 
-def refreshText(forecast, priceSource):
+def refreshText(priceSource, every):
     """What the agent observed over a day, as a (heading, subheading) pair.
 
-    Read from the runs in the day's forecast rows, never from a setting, so the text
-    follows whichever export the dashboard reads: the spacing of the run times is the
-    refresh and the first of them is the start. None for the forecast means the run
-    was never exported.
+    `every` is the run's `forecastEvery`, which `data.loadRun` has already checked
+    against every decision in the actions export, so the text states a verified pull
+    frequency rather than one inferred from a day's rows.
     """
     if priceSource != "forecast":
         return ("No forecast",
                 "Dispatched on realised prices, with perfect knowledge of the price.")
-    if forecast is None or forecast.empty:
-        return ("Refresh unknown", "This run's forecast actions were not exported.")
-    runs = sorted(pd.to_datetime(forecast.forecastRunTime).unique())
-    start = pd.Timestamp(runs[0])
-    if len(runs) == 1:
+    if every is None:
+        return ("Refresh unknown", "This run does not state its forecast pull frequency.")
+    if every >= config.episode_intervals:
         return ("Pulled once a day",
-                f"One AEMO forecast was pulled at {start:%H:%M} and held for the whole "
+                "One AEMO forecast was pulled at 04:00 and held for the whole "
                 "trading day.")
-    span = _span(pd.Timestamp(runs[1]) - start)
+    span = _span(pd.Timedelta(minutes=5 * every))
     return (f"Refreshed every {span}",
             f"Every {span}, a new AEMO forecast was pulled for the backtest, starting "
-            f"at {start:%H:%M}.")
+            "at 04:00.")
 
 
-def summaryTiles(frame, forecast=None):
+def summaryTiles(frame, every=None):
     """The headline numbers for whatever scope is selected, straight from metrics.
 
     One day holds one row, so a win rate and a spread across folds would say nothing.
     The last three tiles therefore describe the day itself in that case, and one of
-    them says which forecast the agent dispatched against. `forecast` is the day's
-    `data.forecastPath`.
+    them says which forecast the agent dispatched against. `every` is the run's verified
+    `forecastEvery`.
     """
     got = metrics.summarise(frame)
     empty = got["days"] == 0
@@ -110,7 +107,7 @@ def summaryTiles(frame, forecast=None):
               "perfect foresight bound")
     if got["days"] == 1:
         facts = metrics.dayFacts(frame)
-        heading, sub = refreshText(forecast, frame.priceSource.iloc[0])
+        heading, sub = refreshText(frame.priceSource.iloc[0], every)
         tiles = [{"label": label, "value": value, "raw": raw, "sub": sub}
                  for label, value, raw, sub in head + [
                      ("Revenue", _money(facts["revenue"]), facts["revenue"],
@@ -297,7 +294,8 @@ def monthFigure(frame, month, selected=None):
     return figure
 
 
-def dayFigure(frame, blocks=(), day=None, region=None, model=None, forecast=None):
+def dayFigure(frame, blocks=(), day=None, region=None, model=None, forecast=None,
+              every=None):
     """One test day: the realised price path, and the dispatch the agent ran over it.
 
     The same figure the current forecast screen draws, over realised prices rather than
@@ -316,7 +314,7 @@ def dayFigure(frame, blocks=(), day=None, region=None, model=None, forecast=None
     overlay = forecast if forecast is not None and not forecast.empty else None
     chip = None
     if forecast is not None:
-        chip = "forecast " + refreshText(forecast, "forecast")[0].lower()
+        chip = "forecast " + refreshText("forecast", every)[0].lower()
     return _dispatchFigure(
         clock, frame.price.to_numpy(dtype=float), blocks, drawn,
         name="Realised price", yTitle="Price $/MWh", hoverTime="%H:%M",

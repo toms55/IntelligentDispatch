@@ -343,6 +343,8 @@ def register(app, loader, policyRoot=live.defaultCheckpoints):
                                       algo=row.get("algo"), trainMode=row.get("trainMode"),
                                       seed=row.get("seed"))
                     if row.get("priceSource") == "forecast" else None)
+        # Verified against the export by `data.loadRun`, so the tile states it as fact.
+        every = run.manifest.get("forecastEvery")
         if state["view"] == "calendar":
             board = figures.monthFigure(data.monthScope(chosen, day), day,
                                         selected=state["day"])
@@ -356,9 +358,9 @@ def register(app, loader, policyRoot=live.defaultCheckpoints):
                 seed=row.get("seed"), priceSource=row.get("priceSource"))
             board = figures.dayFigure(path, live.blocks(path), day,
                                       region=state["region"], model=state["model"],
-                                      forecast=forecast)
+                                      forecast=forecast, every=every)
             label = f"{day:%A %-d %B %Y}, 04:00 to 04:00"
-        return [_tile(tile) for tile in figures.summaryTiles(scoped, forecast)], board, label
+        return [_tile(tile) for tile in figures.summaryTiles(scoped, every)], board, label
 
     @app.callback(Output("backtest-screen", "style"), Output("live-screen", "style"),
                   Input("screen", "value"))

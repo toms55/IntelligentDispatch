@@ -28,6 +28,7 @@ modelFields = ("algo", "trainMode", "seed", "priceSource")
 # Every episode starts at 04:00, the NEM trading day boundary, so a calendar date must
 # be offset by this before it matches a testDay stamp.
 dayStartHour = 4
+interval = timedelta(minutes=5)
 
 
 class Run(NamedTuple):
@@ -48,7 +49,45 @@ def loadRun(region, resultsDir=defaultResults):
         )
     path = records.manifestPath(resultsDir, region)
     manifest = json.loads(path.read_text()) if path.exists() else {}
+    if "forecast" in set(days.priceSource):
+        verifyRefresh(resultsDir, region, manifest)
     return Run(region, days, manifest, resultsDir)
+
+
+def verifyRefresh(resultsDir, region, manifest):
+    """Refuse a forecast-priced run unless its test-day forecast pull is stated and held.
+
+    `forecastEvery` is how often a test day pulled a new AEMO forecast, the only refresh
+    the backtest screen describes; training reads realised prices and has none. The
+    manifest must state it, and every decision in the actions export must have read the
+    run that schedule implies: day start + (step // every * every) intervals. Returns
+    the verified `every`.
+    """
+    where = records.manifestPath(resultsDir, region)
+    if "forecastEvery" not in manifest:
+        raise ValueError(
+            f"{where} does not state forecastEvery, so the backtest's forecast pull "
+            "frequency is unknown. A result set from before the refresh read one 04:00 "
+            "run per day: add \"forecastEvery\": 288 if that is how it was produced")
+    every = int(manifest["forecastEvery"])
+    path = actionsFile(resultsDir, region)
+    if path is None:
+        raise FileNotFoundError(
+            f"{resultsDir} has forecast rows for {region} but no actions export, so its "
+            "forecast pull frequency cannot be checked; run `python -m backtest.actions`")
+    rows = _readActions(str(path), path.stat().st_mtime)
+    opened = rows.intervalTime - interval
+    day = (opened - timedelta(hours=dayStartHour)).dt.floor("D") + timedelta(hours=dayStartHour)
+    step = (opened - day) // interval
+    expected = day + (step // every * every) * interval
+    wrong = rows.forecastRunTime != expected
+    if wrong.any():
+        first = rows[wrong].iloc[0]
+        raise ValueError(
+            f"{path} disagrees with forecastEvery={every} in {where} on {int(wrong.sum())} "
+            f"decision(s); the first, at {first.intervalTime}, read the "
+            f"{first.forecastRunTime} run, not {expected[wrong].iloc[0]}")
+    return every
 
 
 def selectors(frame):

@@ -412,11 +412,11 @@ class TestForecastSource:
 
 
 class TestManifest:
-    # The refresh changes what a forecast-priced run sees, so a forecast result set records it.
+    # The test-day forecast pull is recorded, so the dashboard can check what it shows.
     def test_a_forecast_run_records_the_refresh(self, config):
         cfg = config._replace(priceSources=("realised", "forecast"))
         assert runner.manifestOf(cfg)["forecastEvery"] == 48
 
-    # A realised-only set does not, so it stays resumable across a refresh change.
-    def test_a_realised_only_run_does_not(self, config):
-        assert "forecastEvery" not in runner.manifestOf(config)
+    # A realised-only set records it too: every result set states its pull frequency.
+    def test_a_realised_only_run_records_it_too(self, config):
+        assert runner.manifestOf(config)["forecastEvery"] == 48

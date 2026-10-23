@@ -232,8 +232,12 @@ cover.
   default misses. Two runs there raise and name both. A forecast day also reads
   the run's actions export, `results/actions/<run>_<region>.csv` (the results
   directory's name without `_all`, see `data.actionsFile`). Its `forecastRunTime`
-  column is the only source of the forecast line and the "refreshed every …" tile,
-  so pointing `--results` at another run changes those along with every other number.
+  column is the only source of the forecast line, so pointing `--results` at another
+  run changes it along with every other number. The "refreshed every …" tile states
+  the manifest's `forecastEvery`, the test-day forecast pull frequency (training has
+  none). `data.verifyRefresh` refuses a forecast-priced run whose manifest omits it or
+  whose export disagrees with it, so the tile never describes a pull the backtest did
+  not make. Every manifest records it, realised-only runs included.
 
 - **`deploy/`** — the hosted dashboard: the Dockerfile, the runtime requirements, the
   WSGI entry point and the Space card. `scripts/publishSpace.sh` stages and pushes it.
