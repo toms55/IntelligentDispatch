@@ -146,7 +146,9 @@ region = os.environ["DASHBOARD_REGION"]
 models = app.dashboard.liveModels(region, app.policyRoot)
 print(f"  regions on the backtest screen: {app.data.availableRegions(app.resultsDir)}")
 print(f"  models on the forecast screen: {models}")
-if len(models) < 2:
+# The list holds one name per published agent and nothing else, so one agent per region
+# is a full list. It was longer when the screen still offered models it could not load.
+if not models:
     raise AssertionError(f"{app.policyRoot} published no agent for {region}")
 
 # A day of prices with one peak, so a working agent charges and discharges once.
