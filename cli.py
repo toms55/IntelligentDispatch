@@ -434,6 +434,7 @@ def _rolling(args):
         stepWeeks=args.step_weeks, algos=tuple(args.algo), seeds=tuple(args.seeds),
         trainModes=tuple(args.trainModes), warmTimesteps=args.warm_timesteps,
         coldTimesteps=args.cold_timesteps, priceSources=sources,
+        trainSource=args.train_source,
         forecastEvery=_refreshIntervals(args, args.horizon),
         horizon=args.horizon, rewardScale=args.reward_scale,
         initialSoc=args.initial_soc, calendar=not args.no_calendar,
@@ -761,6 +762,11 @@ def main(argv=None):
                          default="realised",
                          help="what fills the observation's price slots; settlement always "
                               "uses realised prices (default: realised)")
+    rolling.add_argument("--train-source", choices=["realised", "forecast"],
+                         default="realised",
+                         help="what fills the price slots in training: forecast trains "
+                              "on the AEMO runs at the --forecast-refresh rate; "
+                              "settlement is realised either way (default: realised)")
     addRefreshArg(rolling)
     rolling.add_argument("--results", default="results/rolling", metavar="DIR",
                          help="where the per-fold CSV and parquet go "

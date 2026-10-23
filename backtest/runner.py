@@ -50,6 +50,9 @@ class RollingConfig(NamedTuple):
     warmTimesteps: int = 30_000
     coldTimesteps: int = 300_000
     priceSources: tuple = ("realised",)
+    # What fills the observation's price slots in training. Settlement is realised either
+    # way; "forecast" trains on the same refresh runs a forecast-priced test reads.
+    trainSource: str = "realised"
     forecastEvery: int = config.forecast_refresh_intervals
     horizon: int = config.episode_intervals
     rewardScale: float = config.reward_scale
@@ -94,8 +97,11 @@ def manifestOf(cfg):
     skip = {"foldFilter", "allowSolve", "outDir", "resultsDir", "workers", "timeLimit"}
     # The refresh only changes what a forecast-priced run sees, so a realised-only
     # result set does not record it and stays resumable across it.
-    if "forecast" not in cfg.priceSources:
+    if "forecast" not in cfg.priceSources and cfg.trainSource == "realised":
         skip.add("forecastEvery")
+    # Result sets from before training could read forecasts carry no such key.
+    if cfg.trainSource == "realised":
+        skip.add("trainSource")
     # Checkpoints trained against the old oracle-baselined reward carry no such key, so
     # this keeps a resumed run from mixing the two rewards in one result set.
     return {**{key: value for key, value in cfg._asdict().items() if key not in skip},
@@ -134,20 +140,31 @@ def _plan(cfg):
         gap=cfg.gap, timeLimit=cfg.timeLimit, workers=cfg.workers,
     )
     days = sorted({day for fold in selected for day in fold.testDays})
+    forecastDays = days
+    if cfg.trainSource == "forecast":
+        forecastDays = sorted(set(days).union(
+            *(_trainDays(fold) for fold in selected)))
     return Plan(everyFold, selected, prices, oracle, oracleStart,
                 volatility.volatilityFrame(prices, days),
                 PriceScaler(marketPriceCap(cfg.capDate)), model,
-                _forecastSource(cfg, days))
+                _forecastSource(cfg, forecastDays))
+
+
+def _trainDays(fold):
+    """The 04:00 start of each trading day in the training window."""
+    count = (fold.trainEnd - fold.trainStart) // folds.oneDay
+    return [fold.trainStart + step * folds.oneDay for step in range(count)]
 
 
 def _forecastSource(cfg, days):
-    """The prefetched forecast paths, checked to cover every refresh run of every test
-    day, each from its run time to the episode end.
+    """The prefetched forecast paths, checked to cover every refresh run of every day
+    given, test days and, when the agent trains on forecasts, training days, each from its
+    run time to the episode end.
 
     Without the check a run the prefetch missed becomes a silent NaN row, and the agent
     scores as if it idled. An absent cache falls back to the live per-run path.
     """
-    if "forecast" not in cfg.priceSources:
+    if "forecast" not in cfg.priceSources and cfg.trainSource != "forecast":
         return None
     source = loadForecastCache(cfg.region)
     if source is None:
@@ -265,8 +282,11 @@ def checkpointDir(cfg, fold, trainMode, algo, seed):
             / f"{algo}_seed{seed}")
 
 
-def _ensureTrained(cfg, fold, trainMode, algo, seed, parent, trainPrices, scaler):
-    """Train this fold's agent unless its checkpoint is already on disk."""
+def _ensureTrained(cfg, fold, trainMode, algo, seed, parent, trainPrices, scaler,
+                   trainForecasts=None):
+    """Train this fold's agent unless its checkpoint is already on disk.
+
+    `trainForecasts` is a callable, so a resumed fold never builds the matrix."""
     directory = checkpointDir(cfg, fold, trainMode, algo, seed)
     if (directory / "agent.zip").exists():
         return directory
@@ -280,6 +300,7 @@ def _ensureTrained(cfg, fold, trainMode, algo, seed, parent, trainPrices, scaler
         algo, trainPrices, SchadeDegradation(*cfg.battery), seed=seed, timesteps=cfg.warmTimesteps if warmFrom else cfg.coldTimesteps,
         calendar=cfg.calendar, horizon=cfg.horizon, rewardScale=cfg.rewardScale,
         outDir=directory.parent, scaler=scaler, warmFrom=warmFrom,
+        forecasts=None if trainForecasts is None else trainForecasts(),
     )
     return directory
 
@@ -333,6 +354,17 @@ def runRolling(cfg, onProgress=None):
 
         trainPrices = folds.sliceWindow(plan.prices, fold.trainStart, fold.trainEnd)
         folds.requireFullDays(trainPrices, fold.trainStart, fold.trainEnd)
+        trainForecasts = None
+        if cfg.trainSource == "forecast":
+            # Built once per fold, on first need, and shared by every seed.
+            cache = {}
+
+            def trainForecasts(fold=fold, cache=cache):
+                if "grid" not in cache:
+                    cache["grid"] = refreshMatrix(
+                        _trainDays(fold), cfg.region, cfg.horizon, cfg.forecastEvery,
+                        allowPartial=False, source=plan.forecastSource)
+                return cache["grid"]
         testPrices = folds.sliceWindow(plan.prices, fold.testStart, fold.testEnd)
         folds.requireFullDays(testPrices, fold.testStart, fold.testEnd)
 
@@ -350,7 +382,7 @@ def runRolling(cfg, onProgress=None):
                                             trainMode, algo, seed))
                     checkpoints[seed] = _ensureTrained(
                         cfg, fold.index, trainMode, algo, seed, parent, trainPrices,
-                        plan.scaler)
+                        plan.scaler, trainForecasts)
 
                 for source in cfg.priceSources:
                     pending = [seed for seed in cfg.seeds

@@ -9,6 +9,8 @@
 #     done
 #
 # Pass REGION=SA1 (etc.) alongside SPAN for another region; NSW1 by default.
+# LIMIT overrides the 1800s solve limit; cached days are not re-solved, so move the
+# limit-hit records out of data_cache/lp_baseline first.
 #
 # Stage 2, scripts/rolling2023_folds.pbs, needs the test days from this cache, so it
 # is queued with -W depend=afterok on all four. Its training days need no oracle.
@@ -26,7 +28,8 @@ set -euo pipefail
 cd "${PBS_O_WORKDIR:-$PWD}"
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONWARNINGS=ignore
 
-# 15 workers leave one core for the parent. The limit is 1800s because cacheKey does
+# 12 workers: 15 plus the parent burst past 16 cores and PBS killed three 3600s jobs
+# (SA1, TAS1, VIC1, 2026-10-22). WORKERS overrides it. The limit is 1800s because cacheKey does
 # not record it, so a day that stops early writes a loose bound for good.
 .venv/bin/python -u -m cli baseline --split "part=${SPAN:?pass -v SPAN=START..END}" \
-  --region "${REGION:-NSW1}" --no-calendar --gap 0.02 --time-limit 1800 --workers 15 --verbose
+  --region "${REGION:-NSW1}" --no-calendar --gap 0.02 --time-limit "${LIMIT:-1800}" --workers "${WORKERS:-12}" --verbose

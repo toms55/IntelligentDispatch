@@ -11,6 +11,8 @@
 #     qsub -v TRAIN_MODES=cold,OUT=...,RESULTS=... scripts/rolling2023_folds.pbs
 #     qsub -v OUT=<trained runs>,LOGS=...,RESULTS=...,PRICE_SOURCE=forecast,REFRESH=5,PREFETCH=1 \
 #          scripts/rolling2023_folds.pbs      # rescore existing checkpoints, no training
+#     qsub -v TRAIN_SOURCE=forecast,REFRESH=5,PREFETCH=1,PREFETCH_SPAN=2023-01-01T04:00..2023-12-31T04:00,OUT=...,RESULTS=... \
+#          scripts/rolling2023_folds.pbs      # train on the AEMO forecast as well
 #
 # TRAIN_MODES=cold fits every fold fresh at the cold budget instead of continuing the
 # previous fold's checkpoint. Give it its own OUT and RESULTS, because a result set
@@ -24,7 +26,7 @@
 #PBS -N id-folds23
 #PBS -q medq
 #PBS -l ncpus=6
-#PBS -l mem=24GB
+#PBS -l mem=48GB
 #PBS -l walltime=96:00:00
 #PBS -j oe
 
@@ -41,13 +43,15 @@ OUT=${OUT:-runs/rolling2023_profit}
 RESULTS=${RESULTS:-results/rolling2023_profit}
 PRICE_SOURCE=${PRICE_SOURCE:-both}   # realised, forecast or both
 REFRESH=${REFRESH:-240}   # forecast refresh in minutes; 5 is every interval
+TRAIN_SOURCE=${TRAIN_SOURCE:-realised}   # realised or forecast; settlement is realised
 # Seed logs go here. Set it when OUT holds another run's checkpoints, or its logs are lost.
 LOGS=${LOGS:-$OUT}
 mkdir -p "$OUT" "$LOGS"
 
 # Paths for every refresh run of every test day. Needed whenever REFRESH changes.
 if [ "${PREFETCH:-0}" = 1 ]; then
-  $PY -u -m cli prefetch --split "test=2023-12-31T04:00..2026-09-26T04:00" --region "$REGION" \
+  # Training on forecasts needs every training day too, from 2023-01-01.
+  $PY -u -m cli prefetch --split "pre=${PREFETCH_SPAN:-2023-12-31T04:00..2026-09-26T04:00}" --region "$REGION" \
     --forecast-refresh "$REFRESH" > "$LOGS/prefetch.log" 2>&1
 fi
 
@@ -59,6 +63,7 @@ for seed in $SEEDS; do
     --train-weeks 52 --test-weeks 1 --step-weeks 1 --algo maskableppo --train-modes $TRAIN_MODES \
     --cap-date 2026-10-01T04:00 --baseline-oracle discrete --no-calendar \
     --gap 0.02 --time-limit 1800 --price-source "$PRICE_SOURCE" --forecast-refresh "$REFRESH" \
+    --train-source "$TRAIN_SOURCE" \
     --seeds "$seed" --out "$OUT" --results "$RESULTS/seed$seed" > "$LOGS/seed$seed.log" 2>&1 &
   pids+=($!)
 done

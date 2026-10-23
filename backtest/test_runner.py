@@ -420,3 +420,43 @@ class TestManifest:
     # A realised-only set does not, so it stays resumable across a refresh change.
     def test_a_realised_only_run_does_not(self, config):
         assert "forecastEvery" not in runner.manifestOf(config)
+
+
+class TestTrainingOnForecasts:
+    def _run(self, config, spy, monkeypatch, trainSource):
+        days = [START + n * folds.oneDay for n in range(10 * 7)]
+        monkeypatch.setattr(runner, "loadForecastCache",
+                            lambda region: refreshFrame(days))
+        runner.runRolling(config._replace(trainSource=trainSource, foldFilter=frozenset({0})))
+        return spy["train"]
+
+    # Training on realised prices passes no forecast, as before.
+    def test_realised_training_passes_no_forecast(self, config, spy, monkeypatch):
+        assert all(call["forecasts"] is None
+                   for call in self._run(config, spy, monkeypatch, "realised"))
+
+    # One refresh stack per training day, on the episode's own step grid.
+    def test_forecast_training_reads_one_stack_per_training_day(self, config, spy,
+                                                                 monkeypatch):
+        calls = self._run(config, spy, monkeypatch, "forecast")
+        assert calls
+        for call in calls:
+            assert call["forecasts"].shape == (4 * 7, 288 // 48, 288)
+            assert len(call["prices"]) == 4 * 7 * 288
+
+    # A training day the prefetch never reached stops the run before any fit.
+    def test_a_training_day_missing_from_the_cache_is_refused(self, config, spy,
+                                                              monkeypatch):
+        late = [START + n * folds.oneDay for n in range(7, 10 * 7)]
+        monkeypatch.setattr(runner, "loadForecastCache", lambda region: refreshFrame(late))
+        with pytest.raises(ValueError, match="cli prefetch"):
+            runner.runRolling(config._replace(trainSource="forecast",
+                                              foldFilter=frozenset({0})))
+        assert spy["train"] == []
+
+    # Only a forecast-trained set records its source, so older result sets still resume.
+    def test_the_manifest_records_a_forecast_training_source(self, config):
+        assert "trainSource" not in runner.manifestOf(config)
+        cfg = config._replace(trainSource="forecast")
+        assert runner.manifestOf(cfg)["trainSource"] == "forecast"
+        assert "forecastEvery" in runner.manifestOf(cfg)

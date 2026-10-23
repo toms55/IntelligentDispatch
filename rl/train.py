@@ -57,11 +57,13 @@ def resumeFrom(algoName, warmFrom, env, scaler, seed):
 def trainOne(algoName, prices, model, seed=0,
              timesteps=100000, calendar=True, horizon=config.episode_intervals,
              rewardScale=config.reward_scale, outDir="runs", scaler=None,
-             warmFrom=None, **overrides):
+             warmFrom=None, forecasts=None, **overrides):
     """Train `algoName` on `prices` and write a checkpoint. Returns (agent, path).
 
     `warmFrom` is a previous checkpoint directory to continue from, which is how a
-    rolling backtest chains one fold to the next.
+    rolling backtest chains one fold to the next. `forecasts` is one entry per window of
+    `prices`, as BessEnv takes it: the agent then trains on what AEMO published, and is
+    still paid the realised price.
     """
     if warmFrom is not None and overrides:
         raise ValueError(
@@ -76,7 +78,8 @@ def trainOne(algoName, prices, model, seed=0,
 
     env = Monitor(
         BessEnv(prices, model, calendar=calendar, horizon=horizon,
-                rewardScale=rewardScale, shuffle=True, scaler=scaler),
+                rewardScale=rewardScale, shuffle=True, scaler=scaler,
+                forecasts=forecasts),
         filename=str(directory / "monitor.csv"),
     )
     agent = (algos.build(algoName, env, seed=seed, **overrides) if warmFrom is None
