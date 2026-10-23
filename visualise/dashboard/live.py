@@ -24,16 +24,10 @@ from degradation.schade import SchadeDegradation
 from rl import algos, policies
 from rl.env import BessEnv
 from rl.evaluate import rolloutWindow
-from rl.features import scalerFor
-from rl.heuristic import ThresholdPolicy
 from rl.train import loadScaler
 from utils import nem_interval
 
 defaultCheckpoints = policies.defaultRoot
-
-# The rule-based control from rl/heuristic.py. It needs no checkpoint, so the screen
-# still shows a suggestion on a machine that holds no trained agent.
-thresholdLabel = "threshold rule"
 
 columns = ("settlementdate", "price", "action", "soc", "revenue", "profit")
 
@@ -72,17 +66,23 @@ def checkpointKey(label):
     return "-".join(label.split("-")[:3])
 
 
-def _policy(label, path, root, region):
-    """The agent and its price transform for one dropdown label."""
-    if label == thresholdLabel or label is None:
-        return ThresholdPolicy(), scalerFor(path.index), True
+def _policy(label, root, region):
+    """The agent and its price transform for one dropdown label.
+
+    Every model on this screen is a published agent, so a label with no checkpoint
+    behind it raises. The board then draws the price path alone and writes the reason
+    over it.
+    """
+    where = Path(root) / region
+    fix = ("Training writes the final agent there. Copy that directory from the "
+           "machine that trained it.")
+    if label is None:
+        raise FileNotFoundError(f"No agent is published under {where}, so the "
+                                f"dispatch blocks are not drawn. {fix}")
     directory = findCheckpoints(region, root).get(checkpointKey(label))
     if directory is None:
-        raise FileNotFoundError(
-            f"{label} is not published under {Path(root) / region}, so the dispatch "
-            f"blocks are not drawn. Training writes the final agent there. Copy that "
-            f"directory from the machine that trained it, or pick {thresholdLabel}."
-        )
+        raise FileNotFoundError(f"{label} is not published under {where}, so the "
+                                f"dispatch blocks are not drawn. {fix}")
     algo = label.split("-")[0]
     agent = algos.load(algo, str(directory / "agent"), env=None)
     return agent, loadScaler(directory), algos.supportsMasking(algo)
@@ -97,7 +97,7 @@ def suggest(path, label, region, root=defaultCheckpoints,
     empty frame."""
     if len(path) < 2:
         return pd.DataFrame(columns=list(columns))
-    agent, scaler, masking = _policy(label, path, root, region)
+    agent, scaler, masking = _policy(label, root, region)
     env = BessEnv(path, SchadeDegradation(*battery), horizon=len(path),
                   initialSoc=initialSoc, calendar=calendar, scaler=scaler)
     steps = rolloutWindow(agent, env, 0, masking=masking)["trajectory"]
