@@ -237,10 +237,21 @@ def layout(regions, region, day):
                   data={"screen": "backtest", "region": region, "model": None,
                         "clicks": 0}),
         html.Div(id="live-screen", style={"display": "none"}, children=[
-            _liveControls(regions, region),
-            html.Div([dcc.Graph(id="forecast-board",
-                                config={"displayModeBar": False})],
-                     style=panelStyle),
+            # The forecast is fetched over the network, so the screen says so while
+            # it waits rather than sitting blank.
+            dcc.Loading(
+                children=[
+                    _liveControls(regions, region),
+                    html.Div([dcc.Graph(id="forecast-board",
+                                        config={"displayModeBar": False})],
+                             style=panelStyle),
+                ],
+                target_components={"forecast-board": "figure"},
+                overlay_style={"visibility": "visible", "opacity": 0.35},
+                custom_spinner=html.Div("LOADING", style={
+                    "fontSize": "48px", "fontWeight": 700, "letterSpacing": "0.2em",
+                    "color": figures.ink}),
+                delay_show=150),
         ]),
     ], style={"maxWidth": "1180px", "margin": "0 auto", "padding": "28px 20px",
               "background": "#f9f9f7", "minHeight": "100vh",
