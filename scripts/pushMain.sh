@@ -10,6 +10,15 @@
 # The Space upload is staged from the working tree, not from a commit, so the script
 # refuses to run unless main is checked out and the tree is clean. Every argument it
 # does not read goes through to `scripts/publishSpace.sh`.
+#
+# The Space needs a Hugging Face write token. Keep it in a secret store, and hand it
+# over for the one command:
+#
+#     HF_TOKEN=$(secret-tool lookup service huggingface) bash scripts/pushMain.sh
+#
+# Or run `hf auth login` once, and the script reads the token file the CLI writes. Stage
+# 5 of `scripts/publishSpace.sh` holds the token handling. Never write a token into a
+# file in this repository, and never put one in a remote URL.
 set -euo pipefail
 
 SPACE=${DASHBOARD_SPACE:-toms55/IntelligentDispatch}

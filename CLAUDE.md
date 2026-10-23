@@ -130,6 +130,10 @@ Rules:
 5. main and the Space hold the same code. The Space is a separate git repository, so a
    push to GitHub does not reach it. Push main with `scripts/pushMain.sh`, which pushes
    to GitHub and then publishes the Space. Do not push main with `git push` alone.
+6. The Hugging Face write token lives in a secret store, never in the repository. The
+   script reads `$HF_TOKEN`, else the token file `hf auth login` writes, else it asks.
+   It hands the token to one `git push` through a credential helper, so the token
+   reaches no file and no command line. Never put a token in a remote URL.
 
 ### One dispatch chart, drawn once
 

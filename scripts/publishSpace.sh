@@ -169,6 +169,22 @@ if [[ -z "$SPACE" ]]; then
   exit 0
 fi
 
+# The write token for the Space. Keep it out of the repository and out of the shell
+# history. Three ways to supply it, in the order the script looks:
+#
+#   1. $HF_TOKEN, read from a secret store by the shell that calls this script:
+#        HF_TOKEN=$(secret-tool lookup service huggingface) bash scripts/pushMain.sh
+#   2. the file the Hugging Face CLI writes, after `hf auth login`
+#   3. nothing, and git asks. The password it wants is the write token.
+if [[ -z "${HF_TOKEN:-}" ]]; then
+  tokenFile="${HF_TOKEN_PATH:-${HF_HOME:-$HOME/.cache/huggingface}/token}"
+  if [[ -r "$tokenFile" ]]; then
+    HF_TOKEN=$(tr -d '[:space:]' < "$tokenFile")
+    export HF_TOKEN
+    echo "token from $tokenFile"
+  fi
+fi
+
 # A Space is a git repository. Push the stage as one commit, so an update replaces the
 # agents and the results rather than growing the history with every version of them.
 (
@@ -183,7 +199,17 @@ fi
   git remote add space "https://huggingface.co/spaces/$SPACE"
   if [[ "$PUSH" == yes ]]; then
     echo "pushing to https://huggingface.co/spaces/$SPACE"
-    git push --force space main
+    # The token stays in the environment of this one command. It is not in the remote
+    # URL, not in any git configuration file, and not on the command line, so it cannot
+    # reach the repository or a shell history. With no token, git asks for one, and the
+    # password it asks for is a write token rather than an account password.
+    if [[ -n "${HF_TOKEN:-}" ]]; then
+      HF_TOKEN="$HF_TOKEN" git \
+        -c credential.helper='!f() { test "$1" = get && printf "username=hf\npassword=%s\n" "$HF_TOKEN"; }; f' \
+        push --force space main
+    else
+      git push --force space main
+    fi
   else
     echo "committed. To upload:"
     echo "  cd $STAGE && git push --force space main"
