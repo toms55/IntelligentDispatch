@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Stage the hosted dashboard, and push it to a Hugging Face Space.
 #
-#     bash scripts/publishSpace.sh --space tomstorey/nem-bess --push
+#     bash scripts/publishSpace.sh --space toms55/IntelligentDispatch --push
 #
 # The Space runs on CPU Basic hardware, which carries no hourly cost. Creating a Space
 # that runs compute needs a PRO plan, because only static Spaces are free, and a Dash

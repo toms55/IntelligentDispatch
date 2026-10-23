@@ -2,7 +2,7 @@
 # Push main to GitHub, then publish the same code to the Hugging Face Space.
 #
 #     bash scripts/pushMain.sh
-#     bash scripts/pushMain.sh --space tomstorey/nem-bess
+#     bash scripts/pushMain.sh --space toms55/IntelligentDispatch
 #
 # The Space is a separate git repository, so a push to GitHub never reaches it. Use
 # this script instead of `git push origin main`, so the two stay at the same code.
@@ -12,7 +12,7 @@
 # does not read goes through to `scripts/publishSpace.sh`.
 set -euo pipefail
 
-SPACE=${DASHBOARD_SPACE:-tomstorey/nem-bess}
+SPACE=${DASHBOARD_SPACE:-toms55/IntelligentDispatch}
 REMOTE=origin
 passthrough=()
 
