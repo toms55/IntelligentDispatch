@@ -39,8 +39,8 @@ neutral = "#f0efec"
 chargeBlock = "rgba(42,120,214,0.42)"
 dischargeBlock = "rgba(227,73,72,0.42)"
 weekdayNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-capPayoutKey = (f"sum(max(RRP - ${config.spike_threshold:,.0f}, 0))"
-                f" / {config.episode_intervals}")
+capPayoutKey = (f"(1/{config.episode_intervals}) \u03a3\u209c"
+                f" max(RRP\u209c \u2212 ${config.spike_threshold:,.0f}, 0)")
 highVolKey = f"cap payout at or above ${config.high_vol_intensity:.2f}"
 
 
