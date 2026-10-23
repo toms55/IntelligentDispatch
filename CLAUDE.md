@@ -229,7 +229,11 @@ cover.
   AEMO path published right now. `--results` points at the records, `--policies` at
   `trainedPolicies/`. With no `--results`, `data.findResults` reads the one run under
   `results/`, because `cli rolling --results` names each experiment and so the fixed
-  default misses. Two runs there raise and name both.
+  default misses. Two runs there raise and name both. A forecast day also reads
+  the run's actions export, `results/actions/<run>_<region>.csv` (the results
+  directory's name without `_all`, see `data.actionsFile`). Its `forecastRunTime`
+  column is the only source of the forecast line and the "refreshed every …" tile,
+  so pointing `--results` at another run changes those along with every other number.
 
 - **`deploy/`** — the hosted dashboard: the Dockerfile, the runtime requirements, the
   WSGI entry point and the Space card. `scripts/publishSpace.sh` stages and pushes it.

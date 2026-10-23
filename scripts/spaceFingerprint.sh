@@ -47,6 +47,10 @@ describe() {
   if [[ -d "$RESULTS" ]]; then
     find "$RESULTS" -type f \( -name 'fold*.csv' -o -name 'fold*.parquet' \
       -o -name 'manifest.json' \) | sort | describe
+    # Stage 2 also gzips the run's actions export, one CSV per region.
+    run=$(basename "$RESULTS"); run=${run%_all}
+    find "$(dirname "$RESULTS")/actions" -type f -name "${run}_*.csv" 2>/dev/null \
+      | grep -E "/${run}_[A-Z]+[0-9]\.csv$" | sort | describe || true
   fi
   if [[ -d "$MODELS" ]]; then
     find "$MODELS" -type f -path "*seed$SEED*" | sort | describe

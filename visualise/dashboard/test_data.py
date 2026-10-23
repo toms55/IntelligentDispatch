@@ -218,3 +218,43 @@ class TestDispatchPath:
     def test_an_empty_trajectory_is_empty(self):
         got = data.dispatchPath(self.path().iloc[0:0])
         assert got.empty and list(got.columns) == list(data.dispatchColumns)
+
+
+def writeActions(root, name, seeds=(0,)):
+    """An actions export beside a run named `name`, as `backtest.actions` writes it."""
+    rows = []
+    for seed in seeds:
+        for step in range(288):
+            rows.append({
+                "forecastRunTime": DAY + timedelta(minutes=5 * (step // 48 * 48)),
+                "intervalTime": DAY + timedelta(minutes=5 * (step + 1)),
+                "action": "idle", "soc": 0.5, "forecastPrice": 10.0 * seed + step,
+                "realisedPrice": 1.0, "region": REGION, "fold": 0, "seed": seed,
+                "algo": "maskableppo", "trainMode": "warm"})
+    (root / "actions").mkdir(exist_ok=True)
+    pd.DataFrame(rows).to_csv(root / "actions" / f"{name}_{REGION}.csv", index=False)
+
+
+class TestForecastPath:
+    # The export follows --results: the run directory without "_all", plus the region.
+    def test_the_export_follows_the_results_directory(self, tmp_path):
+        writeActions(tmp_path, "rolling_fc4h")
+        writeActions(tmp_path, "rolling_fc5m")
+        got = data.actionsFile(tmp_path / "rolling_fc4h_all", REGION)
+        assert got.name == f"rolling_fc4h_{REGION}.csv"
+        assert data.actionsFile(tmp_path / "other_all", REGION) is None
+
+    def test_one_day_of_one_seed(self, tmp_path):
+        writeActions(tmp_path, "rolling", seeds=(0, 1))
+        path = data.forecastPath(tmp_path / "rolling_all", REGION, DAY,
+                                 algo="maskableppo", trainMode="warm", seed=1)
+        assert len(path) == 288 and path.forecastPrice.iloc[0] == 10.0
+        assert path.forecastRunTime.nunique() == 6
+
+    # A seed the export does not hold has no forecast, never another seed's.
+    def test_a_missing_seed_is_empty(self, tmp_path):
+        writeActions(tmp_path, "rolling")
+        assert data.forecastPath(tmp_path / "rolling_all", REGION, DAY, seed=3).empty
+
+    def test_no_export_is_none(self, tmp_path):
+        assert data.forecastPath(tmp_path / "rolling_all", REGION, DAY) is None

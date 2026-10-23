@@ -4,6 +4,7 @@ Pure functions over the frame `backtest.records` writes. Nothing here imports Da
 the whole layer is testable without a server. Every ratio still comes from
 `backtest.metrics` -- this module only selects rows.
 """
+import functools
 import json
 from datetime import timedelta
 from pathlib import Path
@@ -13,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from backtest import records
+from backtest.actions import exportName
 
 resultsRoot = Path("results")
 # Where `cli rolling` writes when it is not told otherwise. A run of its own name sits
@@ -129,6 +131,58 @@ def availableRegions(resultsDir=defaultResults):
         return []
     return sorted(child.name for child in root.iterdir()
                   if child.is_dir() and any(child.glob("fold*.csv")))
+
+
+def actionsFile(resultsDir, region):
+    """The actions export of the run in `resultsDir`, or None when it was not exported.
+
+    `backtest.actions` names its CSV after the run, and a merged run directory is the
+    run's name with `_all` appended, so the file follows `--results`: pointing the
+    dashboard at another run changes the forecast numbers with every other number. The
+    Space carries it gzipped, which pandas reads the same way.
+    """
+    resultsDir = Path(resultsDir)
+    name = exportName(resultsDir.name.removesuffix("_all"), region)
+    for path in (resultsDir.parent / "actions" / name,
+                 resultsDir.parent / "actions" / f"{name}.gz"):
+        if path.exists():
+            return path
+    return None
+
+
+@functools.lru_cache(maxsize=4)
+def _readActions(path, modified):
+    # `modified` is only in the key, so a re-export is read again rather than served
+    # from the cache.
+    return pd.read_csv(path, parse_dates=["forecastRunTime", "intervalTime"],
+                       usecols=["forecastRunTime", "intervalTime", "forecastPrice",
+                                "seed", "algo", "trainMode"])
+
+
+forecastColumns = ("settlementdate", "forecastPrice", "forecastRunTime")
+
+
+def forecastPath(resultsDir, region, day, algo=None, trainMode=None, seed=None):
+    """The forecast one model acted on over `day`, and the AEMO run each price came from.
+
+    None when the run has no actions export, which is not the same as an empty frame:
+    an export without this model or seed holds no forecast for it, and must not lend
+    another seed's.
+    """
+    path = actionsFile(resultsDir, region)
+    if path is None:
+        return None
+    rows = _readActions(str(path), path.stat().st_mtime)
+    for column, wanted in (("algo", algo), ("trainMode", trainMode), ("seed", seed)):
+        if wanted is not None:
+            rows = rows[rows[column] == wanted]
+    day = pd.Timestamp(day)
+    rows = rows[(rows.intervalTime > day) & (rows.intervalTime <= day + timedelta(days=1))]
+    rows = rows.sort_values("intervalTime")
+    return pd.DataFrame({"settlementdate": rows.intervalTime.to_numpy(),
+                         "forecastPrice": rows.forecastPrice.to_numpy(dtype=float),
+                         "forecastRunTime": rows.forecastRunTime.to_numpy()},
+                        columns=list(forecastColumns))
 
 
 def findResults(given=None, root=resultsRoot):

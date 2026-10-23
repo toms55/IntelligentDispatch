@@ -64,7 +64,7 @@ class TestSummaryTiles:
         tiles = {tile["label"]: tile["raw"] for tile in figures.summaryTiles(one)}
         assert "Win rate" not in tiles and "Days" not in tiles
         assert tiles["Revenue"] == pytest.approx(one.agentRevenue.iloc[0])
-        assert tiles["Degradation"] == pytest.approx(one.agentDegradation.iloc[0])
+        assert "Degradation" not in tiles
         assert tiles["Cap Payout"] == pytest.approx(one.spikeIntensity.iloc[0])
 
     # The high and low volatility split is always shown, both sides present.
@@ -211,6 +211,85 @@ class TestMonth:
         numbers = _traces(figure, "text")[0]
         assert len(numbers.text) == 31
 
+
+
+def forecastRows(every, start=DAY):
+    """One day of the actions export: one forecast price per interval, read from a run
+    published every `every` intervals from 04:00."""
+    clock = pd.date_range(start + timedelta(minutes=5), periods=288, freq="5min")
+    runs = [start + timedelta(minutes=5 * (step // every * every)) for step in range(288)]
+    return pd.DataFrame({"settlementdate": clock, "forecastPrice": np.linspace(20, 80, 288),
+                         "forecastRunTime": runs})
+
+
+class TestForecastTile:
+    def _one(self, frame, source):
+        one = frame[frame.testDay == frame.testDay.iloc[0]].iloc[0:1].copy()
+        one["priceSource"] = source
+        return one
+
+    # The one-day tiles read Revenue before the oracle, and the forecast tile takes the
+    # place degradation had.
+    def test_the_one_day_order(self, frame):
+        tiles = figures.summaryTiles(self._one(frame, "forecast"), forecastRows(48))
+        assert [tile["label"] for tile in tiles] == [
+            "Captured", "Agent profit", "Revenue", "Oracle profit", "Forecast",
+            "Cap Payout"]
+
+    # The wording comes from the run times in the export, so any refresh reads right.
+    @pytest.mark.parametrize("every, heading, sub", [
+        (48, "Refreshed every 4 hours", "Every 4 hours, a new AEMO forecast was pulled "
+         "for the backtest, starting at 04:00."),
+        (1, "Refreshed every 5 minutes", "Every 5 minutes, a new AEMO forecast was "
+         "pulled for the backtest, starting at 04:00."),
+        (12, "Refreshed every hour", "Every hour, a new AEMO forecast was pulled for "
+         "the backtest, starting at 04:00."),
+        (288, "Pulled once a day", "One AEMO forecast was pulled at 04:00 and held for "
+         "the whole trading day."),
+    ])
+    def test_the_refresh_is_read_from_the_runs(self, frame, every, heading, sub):
+        tile = figures.summaryTiles(self._one(frame, "forecast"), forecastRows(every))[4]
+        assert (tile["value"], tile["sub"]) == (heading, sub)
+        assert tile["accent"] == figures.forecastLine
+
+    def test_a_realised_day_says_no_forecast(self, frame):
+        tile = figures.summaryTiles(self._one(frame, "realised"))[4]
+        assert tile["value"] == "No forecast" and tile["accent"] is None
+
+    def test_a_missing_export_says_so(self, frame):
+        tile = figures.summaryTiles(self._one(frame, "forecast"), None)[4]
+        assert tile["value"] == "Refresh unknown"
+
+    # Several days have no single source, so the tile is not offered.
+    def test_several_days_have_no_forecast_tile(self, frame):
+        assert "Forecast" not in [tile["label"] for tile in figures.summaryTiles(frame)]
+
+
+class TestForecastOverlay:
+    def _path(self, trajectory):
+        return data.dispatchPath(trajectory, priceSource="forecast")
+
+    def test_the_forecast_line_and_chip(self, trajectory):
+        figure = figures.dayFigure(self._path(trajectory), [], DAY,
+                                   forecast=forecastRows(48))
+        names = [trace.name for trace in figure.data]
+        assert "Forecast acted on" in names
+        assert "refreshed every 4 hours" in figure.layout.title.text
+        rules = [shape for shape in figure.layout.shapes if shape.type == "line"
+                 and shape.line.color == figures.forecastLine]
+        assert len(rules) == 6
+
+    # 288 runs would bury the chart in rules; the hover and the tile carry the run.
+    def test_a_five_minute_refresh_draws_no_rules(self, trajectory):
+        figure = figures.dayFigure(self._path(trajectory), [], DAY,
+                                   forecast=forecastRows(1))
+        assert not [shape for shape in figure.layout.shapes
+                    if shape.line.color == figures.forecastLine]
+
+    def test_a_realised_day_is_unchanged(self, trajectory):
+        figure = figures.dayFigure(data.dispatchPath(trajectory, priceSource="realised"),
+                                   [], DAY)
+        assert "Forecast acted on" not in [trace.name for trace in figure.data]
 
 
 class TestDayView:

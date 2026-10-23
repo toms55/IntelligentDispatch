@@ -40,15 +40,22 @@ dateFormat = "%d/%m/%Y"
 
 
 def _tile(tile):
+    # A tile whose value is words rather than a number sets them smaller, so a phrase
+    # like "Refreshed every 4 hours" fits the width a dollar figure does. An accent is
+    # the colour of the chart line the tile names.
+    accent = tile.get("accent")
+    style = dict(tileStyle, borderLeft=f"4px solid {accent}") if accent else tileStyle
     return html.Div([
         html.Div(tile["label"], style={"color": figures.mutedInk, "fontSize": "12px",
                                        "textTransform": "uppercase",
                                        "letterSpacing": "0.04em"}),
-        html.Div(tile["value"], style={"color": figures.ink, "fontSize": "26px",
+        html.Div(tile["value"], style={"color": accent or figures.ink,
+                                       "fontSize": "26px" if tile.get("raw") is not None
+                                       else "18px",
                                        "fontWeight": 600, "marginTop": "4px"}),
         html.Div(tile["sub"], style={"color": figures.secondaryInk,
                                      "fontSize": "12px", "marginTop": "2px"}),
-    ], style=tileStyle)
+    ], style=style)
 
 
 def parseDay(text):
@@ -324,12 +331,18 @@ def register(app, loader, policyRoot=live.defaultCheckpoints):
         # The tiles report the selected day in both views, so stepping the day or
         # clicking a calendar cell always moves them.
         scoped = data.scope(chosen, day=day)
+        row = chosen.iloc[0] if not chosen.empty else {}
+        # The forecast comes from the run's own actions export, so the line on the
+        # chart and the refresh tile both follow --results.
+        forecast = (data.forecastPath(run.resultsDir, state["region"], day,
+                                      algo=row.get("algo"), trainMode=row.get("trainMode"),
+                                      seed=row.get("seed"))
+                    if row.get("priceSource") == "forecast" else None)
         if state["view"] == "calendar":
             board = figures.monthFigure(data.monthScope(chosen, day), day,
                                         selected=state["day"])
             label = f"{day:%B %Y}"
         else:
-            row = chosen.iloc[0] if not chosen.empty else {}
             # `live.blocks` turns the actions into blocks for both screens, so a
             # backtest day and a live forecast read the same way.
             path = data.dispatchPath(
@@ -337,9 +350,10 @@ def register(app, loader, policyRoot=live.defaultCheckpoints):
                 algo=row.get("algo"), trainMode=row.get("trainMode"),
                 seed=row.get("seed"), priceSource=row.get("priceSource"))
             board = figures.dayFigure(path, live.blocks(path), day,
-                                      region=state["region"], model=state["model"])
+                                      region=state["region"], model=state["model"],
+                                      forecast=forecast)
             label = f"{day:%A %-d %B %Y}, 04:00 to 04:00"
-        return [_tile(tile) for tile in figures.summaryTiles(scoped)], board, label
+        return [_tile(tile) for tile in figures.summaryTiles(scoped, forecast)], board, label
 
     @app.callback(Output("backtest-screen", "style"), Output("live-screen", "style"),
                   Input("screen", "value"))

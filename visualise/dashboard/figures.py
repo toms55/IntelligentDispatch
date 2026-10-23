@@ -38,6 +38,11 @@ neutral = "#f0efec"
 # Opaque enough to read as a block, open enough to keep the price path visible.
 chargeBlock = "rgba(42,120,214,0.42)"
 dischargeBlock = "rgba(227,73,72,0.42)"
+# The forecast the agent acted on. A hue of its own, apart from both blocks and both
+# profit poles, and the forecast refresh tile wears it too so the tile keys the line.
+forecastLine = "#7b4fc9"
+# Past this many runs in a day the run rules would cover the chart.
+maxRunRules = 12
 weekdayNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 capPayoutKey = (f"(1/{config.episode_intervals}) \u03a3\u209c"
                 f" max(RRP\u209c \u2212 ${config.spike_threshold:,.0f}, 0)")
@@ -52,40 +57,79 @@ def _percent(value):
     return "no data" if pd.isna(value) else f"{value * 100:.1f}%"
 
 
-def summaryTiles(frame):
+def _span(delta):
+    minutes = int(delta / pd.Timedelta(minutes=1))
+    if minutes % 60:
+        return f"{minutes} minutes" if minutes != 1 else "minute"
+    hours = minutes // 60
+    return f"{hours} hours" if hours != 1 else "hour"
+
+
+def refreshText(forecast, priceSource):
+    """What the agent observed over a day, as a (heading, subheading) pair.
+
+    Read from the runs in the day's forecast rows, never from a setting, so the text
+    follows whichever export the dashboard reads: the spacing of the run times is the
+    refresh and the first of them is the start. None for the forecast means the run
+    was never exported.
+    """
+    if priceSource != "forecast":
+        return ("No forecast",
+                "Dispatched on realised prices, with perfect knowledge of the price.")
+    if forecast is None or forecast.empty:
+        return ("Refresh unknown", "This run's forecast actions were not exported.")
+    runs = sorted(pd.to_datetime(forecast.forecastRunTime).unique())
+    start = pd.Timestamp(runs[0])
+    if len(runs) == 1:
+        return ("Pulled once a day",
+                f"One AEMO forecast was pulled at {start:%H:%M} and held for the whole "
+                "trading day.")
+    span = _span(pd.Timestamp(runs[1]) - start)
+    return (f"Refreshed every {span}",
+            f"Every {span}, a new AEMO forecast was pulled for the backtest, starting "
+            f"at {start:%H:%M}.")
+
+
+def summaryTiles(frame, forecast=None):
     """The headline numbers for whatever scope is selected, straight from metrics.
 
     One day holds one row, so a win rate and a spread across folds would say nothing.
-    The last three tiles therefore describe the day itself in that case.
+    The last three tiles therefore describe the day itself in that case, and one of
+    them says which forecast the agent dispatched against. `forecast` is the day's
+    `data.forecastPath`.
     """
     got = metrics.summarise(frame)
     empty = got["days"] == 0
-    rows = [
+    head = [
         ("Captured", _percent(got["captured"]), got["captured"],
          "agent dollars over oracle dollars"),
         ("Agent profit", _money(got["agentProfit"]), got["agentProfit"],
          "after degradation"),
-        ("Oracle profit", _money(got["oracleProfit"]), got["oracleProfit"],
-         "perfect foresight bound"),
     ]
+    oracle = ("Oracle profit", _money(got["oracleProfit"]), got["oracleProfit"],
+              "perfect foresight bound")
     if got["days"] == 1:
         facts = metrics.dayFacts(frame)
-        rows += [
-            ("Revenue", _money(facts["revenue"]), facts["revenue"],
-             "before degradation"),
-            ("Degradation", _money(facts["degradation"]), facts["degradation"],
-             "cost of the day's cycling"),
-            ("Cap Payout", _money(facts["spikeIntensity"]),
-             facts["spikeIntensity"], capPayoutKey),
+        heading, sub = refreshText(forecast, frame.priceSource.iloc[0])
+        tiles = [{"label": label, "value": value, "raw": raw, "sub": sub}
+                 for label, value, raw, sub in head + [
+                     ("Revenue", _money(facts["revenue"]), facts["revenue"],
+                      "before degradation"),
+                     oracle]]
+        return tiles + [
+            {"label": "Forecast", "value": heading, "raw": None, "sub": sub,
+             "accent": forecastLine if frame.priceSource.iloc[0] == "forecast" else None},
+            {"label": "Cap Payout", "value": _money(facts["spikeIntensity"]),
+             "raw": facts["spikeIntensity"], "sub": capPayoutKey},
         ]
-    else:
-        rows += [
-            ("Win rate", _percent(got["winRate"]), got["winRate"], "days above zero"),
-            ("Fold median", _percent(got["foldMedian"]), got["foldMedian"],
-             f"IQR {_percent(got['foldIqr'])}"),
-            ("Days", "no data" if empty else f"{got['days']:,}", float(got["days"]),
-             "in this scope"),
-        ]
+    rows = head + [
+        oracle,
+        ("Win rate", _percent(got["winRate"]), got["winRate"], "days above zero"),
+        ("Fold median", _percent(got["foldMedian"]), got["foldMedian"],
+         f"IQR {_percent(got['foldIqr'])}"),
+        ("Days", "no data" if empty else f"{got['days']:,}", float(got["days"]),
+         "in this scope"),
+    ]
     return [{"label": label, "value": "no data" if empty else value,
              "raw": raw, "sub": sub} for label, value, raw, sub in rows]
 
@@ -253,11 +297,12 @@ def monthFigure(frame, month, selected=None):
     return figure
 
 
-def dayFigure(frame, blocks=(), day=None, region=None, model=None):
+def dayFigure(frame, blocks=(), day=None, region=None, model=None, forecast=None):
     """One test day: the realised price path, and the dispatch the agent ran over it.
 
     The same figure the current forecast screen draws, over realised prices rather than
-    a forecast. `_dispatchFigure` explains how a block is placed.
+    a forecast. `_dispatchFigure` explains how a block is placed. `forecast`, the day's
+    `data.forecastPath`, adds the price the agent acted on when it observed a forecast.
     """
     if frame.empty:
         named = f" under {model}" if model else ""
@@ -268,10 +313,15 @@ def dayFigure(frame, blocks=(), day=None, region=None, model=None):
     clock = pd.to_datetime(frame.settlementdate)
     # Every realised interval is its own published price, so none is thinned out.
     drawn = np.ones(len(clock), dtype=bool)
+    overlay = forecast if forecast is not None and not forecast.empty else None
+    chip = None
+    if forecast is not None:
+        chip = "forecast " + refreshText(forecast, "forecast")[0].lower()
     return _dispatchFigure(
         clock, frame.price.to_numpy(dtype=float), blocks, drawn,
-        name="Realised price", yTitle="Realised price $/MWh", hoverTime="%H:%M",
-        title=" · ".join(part for part in (region, model) if part))
+        name="Realised price", yTitle="Price $/MWh", hoverTime="%H:%M",
+        title=" · ".join(part for part in (region, model, chip) if part),
+        forecast=overlay)
 
 
 def publishedIntervals(clock, fine=p5minIntervals):
@@ -286,7 +336,7 @@ def publishedIntervals(clock, fine=p5minIntervals):
 
 
 def _dispatchFigure(clock, price, blocks, drawn, *, name, yTitle, hoverTime,
-                    title=None, note=None):
+                    title=None, note=None, forecast=None):
     """A price path with the dispatch blocks of one policy over it.
 
     The path is drawn as the step function a dispatch price is: each point holds from
@@ -301,6 +351,10 @@ def _dispatchFigure(clock, price, blocks, drawn, *, name, yTitle, hoverTime,
 
     `drawn` selects which rows the line uses. The blocks and the rule always read every
     interval, so thinning the line never moves a block.
+
+    `forecast` lays the price the agent acted on over the path, each point labelled
+    with the AEMO run it came from, and marks each run's start with a faint rule while
+    there are few enough runs to read. The blocks stay anchored to the paid price.
     """
     rule = float(np.mean(price))
     shapes = []
@@ -319,6 +373,17 @@ def _dispatchFigure(clock, price, blocks, drawn, *, name, yTitle, hoverTime,
         x=clock[drawn], y=price[drawn], name=name, mode="lines",
         line=dict(color=ink, width=2, shape="vh"),
         hovertemplate="%%{x|%s} · $%%{y:.2f}<extra>%s</extra>" % (hoverTime, name)))
+    runs = []
+    if forecast is not None:
+        runTimes = pd.to_datetime(forecast.forecastRunTime)
+        runs = sorted(runTimes.unique())
+        figure.add_trace(go.Scatter(
+            x=pd.to_datetime(forecast.settlementdate),
+            y=forecast.forecastPrice.to_numpy(dtype=float),
+            customdata=runTimes.dt.strftime("%d/%m %H:%M"),
+            name="Forecast acted on", mode="lines",
+            line=dict(color=forecastLine, width=1.6, shape="vh"),
+            hovertemplate="run %{customdata} · $%{y:.2f}<extra>Forecast acted on</extra>"))
     # Two empty traces carry the key. A shape cannot hold a legend entry of its own.
     for label, colour in (("Discharge: sell", dischargeBlock),
                           ("Charge: buy", chargeBlock)):
@@ -338,6 +403,10 @@ def _dispatchFigure(clock, price, blocks, drawn, *, name, yTitle, hoverTime,
                     xanchor="right", font=dict(color=secondaryInk)),
     ))
     figure.add_hline(y=rule, line=dict(color=axisLine, width=1))
+    if 1 < len(runs) <= maxRunRules:
+        for run in runs:
+            figure.add_vline(x=pd.Timestamp(run), opacity=0.45,
+                             line=dict(color=forecastLine, width=1, dash="dot"))
     if note:
         figure.add_annotation(text=_wrap(note), showarrow=False, x=0, y=1.0,
                               xanchor="left", yanchor="bottom", xref="paper",

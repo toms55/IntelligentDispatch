@@ -83,7 +83,19 @@ mkdir -p "$target"
   mkdir -p "$target/$(dirname "$path")"
   cp "$RESULTS/$path" "$target/$path"
 done
-echo "$(find "$target" -type f | wc -l) files, $(du -sh "$target" | cut -f1)"
+# The run's actions export, which the day view reads for the forecast the agent acted
+# on and the refresh tile. `data.actionsFile` names it after the run; gzip cuts each
+# region from about 29 MB to a few, and pandas reads it the same way.
+run=$(basename "$RESULTS"); run=${run%_all}
+mkdir -p "$STAGE/results/actions"
+for path in "$(dirname "$RESULTS")"/actions/"$run"_*.csv; do
+  [[ -e "$path" ]] || continue
+  # Only this run, not a longer name that starts with it (rolling2023_profit_fc4h_...).
+  region=$(basename "$path" .csv); region=${region#"$run"_}
+  [[ "$region" == *_* ]] && continue
+  gzip -c "$path" > "$STAGE/results/actions/$(basename "$path").gz"
+done
+echo "$(find "$target" "$STAGE/results/actions" -type f | wc -l) files, $(du -sh "$STAGE/results" | cut -f1)"
 
 # -------------------------------------------------------------- 3. the agents
 # One agent per region, all of one seed, so every region in the dropdown can run the
