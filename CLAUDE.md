@@ -106,6 +106,25 @@ The current forecast screen runs the agent now, so it needs the weights. Its mod
 list comes from `trainedPolicies/` and from nowhere else. Never fill it from the
 results: that offers a model the screen cannot load.
 
+### One definition of the hosted dashboard
+
+The dashboard is hosted on a free Hugging Face Space, which builds `deploy/Dockerfile`
+and serves `deploy/app.py`. `scripts/publishSpace.sh` is the only code that stages the
+upload, and the upload is a subset: the packages the two screens import, one results
+directory, one published agent per region, and `deploy/`.
+
+Rules:
+
+1. `deploy/requirements.txt` holds the runtime dependencies of the two screens only.
+   It is not a copy of `pyproject.toml`. pulp, highspy, nemosis, nemseer and matplotlib
+   stay out, because no screen solves and no screen reads the AEMO archive.
+2. Stage 4 of the script builds the app with those five names blocked. If a new import
+   on the dashboard path reaches one of them, that check fails and the Space does not.
+3. The agents travel through `policies.publish`, so the Space gets the same layout every
+   other machine has. Never stage weights with `cp`.
+4. The script pushes one commit over the last one. The weights are binary, so a history
+   of them would grow the Space by their size on every update.
+
 ### One dispatch chart, drawn once
 
 A charge or discharge run reads the same way on both screens. `figures._dispatchFigure`
@@ -188,6 +207,10 @@ cover.
   `trainedPolicies/`. With no `--results`, `data.findResults` reads the one run under
   `results/`, because `cli rolling --results` names each experiment and so the fixed
   default misses. Two runs there raise and name both.
+
+- **`deploy/`** — the hosted dashboard: the Dockerfile, the runtime requirements, the
+  WSGI entry point and the Space card. `scripts/publishSpace.sh` stages and pushes it.
+  See the convention above.
 
 - **`conftest.py`** — exists only to put the repo root on `sys.path` so
   `degradation/schade.py` can resolve `from utils import ...` during collection.

@@ -98,6 +98,65 @@ rsync -a trainedPolicies/NSW1/ dashboard-host:~/IntelligentDispatch/trainedPolic
 The current forecast screen lists the agents in `trainedPolicies/` and nothing else. An
 agent that is not published there cannot run live.
 
+## Hosting the dashboard
+
+The dashboard runs on a free Hugging Face Space. The free CPU hardware needs no card,
+holds 16 GB of memory, and reaches NEMWeb, which the current forecast screen needs. A
+Space is a git repository, so an update is a push.
+
+What the Space holds is not the repository. `scripts/publishSpace.sh` stages four
+things, and nothing else:
+
+1. the packages the two screens import
+2. one results directory: the fold rows the backtest screen replays
+3. `trainedPolicies/`: one published agent per region
+4. `deploy/`: the Dockerfile, the requirements and the Space card
+
+The oracle, the solver and the AEMO archive readers stay out, because no screen solves.
+`deploy/requirements.txt` therefore drops pulp, highspy, nemosis and nemseer, and takes
+torch from the CPU index. Stage 4 of the script builds the app with those four names
+blocked, so an import that reaches one of them fails at home rather than on the Space.
+
+To publish:
+
+1. Create a Space on huggingface.co. Pick the Docker SDK and the free CPU hardware.
+2. Log in once, so git can push: `pip install huggingface_hub && hf auth login`.
+3. Stage and check the upload, without pushing it:
+
+```bash
+bash scripts/publishSpace.sh
+```
+
+4. Push it:
+
+```bash
+bash scripts/publishSpace.sh --space <user>/<name> --push
+```
+
+The defaults take the 5 agents of seed 0, one per region, from
+`models/rolling2023_profit_fc4h`, and the records from `results/rolling2023_profit_all`.
+`--models`, `--seed` and `--results` change that. The forecast screen offers one agent
+per region plus the threshold rule, so every region in the dropdown can run.
+
+A better agent reaches the Space the same way: train it, then run the script again. It
+pushes one commit over the last one, so the history does not grow by the size of the
+weights every time.
+
+Two limits of the free hardware:
+
+- The Space sleeps after two days with no visitor, and the next request wakes it. That
+  takes about a minute.
+- The upload is about 75 MB, and most of it is the per-fold trajectories. A second
+  results directory doubles it.
+
+`deploy/app.py` is the entry point the Space serves. It reads `DASHBOARD_REGION`,
+`DASHBOARD_RESULTS` and `DASHBOARD_POLICIES`, because a host sets environment variables
+and does not pass arguments. Locally, run the module instead:
+
+```bash
+uv run python -m visualise.dashboard --results results/rolling2023_profit_all
+```
+
 ## Data
 
 `nemosis` downloads AEMO archive files into `data_cache/` on first use, so the first run
