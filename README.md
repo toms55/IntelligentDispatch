@@ -100,91 +100,63 @@ agent that is not published there cannot run live.
 
 ## Hosting the dashboard
 
-The dashboard runs on Google Cloud Run. The service scales to zero, so an idle
-dashboard costs nothing, and it reaches NEMWeb, which the current forecast screen
-needs. Anyone with the link can open it.
+The dashboard runs on a Hugging Face Space. The CPU Basic hardware gives 2 vCPU and
+16 GB of memory at no hourly cost, and reaches NEMWeb, which the current forecast
+screen needs. A Space is a git repository, so an update is a push.
 
-Cloud Run rather than a Hugging Face Space: a Space that runs compute now needs a paid
-Hugging Face plan, and only static Spaces are free. A Dash application is not static.
-`scripts/publishSpace.sh` still works, and pushes the same staged directory, if you
-hold that plan.
+The hardware costs nothing per hour, but creating a Space that runs compute needs a
+PRO plan at $9 a month. Only static Spaces are free, and a Dash application is not
+static.
 
-### What gets staged
-
-`scripts/stageDashboard.sh` builds the directory both hosts deploy. It is not the
-repository. It holds four things, and nothing else:
+What the Space holds is not the repository. `scripts/publishSpace.sh` stages four
+things, and nothing else:
 
 1. the packages the two screens import
 2. one results directory: the fold rows the backtest screen replays
 3. `trainedPolicies/`: one published agent per region
-4. `deploy/`: the Dockerfile, the requirements and the card
+4. `deploy/`: the Dockerfile, the requirements and the Space card
 
 The oracle, the solver and the AEMO archive readers stay out, because no screen solves.
 `deploy/requirements.txt` therefore drops pulp, highspy, nemosis and nemseer, and takes
 torch from the CPU index. Stage 4 of the script builds the app with those four names
-blocked, so an import that reaches one of them fails at home rather than on the host.
+blocked, so an import that reaches one of them fails at home rather than on the Space.
 
-### Deploy it
+To publish:
 
-1. Install the Google Cloud CLI, then log in: `gcloud auth login`.
-2. Create a project and attach a billing account to it. Cloud Run needs one even
-   inside the free tier.
-3. Add the hard stop, once. This is the part that makes the cost safe:
-
-```bash
-bash scripts/setupBillingGuard.sh --project <project-id> --budget 1
-```
-
-4. Stage, build and deploy:
+1. Create a Space on huggingface.co. Pick the Docker SDK and CPU Basic hardware. A
+   static Space cannot serve this application.
+2. Log in once, so git can push: `pip install huggingface_hub && hf auth login`.
+3. Stage and check the upload, without pushing it:
 
 ```bash
-bash scripts/deployCloudRun.sh --project <project-id>
+bash scripts/publishSpace.sh
 ```
 
-The script prints the URL. The defaults take the 5 agents of seed 0, one per region,
-from `models/rolling2023_profit_fc4h`, and the records from
-`results/rolling2023_profit_all`. `--models`, `--seed` and `--results` change that. The
-forecast screen offers one agent per region plus the threshold rule, so every region in
-the dropdown can run.
+4. Push it:
 
-A better agent reaches the host the same way: train it, then run the script again.
+```bash
+bash scripts/publishSpace.sh --space <user>/<name> --push
+```
 
-### What it costs
+The defaults take the 5 agents of seed 0, one per region, from
+`models/rolling2023_profit_fc4h`, and the records from `results/rolling2023_profit_all`.
+`--models`, `--seed` and `--results` change that. The forecast screen offers one agent
+per region plus the threshold rule, so every region in the dropdown can run.
 
-Almost nothing, but not exactly nothing, so here are the real numbers.
+A better agent reaches the Space the same way: train it, then run the script again. It
+pushes one commit over the last one, so the history does not grow by the size of the
+weights every time.
 
-The free tier is 2 million requests, 180,000 vCPU-seconds and 360,000 GiB-seconds a
-month. The service holds one instance at most, scales to zero, and allocates CPU during
-a request only. A dashboard that gets visitors rather than traffic uses a low single
-digit percentage of that. For the compute to cost anything, the app has to serve
-requests for about 50 hours in one month.
+Two limits of CPU Basic:
 
-Artifact Registry is the charge that is not zero. It gives 0.5 GB free, and the image
-holds torch, so expect a few cents a month. Stage 3 of the deploy script deletes every
-image but the live one to hold that down.
-
-`scripts/setupBillingGuard.sh` is the stop. A Google budget only sends mail, so the
-guard adds a Pub/Sub topic and the function in `deploy/billingGuard/`, which removes
-the billing account from the project once the cost reaches the budget. That ends every
-charge, and takes the dashboard down with it. A cost appears before its notification
-does, so the project can run a little past the budget. Set the budget below what you
-are willing to spend, not at it.
-
-### Two limits
-
-- The service sleeps when nobody visits, and the next request wakes it. That takes
-  about a minute.
+- The Space sleeps after two days with no visitor, and the next request wakes it. That
+  takes about a minute.
 - The upload is about 75 MB, and most of it is the per-fold trajectories. A second
   results directory doubles it.
 
-The app needs about 606 MB of memory to serve, which is why the service asks for 2 GiB.
-torch is roughly 475 MB of that, and only the forecast screen needs it. A 512 MB host
-can therefore run the backtest screen alone, and not both.
-
-`deploy/app.py` is the entry point the host serves. It reads `DASHBOARD_REGION`,
+`deploy/app.py` is the entry point the Space serves. It reads `DASHBOARD_REGION`,
 `DASHBOARD_RESULTS` and `DASHBOARD_POLICIES`, because a host sets environment variables
-and does not pass arguments. The container binds the port in `PORT`, which Cloud Run
-chooses. Locally, run the module instead:
+and does not pass arguments. Locally, run the module instead:
 
 ```bash
 uv run python -m visualise.dashboard --results results/rolling2023_profit_all
