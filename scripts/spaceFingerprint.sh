@@ -32,6 +32,12 @@ if [[ "${1:-}" == --path ]]; then
   exit 0
 fi
 
+# Name, size and modification time of each path on stdin. BSD find has no -printf and
+# BSD stat takes other flags, so perl, which both systems ship, reads them.
+describe() {
+  perl -nle '@s = stat; print "$_ $s[7] $s[9]"'
+}
+
 {
   # Stage 1 of publishSpace.sh copies these eight items.
   for item in config.py utils data degradation rl backtest visualise deploy; do
@@ -40,9 +46,9 @@ fi
   # Stage 2 stages these three names, and stage 3 one seed of the weights.
   if [[ -d "$RESULTS" ]]; then
     find "$RESULTS" -type f \( -name 'fold*.csv' -o -name 'fold*.parquet' \
-      -o -name 'manifest.json' \) -printf '%p %s %T@\n' | sort
+      -o -name 'manifest.json' \) | sort | describe
   fi
   if [[ -d "$MODELS" ]]; then
-    find "$MODELS" -type f -path "*seed$SEED*" -printf '%p %s %T@\n' | sort
+    find "$MODELS" -type f -path "*seed$SEED*" | sort | describe
   fi
 } | sha256sum | cut -d' ' -f1
