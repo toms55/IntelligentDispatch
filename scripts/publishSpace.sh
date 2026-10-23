@@ -63,6 +63,12 @@ find "$STAGE" -name 'test_*.py' -delete
 mv "$STAGE/deploy/Dockerfile" "$STAGE/Dockerfile"
 mv "$STAGE/deploy/space.md" "$STAGE/README.md"
 printf '__pycache__/\ndata_cache/\n' > "$STAGE/.gitignore"
+# A Space refuses a binary file that git tracks directly, so the two binary kinds in
+# the upload go through LFS. This file has to exist before the first `git add`, or the
+# filter never runs. The agent weights are `.zip`, the per-fold trajectories `.parquet`.
+# Everything else in the upload is text.
+printf '*.zip filter=lfs diff=lfs merge=lfs -text\n' > "$STAGE/.gitattributes"
+printf '*.parquet filter=lfs diff=lfs merge=lfs -text\n' >> "$STAGE/.gitattributes"
 
 # ------------------------------------------------------------- 2. the results
 say "2/5 results from $RESULTS"
@@ -168,6 +174,9 @@ fi
 (
   cd "$STAGE"
   git init -q -b main
+  # `--local` keeps the filter in this throwaway repository, and out of the user's
+  # global git configuration.
+  git lfs install --local >/dev/null
   git add -A
   git -c user.email=publish@localhost -c user.name=publish commit -q \
     -m "dashboard: $(basename "$RESULTS"), agents from $(basename "$MODELS") seed $SEED"
