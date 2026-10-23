@@ -307,19 +307,18 @@ class TestDayView:
         figure = figures.dayFigure(path, [], DAY)
         assert {trace.yaxis for trace in figure.data} == {None}
 
-    # A charge block hangs below the mean price and a discharge block stands above it,
-    # which is what makes the pattern readable against the path.
-    def test_the_blocks_straddle_the_mean(self, trajectory):
+    # A block is the same height whatever the price inside it: it spans the axis
+    # domain, so a spike cannot make one run look bigger than another.
+    def test_the_blocks_have_one_height(self, trajectory):
         path = data.dispatchPath(trajectory, priceSource="realised")
         clock = pd.to_datetime(path.settlementdate)
-        rule = float(path.price.mean())
         figure = figures.dayFigure(
             path, [("charge", clock.iloc[0], clock.iloc[5]),
                    ("discharge", clock.iloc[-6], clock.iloc[-1])], DAY)
         # The mean rule is a shape too, so it trails the two blocks.
         charge, discharge = figure.layout.shapes[:2]
-        assert charge.y0 < rule and charge.y1 == pytest.approx(rule)
-        assert discharge.y0 == pytest.approx(rule) and discharge.y1 > rule
+        for block in (charge, discharge):
+            assert (block.yref, block.y0, block.y1) == ("y domain", 0, 1)
 
     # Both screens fill a block with the same colour, so neither teaches a second key.
     def test_the_block_colours_match_the_forecast_screen(self, trajectory):

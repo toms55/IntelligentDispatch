@@ -137,18 +137,14 @@ class TestForecastFigure:
         names = [trace.name for trace in figure.data]
         assert names == ["AEMO forecast", "Discharge: sell", "Charge: buy"]
 
-    # Red stands above the mean price line and blue hangs below it.
-    def test_discharge_sits_above_the_rule_and_charge_below(self, sawtooth, standIn):
+    # Every block spans the full plot height, so price never sets its size.
+    def test_every_block_spans_the_plot_height(self, sawtooth, standIn):
         frame = live.suggest(sawtooth, MODEL, REGION)
         figure = figures.forecastFigure(frame, live.blocks(frame))
-        rule = float(np.mean(frame.price))
-        for shape in figure.layout.shapes:
-            if shape.type != "rect":
-                continue
-            if shape.fillcolor == figures.dischargeBlock:
-                assert shape.y0 == rule and shape.y1 > rule
-            else:
-                assert shape.y1 == rule and shape.y0 < rule
+        rects = [shape for shape in figure.layout.shapes if shape.type == "rect"]
+        assert rects
+        for shape in rects:
+            assert (shape.yref, shape.y0, shape.y1) == ("y domain", 0, 1)
 
     # AEMO publishes one price per half hour past the P5MIN part, so the line carries
     # one point per half hour there, not six identical ones.

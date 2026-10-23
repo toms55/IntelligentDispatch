@@ -343,11 +343,11 @@ def _dispatchFigure(clock, price, blocks, drawn, *, name, yTitle, hoverTime,
     the end of the interval before it, so a PREDISPATCH half hour reads as one flat
     30-minute block and a 5-minute interval as one flat 5-minute block.
 
-    The horizontal rule is the mean price, which is the line the blocks are read
-    against: a discharge block stands above it and a charge block hangs below it. Each
-    block spans the intervals of one unbroken run of the same action, and reaches from
-    the rule to the furthest price inside that run. The fills sit under the price line,
-    so the path stays readable through them.
+    The horizontal rule is the mean price. Each block spans the intervals of one
+    unbroken run of the same action, and the full height of the plot: its height is
+    fixed by the axis domain, never by a price, so a run reads by its colour and width
+    alone and a price spike cannot make one block look bigger than another. The fills
+    sit under the price line, so the path stays readable through them.
 
     `drawn` selects which rows the line uses. The blocks and the rule always read every
     interval, so thinning the line never moves a block.
@@ -359,13 +359,12 @@ def _dispatchFigure(clock, price, blocks, drawn, *, name, yTitle, hoverTime,
     rule = float(np.mean(price))
     shapes = []
     for action, start, end in blocks:
-        inside = price[((clock > start) & (clock <= end)).to_numpy()]
-        if not len(inside):
+        # A run with no interval on the path has nothing to stand behind.
+        if not ((clock > start) & (clock <= end)).any():
             continue
-        far = float(inside.max() if action == "discharge" else inside.min())
         shapes.append(dict(
-            type="rect", xref="x", yref="y", x0=start, x1=end, layer="below",
-            y0=min(rule, far), y1=max(rule, far), line=dict(width=0),
+            type="rect", xref="x", yref="y domain", x0=start, x1=end, layer="below",
+            y0=0, y1=1, line=dict(width=0),
             fillcolor=dischargeBlock if action == "discharge" else chargeBlock))
 
     figure = go.Figure()
