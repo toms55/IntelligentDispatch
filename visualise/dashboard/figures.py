@@ -39,7 +39,9 @@ neutral = "#f0efec"
 chargeBlock = "rgba(42,120,214,0.42)"
 dischargeBlock = "rgba(227,73,72,0.42)"
 weekdayNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-highVolKey = f"spike intensity at or above ${config.high_vol_intensity:.2f}"
+capPayoutKey = (f"sum(max(RRP - ${config.spike_threshold:,.0f}, 0))"
+                f" / {config.episode_intervals}")
+highVolKey = f"cap payout at or above ${config.high_vol_intensity:.2f}"
 
 
 def _money(value):
@@ -73,9 +75,8 @@ def summaryTiles(frame):
              "before degradation"),
             ("Degradation", _money(facts["degradation"]), facts["degradation"],
              "cost of the day's cycling"),
-            ("Spike intensity", _money(facts["spikeIntensity"]),
-             facts["spikeIntensity"],
-             "high volatility day" if facts["highVol"] else "a normal day"),
+            ("Cap Payout", _money(facts["spikeIntensity"]),
+             facts["spikeIntensity"], capPayoutKey),
         ]
     else:
         rows += [

@@ -65,7 +65,7 @@ class TestSummaryTiles:
         assert "Win rate" not in tiles and "Days" not in tiles
         assert tiles["Revenue"] == pytest.approx(one.agentRevenue.iloc[0])
         assert tiles["Degradation"] == pytest.approx(one.agentDegradation.iloc[0])
-        assert tiles["Spike intensity"] == pytest.approx(one.spikeIntensity.iloc[0])
+        assert tiles["Cap Payout"] == pytest.approx(one.spikeIntensity.iloc[0])
 
     # The high and low volatility split is always shown, both sides present.
     def test_an_empty_frame_renders_a_message(self, frame):
