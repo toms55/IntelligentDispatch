@@ -20,7 +20,9 @@
 # oracle, the archive readers and the oracle cache are not, because no screen solves.
 set -euo pipefail
 
-SPACE=""
+# The Space this repository publishes. Override it with --space, or with $DASHBOARD_SPACE
+# for a test Space. Every caller reads it from here, so the name is in one place.
+SPACE=${DASHBOARD_SPACE:-toms55/IntelligentDispatch}
 RESULTS=results/rolling2023_profit_all
 MODELS=models/rolling2023_profit_fc4h
 ALGO=maskableppo

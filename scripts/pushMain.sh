@@ -2,10 +2,12 @@
 # Push main to GitHub, then publish the same code to the Hugging Face Space.
 #
 #     bash scripts/pushMain.sh
-#     bash scripts/pushMain.sh --space toms55/IntelligentDispatch
+#     bash scripts/pushMain.sh --space <user>/<name>
 #
-# The Space is a separate git repository, so a push to GitHub never reaches it. Use
-# this script instead of `git push origin main`, so the two stay at the same code.
+# The Space is a separate git repository, so a push to GitHub never reaches it. Run
+# `scripts/installHooks.sh` once and a plain `git push` publishes the Space as well.
+# This script is the same job on demand, and it publishes whether or not the inputs
+# have changed.
 #
 # The Space upload is staged from the working tree, not from a commit, so the script
 # refuses to run unless main is checked out and the tree is clean. Every argument it
@@ -21,17 +23,17 @@
 # file in this repository, and never put one in a remote URL.
 set -euo pipefail
 
-SPACE=${DASHBOARD_SPACE:-toms55/IntelligentDispatch}
 REMOTE=origin
 passthrough=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --space)  SPACE="$2"; shift 2 ;;
     --remote) REMOTE="$2"; shift 2 ;;
     *) passthrough+=("$1"); shift ;;
   esac
 done
+
+cd "$(git rev-parse --show-toplevel)"
 
 branch=$(git rev-parse --abbrev-ref HEAD)
 if [[ "$branch" != main ]]; then
@@ -43,8 +45,13 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
+# The pre-push hook publishes the Space itself, and this script publishes below, so one
+# push would do the work twice.
 printf '\n########## main -> %s ##########\n' "$REMOTE"
-git push "$REMOTE" main
+NO_SPACE_PUBLISH=1 git push "$REMOTE" main
 
 printf '\n########## main -> the Space ##########\n'
-bash scripts/publishSpace.sh --space "$SPACE" --push "${passthrough[@]}"
+fingerprint=$(bash scripts/spaceFingerprint.sh)
+bash scripts/publishSpace.sh --push "${passthrough[@]}"
+# Record what went up, so the hook knows the Space is level and skips the next push.
+printf '%s\n' "$fingerprint" > "$(bash scripts/spaceFingerprint.sh --path)"

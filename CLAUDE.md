@@ -128,9 +128,17 @@ Rules:
 4. The script pushes one commit over the last one. The weights are binary, so a history
    of them would grow the Space by their size on every update.
 5. main and the Space hold the same code. The Space is a separate git repository, so a
-   push to GitHub does not reach it. Push main with `scripts/pushMain.sh`, which pushes
-   to GitHub and then publishes the Space. Do not push main with `git push` alone.
-6. The Hugging Face write token lives in a secret store, never in the repository. The
+   push to GitHub does not reach it. The `pre-push` hook in `scripts/hooks/prePush`
+   publishes the Space whenever a push updates main. Run `scripts/installHooks.sh` once
+   per machine, because git does not track hooks. `scripts/pushMain.sh` does the same
+   job on demand.
+6. A Space publish is driven by a fingerprint, not by a git diff. `results/` and
+   `models/` are gitignored, so a new backtest or a retrained agent changes the Space
+   without changing one tracked file. `scripts/spaceFingerprint.sh` covers both: the
+   git tree hash of each copied code item, and the name, size and modification time of
+   every result file and weight that goes up. Add a new input to the upload and add it
+   there in the same commit, or the hook stops noticing that input.
+7. The Hugging Face write token lives in a secret store, never in the repository. The
    script reads `$HF_TOKEN`, else the token file `hf auth login` writes, else it asks.
    It hands the token to one `git push` through a credential helper, so the token
    reaches no file and no command line. Never put a token in a remote URL.
@@ -212,6 +220,9 @@ cover.
   oracle cache over the whole span, then the 52 folds.
 - **`scripts/pushMain.sh`** — one push for both remotes: main to GitHub, then the same
   code to the Space through `scripts/publishSpace.sh`.
+- **`scripts/hooks/prePush`** — the same job on a plain `git push` that updates main.
+  `scripts/installHooks.sh` installs it, and `scripts/spaceFingerprint.sh` tells it
+  whether anything the Space serves has changed.
 
 - **`visualise/dashboard/`** — the Dash app. Two screens behind tabs. `data.py` reads
   the rolling results, `figures.py` draws, `live.py` runs a published agent over the
