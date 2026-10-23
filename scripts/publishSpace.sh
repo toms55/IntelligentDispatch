@@ -71,6 +71,7 @@ printf '__pycache__/\ndata_cache/\n' > "$STAGE/.gitignore"
 # Everything else in the upload is text.
 printf '*.zip filter=lfs diff=lfs merge=lfs -text\n' > "$STAGE/.gitattributes"
 printf '*.parquet filter=lfs diff=lfs merge=lfs -text\n' >> "$STAGE/.gitattributes"
+printf '*.gz filter=lfs diff=lfs merge=lfs -text\n' >> "$STAGE/.gitattributes"
 
 # ------------------------------------------------------------- 2. the results
 say "2/5 results from $RESULTS"
