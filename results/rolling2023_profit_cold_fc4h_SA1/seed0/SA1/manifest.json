@@ -1,0 +1,38 @@
+{
+  "algos": [
+    "maskableppo"
+  ],
+  "arms": [
+    "cold"
+  ],
+  "battery": [
+    0.06,
+    0.1,
+    150000.0
+  ],
+  "calendar": false,
+  "capDate": "2026-10-01 04:00:00",
+  "coldTimesteps": 300000,
+  "discretePower": true,
+  "end": "2026-10-01 04:00:00",
+  "forecastEvery": 48,
+  "gap": 0.02,
+  "horizon": 288,
+  "initialSoc": 0.5,
+  "priceSources": [
+    "realised",
+    "forecast"
+  ],
+  "region": "SA1",
+  "reward": "profit",
+  "rewardScale": 20.0,
+  "seeds": [
+    0
+  ],
+  "start": "2023-01-01 04:00:00",
+  "stepWeeks": 1,
+  "testWeeks": 1,
+  "trainWeeks": 52,
+  "trajectorySeed": 0,
+  "warmTimesteps": 30000
+}
