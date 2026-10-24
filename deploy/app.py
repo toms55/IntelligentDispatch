@@ -5,7 +5,7 @@ command line arguments into environment variables, because a host sets environme
 variables and does not pass arguments.
 
     DASHBOARD_REGION     the region the first screen opens on (default NSW1)
-    DASHBOARD_RESULTS    the backtest records to read (default: the one run in backtestResults/)
+    DASHBOARD_RESULTS    the backtest records to read (default: the one run in results/backtestResults/)
     DASHBOARD_POLICIES   where the published agents are (default: trainedPolicies)
 
 Serve it with gunicorn, not with the Dash development server:

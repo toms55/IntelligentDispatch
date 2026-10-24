@@ -1,4 +1,4 @@
-"""The agent's dispatch under forecast prices, one CSV row per decision.
+"""The agent's dispatch, one CSV row per decision, under both price sources.
 
 A backtest writes its own CSV as it runs: `cli rolling` appends each fold's rows, every
 seed's, once the fold is scored (see `appendRows`). The export below is for result sets
@@ -17,6 +17,11 @@ writes one CSV per run and region into results/actions/, named after the run, so
 backtest's dispatch sits in one folder: results/actions/rolling2023_NSW1.csv,
 results/actions/rolling2023_profit_fc4h_SA1.csv. A backtest that writes its CSV as it
 runs needs none of this.
+
+`priceSource` says what the agent saw: "forecast" is the AEMO forecast, "realised" the
+price it was paid. The label is copied from the row the runner wrote, never inferred,
+and a realised row is refused unless its observed price is its paid price on every
+interval. A realised row has no forecastRunTime and no forecastPrice.
 """
 import argparse
 import fcntl
@@ -33,20 +38,35 @@ from utils import nem_interval
 columns = (
     "forecastRunTime", "intervalTime", "action", "soc",
     "forecastPrice", "realisedPrice", "region", "fold", "seed", "algo", "trainMode",
+    "priceSource",
 )
+
+priceSources = ("forecast", "realised")
 
 
 def actionRows(trajectory, region, every=None):
-    """Forecast-priced agent rows of one fold's trajectory, in the export layout.
+    """The agent rows of one fold's trajectory, both price sources, in the export layout.
 
     intervalTime is the interval's end, as AEMO stamps it, and soc is the state of
     charge at that end, after the action. `every` is the refresh interval the run used;
     None is one 04:00 run per day.
     """
-    rows = trajectory[(trajectory.priceSource == "forecast")
-                      & (trajectory.algo != "oracle")]
+    rows = trajectory[trajectory.algo != "oracle"]
+    unknown = set(rows.priceSource) - set(priceSources)
+    if unknown:
+        raise ValueError(f"unknown priceSource {sorted(unknown)}; expected {priceSources}")
+    forecast = rows.priceSource == "forecast"
+    # A realised agent observed what it was paid. One that did not is mislabelled.
+    wrong = ~forecast & (rows.observedPrice != rows.price)
+    if wrong.any():
+        first = rows[wrong].iloc[0]
+        raise ValueError(
+            f"{int(wrong.sum())} realised row(s) observed a price other than the one "
+            f"paid, so they are not realised; the first is fold {first.fold}, seed "
+            f"{first.seed}, {first.settlementdate}: saw {first.observedPrice}, paid "
+            f"{first.price}")
     action = np.select([rows.bought > 0, rows.sold > 0], ["charge", "discharge"], "idle")
-    if "forecastRunTime" in rows and rows.forecastRunTime.notna().all():
+    if "forecastRunTime" in rows and rows.forecastRunTime[forecast].notna().all():
         # Recorded by the backtest as the run the agent actually read.
         runTime = pd.to_datetime(rows.forecastRunTime)
     else:
@@ -55,17 +75,18 @@ def actionRows(trajectory, region, every=None):
         if every is not None:
             runTime = runTime + (rows.interval // every * every) * nem_interval
     return pd.DataFrame({
-        "forecastRunTime": runTime,
+        "forecastRunTime": runTime.where(forecast),
         "intervalTime": rows.settlementdate,
         "action": action,
         "soc": rows.soc,
-        "forecastPrice": rows.observedPrice,
+        "forecastPrice": rows.observedPrice.where(forecast),
         "realisedPrice": rows.price,
         "region": region,
         "fold": rows.fold,
         "seed": rows.seed,
         "algo": rows.algo,
         "trainMode": rows.trainMode,
+        "priceSource": rows.priceSource,
     }, columns=columns)
 
 
@@ -110,11 +131,11 @@ def appendRows(path, frame):
             fcntl.lockf(handle, fcntl.LOCK_UN)
 
 
-unit = ("fold", "seed", "algo", "trainMode")
+unit = ("fold", "seed", "algo", "trainMode", "priceSource")
 
 
 def writtenUnits(path):
-    """The (fold, seed, algo, trainMode) blocks already in the CSV, so a resumed run
+    """The (fold, seed, algo, trainMode, priceSource) blocks already in the CSV, so a resumed run
     appends only the ones it is missing. A fold is appended before its rows reach the
     fold CSV, so one killed in between is scored again but not written twice."""
     path = Path(path)
@@ -124,12 +145,11 @@ def writtenUnits(path):
     return set(frame.itertuples(index=False, name=None))
 
 
-def refuseExisting(resultsDir, region, backtestRoot=Path("backtestResults")):
+def refuseExisting(resultsDir, region, backtestRoot=Path("results/backtestResults")):
     """Stop a fresh backtest whose name is taken, by its actions CSV or by a published
     region. Redo a backtest under a new name; continue one with --resume."""
-    taken = [path for path in (liveFile(resultsDir, region),
-                               Path(backtestRoot) / runName(resultsDir, region) / region)
-             if path.exists()]
+    published = Path(backtestRoot) / exportName(runName(resultsDir, region), region)
+    taken = [path for path in (liveFile(resultsDir, region), published) if path.exists()]
     if taken:
         raise ValueError(
             f"a backtest with this name already exists for {region}: "
@@ -138,7 +158,7 @@ def refuseExisting(resultsDir, region, backtestRoot=Path("backtestResults")):
 
 
 def runName(resultsDir, region):
-    """The run's name under backtestResults/, as backtest.publish.runName gives it. Not
+    """The run's name in results/backtestResults/, as backtest.publish.runName gives it. Not
     imported from there, because publish imports the dashboard, which imports this."""
     return _runDir(resultsDir).name.removesuffix("_all").removesuffix(f"_{region}")
 
@@ -160,7 +180,8 @@ def exportRun(runDir, outDir=None):
         if not parts:
             continue
         frame = (pd.concat(parts, ignore_index=True)
-                 .sort_values(["seed", "algo", "trainMode", "intervalTime"]))
+                 .sort_values(["priceSource", "seed", "algo", "trainMode",
+                               "intervalTime"]))
         out = outDir / exportName(runDir, regionDir.name)
         frame.to_csv(out, index=False)
         written.append(out)

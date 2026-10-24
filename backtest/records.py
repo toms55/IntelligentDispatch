@@ -90,26 +90,38 @@ def readTrajectories(resultsDir, region, fold):
     return frame.to_dict("records")
 
 
+def readDayFile(path):
+    """One CSV of day rows, as the folds or a published run hold them."""
+    # keep_default_na so an absent warmFrom stays "" rather than becoming NaN, and
+    # round_trip so a float reads back as the value written rather than one ulp off,
+    # which a republish would then write out.
+    frame = pd.read_csv(path, parse_dates=["testDay"], dtype=_dayTypes,
+                        keep_default_na=False, float_precision="round_trip")
+    # Result sets from before the rename call trainMode "arm".
+    return frame.rename(columns={"arm": "trainMode"})
+
+
+def sortDays(frame, where):
+    """Rows in fold order, refused if any unit and day appears twice."""
+    frame = frame.sort_values(["fold", "algo", "trainMode", "seed", "priceSource",
+                               "testDay"], ignore_index=True)
+    keys = list(unitColumns) + ["testDay"]
+    duplicated = frame[frame.duplicated(keys, keep=False)]
+    if not duplicated.empty:
+        raise ValueError(
+            f"{len(duplicated)} duplicate rows in {where}; "
+            f"first is {duplicated.iloc[0][keys].to_dict()}"
+        )
+    return frame
+
+
 def readDays(resultsDir, region):
     """Every fold's rows, in fold order. Empty frame when nothing has run yet."""
     paths = sorted(regionDir(resultsDir, region).glob("fold*.csv"))
     if not paths:
         return pd.DataFrame(columns=list(dayColumns))
-    frame = pd.concat(
-        # keep_default_na so an absent warmFrom stays "" rather than becoming NaN
-        [pd.read_csv(path, parse_dates=["testDay"], dtype=_dayTypes,
-                     keep_default_na=False) for path in paths],
-        ignore_index=True,
-    ).sort_values(["fold", "algo", "trainMode", "seed", "priceSource", "testDay"],
-                  ignore_index=True)
-    keys = list(unitColumns) + ["testDay"]
-    duplicated = frame[frame.duplicated(keys, keep=False)]
-    if not duplicated.empty:
-        raise ValueError(
-            f"{len(duplicated)} duplicate rows in {regionDir(resultsDir, region)}; "
-            f"first is {duplicated.iloc[0][keys].to_dict()}"
-        )
-    return frame
+    return sortDays(pd.concat(map(readDayFile, paths), ignore_index=True),
+                    regionDir(resultsDir, region))
 
 
 def completedUnits(frame):

@@ -21,12 +21,12 @@
 # Each seed's chain is independent, so each seed runs in its own process. They write to
 # separate result directories, because the runner rewrites a fold CSV whole and two
 # processes on one directory would drop each other's rows. The last step merges them.
-# Each seed appends its forecast-priced decisions to the region's one actions CSV,
+# Each seed appends its decisions, both price sources, to the region's one actions CSV,
 # results/actions/<run>_<region>.csv, as each fold finishes (backtest/actions.py), so the
 # CSV grows while the job runs and no export step follows.
 #
-# A run name is used once: a job whose actions CSV or backtestResults/<run>/<region>
-# already exists stops before training. Redo under a new RESULTS. A job killed partway
+# A run name is used once: a job whose actions CSV or results/backtestResults/
+# <run>_<region>.csv already exists stops before training. Redo under a new RESULTS. A job killed partway
 # (walltime) continues with -v RESUME=1 and the same OUT and RESULTS: a fold is skipped
 # once its rows are written, and its CSV rows are never appended twice.
 
@@ -111,4 +111,4 @@ EOF
 
 # The finished region, where the dashboard reads it and git tracks it.
 $PY -m backtest.publish "$RESULTS"
-echo "published to backtestResults/; commit it with: git add backtestResults results/actions"
+echo "published to results/backtestResults/; commit it with: git add results/backtestResults results/actions"

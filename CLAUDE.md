@@ -97,31 +97,32 @@ To move a trained agent to the dashboard machine, copy one region directory:
 rsync -a trainedPolicies/NSW1/ dashboard-host:~/IntelligentDispatch/trainedPolicies/NSW1/
 ```
 
-### A dashboard backtest lives in `backtestResults/`
+### A dashboard backtest lives in `results/backtestResults/`
 
-`results/` is working output and git ignores it, apart from the actions exports. The
-runs the dashboard draws are tracked, so every clone can draw them. There is exactly
-one layout:
+`results/` is working output and git ignores it, apart from the published runs and
+their actions exports. Those are tracked, so every clone can draw them. Each is one CSV
+per run per region, named the same way:
 
 ```
-backtestResults/<run>/<region>/
-    fold*.csv       one row per seed, price source and test day
-    fold*.parquet   the seed-0 trajectories the day view draws
-    manifest.json   the configuration that produced them
+results/backtestResults/<run>_<region>.csv   one row per seed, price source and test
+                                             day, every fold, plus forecastEvery
+results/actions/<run>_<region>.csv           one row per agent decision, every seed and
+                                             price source; the day view draws it
 ```
 
 Rules:
 
-1. `backtest/publish.py` is the only code that writes it. Never copy a run in by hand.
-2. The folds job publishes each region once it has merged the seeds and exported the
-   actions. `<run>` is the results directory's name without the region, so the five
-   regional jobs of one experiment land in one run.
+1. `backtest/publish.py` is the only code that writes `results/backtestResults/`. Never
+   copy a run in by hand.
+2. The folds job publishes each region once it has merged the seeds. `<run>` is the
+   results directory's name without the region, so the five regional jobs of one
+   experiment share one name.
 3. A region is published only if `data.loadRun` can read it, so a run the dashboard
    cannot draw is refused at publish time.
-4. The actions export is not copied. It stays in `results/actions/<run>_<region>.csv`,
-   already tracked, and `data.actionsFile` finds it there.
-5. Publishing commits nothing. Commit `backtestResults/` and `results/actions/` after a
-   backtest.
+4. `forecastEvery` is the one manifest value the dashboard reads, so it travels as a
+   column. The manifest and the fold trajectories stay with the raw results.
+5. Publishing commits nothing. Commit `results/backtestResults/` and `results/actions/`
+   after a backtest.
 
 ### The two dashboard screens read different things
 
@@ -137,8 +138,8 @@ results: that offers a model the screen cannot load.
 The dashboard is hosted on a Hugging Face Space, which builds `deploy/Dockerfile` and
 serves `deploy/app.py`. `scripts/publishSpace.sh` is the only code that stages the
 upload, and the upload is a subset: the packages the two screens import, one run from
-`backtestResults/` with its actions exports, one published agent per region, and
-`deploy/`.
+`results/backtestResults/` with its actions exports, one published agent per region,
+and `deploy/`.
 
 The Space runs on CPU Basic hardware, which has no hourly cost but needs a PRO plan to
 create. Only static Spaces are free, and a Dash application is not static.
@@ -161,7 +162,8 @@ Rules:
    job on demand.
 6. A Space publish is driven by a fingerprint, not by a git diff. `models/` is
    gitignored, so a retrained agent changes the Space without changing one tracked
-   file, and a new backtest changes `backtestResults/` before anyone commits it. `scripts/spaceFingerprint.sh` covers both: the
+   file, and a new backtest changes `results/backtestResults/` before anyone commits
+   it. `scripts/spaceFingerprint.sh` covers both: the
    git tree hash of each copied code item, and the name, size and modification time of
    every result file and weight that goes up. Add a new input to the upload and add it
    there in the same commit, or the hook stops noticing that input.
@@ -230,8 +232,8 @@ cover.
     code that writes or lists one. See the convention above.
 
 - **`backtest/`** — the rolling-origin backtest: `runner.py` runs the folds,
-  `records.py` writes them, `actions.py` exports the dispatch, and `publish.py` copies a
-  finished run into `backtestResults/`. See the convention above.
+  `records.py` writes them, `actions.py` exports the dispatch, and `publish.py` writes a
+  finished run into `results/backtestResults/`. See the convention above.
 
 - **`config.py`** — experiment design pinned in one place: episode horizon, SoC reset,
   seeds, splits, the observation layout constants, and the two oracle roles. Module
@@ -258,15 +260,16 @@ cover.
 - **`visualise/dashboard/`** — the Dash app. Two screens behind tabs. `data.py` reads
   the rolling results, `figures.py` draws, `live.py` runs a published agent over the
   AEMO path published right now. `--results` points at the records, `--policies` at
-  `trainedPolicies/`. With no `--results`, `data.findResults` reads the one run under
-  `backtestResults/`. Two runs there raise and name both. A forecast day also reads
-  the run's actions export, `results/actions/<run>_<region>.csv` (the run's
-  directory name without `_all`, beside it or else in `results/actions/`, see
-  `data.actionsFile`). Its `forecastRunTime`
-  column is the only source of the forecast line, so pointing `--results` at another
-  run changes it along with every other number. The "refreshed every …" tile states
-  the manifest's `forecastEvery`, the test-day forecast pull frequency (training has
-  none). `data.verifyRefresh` refuses a forecast-priced run whose manifest omits it or
+  `trainedPolicies/`. `--results` names a run as `results/backtestResults/<run>`, the
+  path of its CSVs without the region. With no `--results`, `data.findResults` reads
+  the one run under `results/backtestResults/`. Two runs there raise and name both.
+  A day view reads the run's actions export, `results/actions/<run>_<region>.csv`
+  (see `data.actionsFile`): its rows are the dispatch the chart draws, for either
+  price source, and its `forecastRunTime` column is the only source of the forecast
+  line, so pointing `--results` at another run changes both along with every other
+  number. The "refreshed every …" tile states the published `forecastEvery` column,
+  copied from the manifest: the test-day forecast pull frequency (training has
+  none). `data.verifyRefresh` refuses a forecast-priced run that omits it or
   whose export disagrees with it, so the tile never describes a pull the backtest did
   not make. Every manifest records it, realised-only runs included. Each forecast
   trajectory row records the run the agent actually read (`forecastRunTime`, from
@@ -336,18 +339,20 @@ cover.
   and the column that do arrive, against the month on screen. See `clickedDay` in
   `visualise/dashboard/__main__.py`. A per-cell date in `customdata` reaches the hover
   template but never the callback.
-- **A fold scores every seed but writes one seed's trajectory.** `trajectorySeed` in
-  `backtest/runner.py` picks it, and it defaults to 0. The backtest screen lists every
-  seed, because every seed has day rows, so the day view of another seed is empty by
-  design. It must stay empty: drawing seed 0's dispatch under another seed's name is a
-  wrong chart, not a missing one.
-- **The actions CSV is written by the backtest, every seed, as each fold finishes.**
-  `cli rolling` appends one fold's forecast-priced decisions to
+- **An old actions export holds seed 0 only.** Exports made by `python -m
+  backtest.actions` come from the fold trajectories, which hold `trajectorySeed` (0)
+  only, so the day view of another seed is empty by design. It must stay empty:
+  drawing seed 0's dispatch under another seed's name is a wrong chart, not a missing
+  one. A backtest that writes its CSV as it runs logs every seed.
+- **The actions CSV is written by the backtest, every seed and price source, as each
+  fold finishes.** `cli rolling` appends one fold's decisions to
   `results/actions/<run>_<region>.csv` under a lock, because every seed's process shares
-  the file. A run name is used once: a fresh start refuses a name whose CSV or
-  `backtestResults/<run>/<region>` exists, and `--resume` (`RESUME=1` in the folds job)
-  continues one without appending a fold twice. `python -m backtest.actions` is only for
-  runs from before this.
+  the file. `priceSource` is copied from the runner's row, never inferred, and a
+  realised row whose observed price is not its paid price is refused. A run name is
+  used once: a fresh start refuses a name whose actions CSV or
+  `results/backtestResults/<run>_<region>.csv` exists, and `--resume` (`RESUME=1` in the
+  folds job) continues one without appending a fold twice. `python -m backtest.actions`
+  is only for runs from before this.
 - `nemosis` downloads AEMO archive files into `data_cache/` on first use, so the first
   call for a date range is slow and network-bound while later calls are local. The
   directory is gitignored and safe to delete.

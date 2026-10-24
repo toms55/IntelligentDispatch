@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 import config
-from backtest import metrics
+from backtest import actions, metrics
 from visualise.dashboard import figures
 from visualise.dashboard.test_data import DAY, dayRows, run, REGION  # noqa: F401
 from visualise.dashboard import data
@@ -28,7 +28,8 @@ def trajectoryRows(algo="maskableppo", trainMode="warm", sources=("realised", "f
                 "fold": 0, "algo": algo, "trainMode": trainMode, "seed": 0,
                 "priceSource": source, "testDay": DAY, "interval": step,
                 "settlementdate": DAY + timedelta(minutes=5 * (step + 1)),
-                "price": 50.0 + step, "observedPrice": 50.0 + step + 3.0,
+                "price": 50.0 + step,
+                "observedPrice": 50.0 + step + (3.0 if source == "forecast" else 0.0),
                 "soc": 0.5, "bought": 0.0, "sold": 0.0, "profit": 0.1,
             })
     return rows
@@ -36,17 +37,9 @@ def trajectoryRows(algo="maskableppo", trainMode="warm", sources=("realised", "f
 
 @pytest.fixture
 def trajectory():
-    """One day for the realised and the forecast price source, as the runner writes it."""
-    return pd.DataFrame(trajectoryRows())
-
-
-@pytest.fixture
-def withOracle(trajectory):
-    """The same day plus the trainMode="oracle" series the runner writes beside the agent."""
-    oracle = pd.DataFrame(trajectoryRows(algo="oracle", trainMode="oracle",
-                                         sources=("realised",)))
-    oracle["soc"] = np.linspace(0.5, 0.9, 288)
-    return pd.concat([trajectory, oracle], ignore_index=True)
+    """One day for the realised and the forecast price source, as the actions export
+    holds it."""
+    return actions.actionRows(pd.DataFrame(trajectoryRows()), REGION)
 
 
 class TestSummaryTiles:

@@ -14,13 +14,13 @@
 #
 # The second kind is why a git diff cannot drive this. `models/` is gitignored, so a
 # new training run changes the Space without changing one tracked file, and a new
-# backtest changes `backtestResults/` before anyone commits it.
+# backtest changes `results/backtestResults/` before anyone commits it.
 #
 # The defaults name the same results, models and seed as `scripts/publishSpace.sh`.
 # Keep the two in step.
 set -euo pipefail
 
-RESULTS=${RESULTS:-backtestResults/rolling2023_profit}
+RESULTS=${RESULTS:-results/backtestResults/rolling2023_profit}
 ACTIONS=${ACTIONS:-results/actions}
 MODELS=${MODELS:-models/rolling2023_profit_fc4h}
 SEED=${SEED:-0}
@@ -44,15 +44,11 @@ describe() {
   for item in config.py utils data degradation rl backtest visualise deploy; do
     git rev-parse "HEAD:$item"
   done
-  # Stage 2 stages these three names, and stage 3 one seed of the weights.
-  if [[ -d "$RESULTS" ]]; then
-    find "$RESULTS" -type f \( -name 'fold*.csv' -o -name 'fold*.parquet' \
-      -o -name 'manifest.json' \) | sort | describe
-    # Stage 2 also gzips the run's actions export, one CSV per region.
-    run=$(basename "$RESULTS")
-    find "$ACTIONS" -type f -name "${run}_*.csv" 2>/dev/null \
-      | grep -E "/${run}_[A-Z]+[0-9]\.csv$" | sort | describe || true
-  fi
+  # Stage 2 stages the run's CSV and its actions export, one each per region, and
+  # stage 3 one seed of the weights.
+  run=$(basename "$RESULTS")
+  find "$(dirname "$RESULTS")" "$ACTIONS" -maxdepth 1 -type f -name "${run}_*.csv" \
+    2>/dev/null | grep -E "/${run}_[A-Z]+[0-9]\.csv$" | sort | describe || true
   if [[ -d "$MODELS" ]]; then
     find "$MODELS" -type f -path "*seed$SEED*" | sort | describe
   fi

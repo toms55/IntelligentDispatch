@@ -78,8 +78,8 @@ class RollingConfig(NamedTuple):
     # Where the last fold's agent is published when the run finishes. The per-fold
     # checkpoints under outDir are working state; this is the one a reader looks for.
     policyRoot: Path = policies.defaultRoot
-    # The CSV every forecast-priced decision is appended to, all seeds, one fold at a
-    # time (backtest/actions.py). None writes none.
+    # The CSV every agent decision is appended to, both price sources and all seeds,
+    # one fold at a time (backtest/actions.py). None writes none.
     actionsFile: Optional[Path] = None
 
 
@@ -413,10 +413,10 @@ def runRolling(cfg, onProgress=None):
                         trajectories += _resultTrajectories(
                             cfg, fold, algo, trainMode, source, results[cfg.trajectorySeed],
                             testPrices, forecasts)
-                    if source == "forecast" and cfg.actionsFile:
+                    if cfg.actionsFile:
                         decisions += [
                             row for seed in pending
-                            if (fold.index, seed, algo, trainMode) not in logged
+                            if (fold.index, seed, algo, trainMode, source) not in logged
                             for row in _resultTrajectories(
                                 cfg, fold, algo, trainMode, source, results[seed],
                                 testPrices, forecasts, seed=seed)]

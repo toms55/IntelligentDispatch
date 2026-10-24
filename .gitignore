@@ -13,10 +13,13 @@ runs/
 # --- the published agents: binary weights, moved between machines with rsync ---
 trainedPolicies/
 
-# --- experiment outputs: only the full-run actions export, one per run per region ---
+# --- experiment outputs: only the published runs and their actions exports, one CSV
+# --- each per run per region ---
 results/**
 !results/actions/
 !results/actions/*.csv
+!results/backtestResults/
+!results/backtestResults/*.csv
 
 # --- CLI outputs: <module>_<region>_<date>.csv/.png land in the cwd ---
 lp_*.csv

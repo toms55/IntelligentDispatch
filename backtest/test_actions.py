@@ -43,6 +43,42 @@ class TestActionRows:
         assert (got.forecastRunTime == pd.Timestamp("2024-01-01 04:00")).all()
 
 
+class TestPriceSource:
+    def both(self):
+        realised = trajectory().assign(priceSource="realised", observedPrice=50.0)
+        return pd.concat([trajectory(), realised], ignore_index=True)
+
+    # The label is the runner's, copied: both sources come through, each as written.
+    def test_both_sources_are_kept_under_their_own_label(self):
+        got = actions.actionRows(self.both(), "NSW1", every=48)
+        assert (got.priceSource.value_counts() == 288).all()
+        assert set(got.priceSource) == {"forecast", "realised"}
+
+    # A realised row read no forecast, so it names no run and no forecast price.
+    def test_a_realised_row_has_no_forecast(self):
+        got = actions.actionRows(self.both(), "NSW1", every=48)
+        realised = got[got.priceSource == "realised"]
+        assert realised.forecastRunTime.isna().all() and realised.forecastPrice.isna().all()
+        assert (realised.realisedPrice == 50.0).all()
+        forecast = got[got.priceSource == "forecast"]
+        assert forecast.forecastRunTime.notna().all() and (forecast.forecastPrice == 48.0).all()
+
+    # A realised agent saw what it was paid. One that saw anything else is mislabelled.
+    def test_a_realised_row_that_saw_another_price_is_refused(self):
+        frame = trajectory().assign(priceSource="realised")
+        with pytest.raises(ValueError, match="not realised"):
+            actions.actionRows(frame, "NSW1")
+
+    def test_an_unknown_source_is_refused(self):
+        with pytest.raises(ValueError, match="unknown priceSource"):
+            actions.actionRows(trajectory().assign(priceSource="oracle"), "NSW1")
+
+    # The oracle is not an agent decision, so it never reaches the export.
+    def test_the_oracle_is_left_out(self):
+        frame = pd.concat([trajectory(), trajectory().assign(algo="oracle")])
+        assert set(actions.actionRows(frame, "NSW1").algo) == {"maskableppo"}
+
+
 class TestExportName:
     # Every run's CSV lands in one folder, so the name alone must say which run it is.
     def test_a_run_named_for_its_region_keeps_its_name(self):
@@ -112,8 +148,8 @@ class TestWrittenUnits:
         path = tmp_path / "run_NSW1.csv"
         actions.appendRows(path, rows(0, 0))
         actions.appendRows(path, rows(0, 1))
-        assert actions.writtenUnits(path) == {(0, 0, "maskableppo", "warm"),
-                                             (0, 1, "maskableppo", "warm")}
+        assert actions.writtenUnits(path) == {(0, 0, "maskableppo", "warm", "forecast"),
+                                             (0, 1, "maskableppo", "warm", "forecast")}
 
 
 class TestRefuseExisting:
@@ -129,13 +165,15 @@ class TestRefuseExisting:
             actions.refuseExisting(run / "seed0", "NSW1", tmp_path / "backtestResults")
 
     def test_a_published_region_refuses(self, tmp_path):
-        (tmp_path / "backtestResults" / "old" / "NSW1").mkdir(parents=True)
+        (tmp_path / "backtestResults").mkdir()
+        (tmp_path / "backtestResults" / "old_NSW1.csv").write_text("")
         with pytest.raises(ValueError, match="already exists"):
             actions.refuseExisting(tmp_path / "results" / "old_NSW1", "NSW1",
                                    tmp_path / "backtestResults")
 
     # Another region may still join a run name.
     def test_another_region_of_the_same_run_starts(self, tmp_path):
-        (tmp_path / "backtestResults" / "old" / "NSW1").mkdir(parents=True)
+        (tmp_path / "backtestResults").mkdir()
+        (tmp_path / "backtestResults" / "old_NSW1.csv").write_text("")
         actions.refuseExisting(tmp_path / "results" / "old", "SA1",
                                tmp_path / "backtestResults")

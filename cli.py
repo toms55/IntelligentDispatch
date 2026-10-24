@@ -786,7 +786,7 @@ def main(argv=None):
                               "hours of MILP")
     rolling.add_argument("--resume", action="store_true",
                          help="continue a backtest of this name; without it a name whose "
-                              "actions CSV or backtestResults/ region exists is refused, "
+                              "actions CSV or published CSV exists is refused, "
                               "so a redo takes a new --results name")
     rolling.add_argument("--dry-run", action="store_true",
                          help="print the fold table and the cache audit, run nothing")

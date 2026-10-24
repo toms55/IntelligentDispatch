@@ -1,62 +1,32 @@
 """A finished backtest, copied where the dashboard reads it and git tracks it.
 
 The folds job writes each region's merged rows to results/<run>_<region>/all/<region>/,
-and git ignores everything under results/ but the actions exports. The dashboard reads
-one directory per run with a folder per region, so this copies each region in:
+one CSV per fold, and git ignores everything under results/ but the actions exports and
+the published runs. This writes each region as one CSV, laid out as the actions
+exports are:
 
-    backtestResults/<run>/<region>/   fold*.csv, fold*.parquet, manifest.json
+    results/backtestResults/<run>_<region>.csv   every fold's day rows, + forecastEvery
+    results/actions/<run>_<region>.csv           every decision, already there
 
-The run's name drops the region, so the five regional jobs of one experiment land in
-one directory. The actions export is not copied: it stays in results/actions/, which
-git already tracks, and data.actionsFile finds it there.
+The run's name drops the region, so the five regional jobs of one experiment share it.
+`forecastEvery` is the one manifest value the dashboard reads, so it travels as a
+column; the rest of the manifest stays with the raw results. The day view draws its
+dispatch from the actions export, so the fold trajectories are not published either.
 
     uv run python -m backtest.publish results/rolling2023_profit_fc5m_NSW1 [more runs...]
 
 The folds job calls this once it has merged the seeds. A region is published only
 if the dashboard can then load it, so a run it cannot draw is refused here rather than
-on the screen. Publishing replaces the region whole, and commits nothing: `git add
-backtestResults` is still the reader's.
+on the screen. Publishing replaces the region's CSV whole, and commits nothing: `git add
+results/backtestResults` is still the reader's.
 """
 import argparse
 import json
-import shutil
 from pathlib import Path
 
-import pandas as pd
-
 from backtest import records
+from backtest.actions import exportName
 from visualise.dashboard import data
-
-published = ("fold*.csv", "fold*.parquet", "manifest.json")
-
-
-def copyCurrent(source, target):
-    """Copy one published file, under today's names if it predates the rename of the
-    "arm" column to trainMode (and the manifest's "arms" to trainModes).
-
-    Only the name changes: a CSV's header line is rewritten and its rows are copied as
-    text, so no value is re-parsed and re-printed. Files that already use the current
-    names are copied byte for byte.
-    """
-    if source.suffix == ".csv":
-        header, _, body = source.read_text().partition("\n")
-        fields = header.split(",")
-        if "arm" not in fields:
-            return shutil.copy2(source, target)
-        fields[fields.index("arm")] = "trainMode"
-        target.write_text(",".join(fields) + "\n" + body)
-    elif source.suffix == ".parquet":
-        frame = pd.read_parquet(source)
-        if "arm" not in frame:
-            return shutil.copy2(source, target)
-        frame.rename(columns={"arm": "trainMode"}).to_parquet(target, index=False)
-    else:
-        manifest = json.loads(source.read_text())
-        if "arms" not in manifest:
-            return shutil.copy2(source, target)
-        manifest["trainModes"] = manifest.pop("arms")
-        # As records.writeManifest formats it.
-        target.write_text(json.dumps(manifest, indent=2, sort_keys=True, default=str))
 
 
 def runName(runDir, region):
@@ -73,10 +43,10 @@ def regionDirs(runDir):
 
 
 def publish(runDir, root=data.backtestRoot, name=None):
-    """Copy every finished region of runDir into root/<run>/<region>/.
+    """Write every finished region of runDir to root/<run>_<region>.csv.
 
-    Returns the region directories written. A region the dashboard cannot load is
-    removed again and the error raised.
+    Returns the files written. A region the dashboard cannot load is removed again and
+    the error raised.
     """
     written = []
     for source in regionDirs(runDir):
@@ -84,16 +54,21 @@ def publish(runDir, root=data.backtestRoot, name=None):
             continue
         region = source.name
         run = Path(root) / (name or runName(runDir, region))
-        target = records.regionDir(run, region)
-        shutil.rmtree(target, ignore_errors=True)
-        target.mkdir(parents=True)
-        for pattern in published:
-            for path in sorted(source.glob(pattern)):
-                copyCurrent(path, target / path.name)
+        days = records.readDays(source.parent, region)
+        manifest = records.manifestPath(source.parent, region)
+        every = (json.loads(manifest.read_text()).get("forecastEvery")
+                 if manifest.exists() else None)
+        if every is not None:
+            days["forecastEvery"] = int(every)
+        target = run.parent / exportName(run.name, region)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_suffix(".csv.tmp")
+        days.to_csv(temporary, index=False)
+        temporary.replace(target)
         try:
             data.loadRun(region, run)
         except Exception:
-            shutil.rmtree(target)
+            target.unlink()
             raise
         written.append(target)
     return written

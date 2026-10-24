@@ -2,8 +2,8 @@
 
     uv run python -m visualise.dashboard
 
-It reads the one run under `backtestResults/`. Pass `--results DIR` when that directory
-holds more than one run.
+It reads the one run under `results/backtestResults/`. Pass `--results
+results/backtestResults/<run>` when that directory holds more than one run.
 
 Backtest. Pick a model and a region at the top. Below them a date field, a stepper and
 a calendar button drive one board, which shows either the month or one day's dispatch,
@@ -412,7 +412,7 @@ def register(app, loader, policyRoot=live.defaultCheckpoints):
                                       seed=row.get("seed"))
                     if row.get("priceSource") == "forecast" else None)
         # Verified against the export by `data.loadRun`, so the tile states it as fact.
-        every = run.manifest.get("forecastEvery")
+        every = run.forecastEvery
         if state["view"] == "calendar":
             board = figures.monthFigure(data.monthScope(chosen, day), day,
                                         selected=state["day"])
@@ -421,7 +421,7 @@ def register(app, loader, policyRoot=live.defaultCheckpoints):
             # `live.blocks` turns the actions into blocks for both screens, so a
             # backtest day and a live forecast read the same way.
             path = data.dispatchPath(
-                data.trajectories(run, day),
+                data.decisions(run, day),
                 algo=row.get("algo"), trainMode=row.get("trainMode"),
                 seed=row.get("seed"), priceSource=row.get("priceSource"))
             board = figures.dayFigure(path, live.blocks(path), day,

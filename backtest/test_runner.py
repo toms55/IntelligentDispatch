@@ -477,8 +477,8 @@ class TestTrainingOnForecasts:
 
 
 class TestActionsFile:
-    # Every seed's forecast-priced decisions reach the CSV as each fold finishes, not
-    # just the trajectory seed's, and realised-priced ones never do.
+    # Every seed's decisions, both price sources, reach the CSV as each fold finishes,
+    # not just the trajectory seed's.
     @pytest.fixture
     def forecastConfig(self, config, monkeypatch, tmp_path):
         monkeypatch.setattr(runner, "loadForecastCache", lambda region: None)
@@ -493,15 +493,18 @@ class TestActionsFile:
         got = pd.read_csv(forecastConfig.actionsFile)
         assert set(got.seed) == {0, 1}
         assert set(got.fold) == {0, 1}
-        assert len(got) == 2 * 2 * 7 * 288
-        assert (got.forecastPrice == 40.0).all() and (got.realisedPrice == 50.0).all()
+        assert len(got) == 2 * 2 * 2 * 7 * 288
+        assert (got.realisedPrice == 50.0).all()
+        forecast = got.priceSource == "forecast"
+        assert forecast.sum() == len(got) // 2 and (got.forecastPrice[forecast] == 40.0).all()
+        assert got.forecastPrice[~forecast].isna().all()
 
     def test_a_resumed_run_writes_no_row_twice(self, forecastConfig, spy):
         runner.runRolling(forecastConfig._replace(foldFilter=frozenset({0})))
         runner.runRolling(forecastConfig)
         got = pd.read_csv(forecastConfig.actionsFile)
-        assert len(got) == 2 * 2 * 7 * 288
-        assert not got.duplicated(["fold", "seed", "intervalTime"]).any()
+        assert len(got) == 2 * 2 * 2 * 7 * 288
+        assert not got.duplicated(["fold", "seed", "priceSource", "intervalTime"]).any()
 
     # A fold killed after its CSV rows but before its fold CSV is scored again, and its
     # rows are not appended a second time.
@@ -516,4 +519,4 @@ class TestActionsFile:
         monkeypatch.setattr(records, "writeFold", real)
         runner.runRolling(cfg)
         got = pd.read_csv(cfg.actionsFile)
-        assert len(got) == 2 * 7 * 288
+        assert len(got) == 2 * 2 * 7 * 288

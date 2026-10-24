@@ -5,23 +5,21 @@ the whole layer is testable without a server. Every ratio still comes from
 `backtest.metrics` -- this module only selects rows.
 """
 import functools
-import json
 from datetime import timedelta
 from pathlib import Path
 from typing import NamedTuple
 
-import numpy as np
 import pandas as pd
 
 from backtest import records
 from backtest.actions import exportName
 
 resultsRoot = Path("results")
-# Where `cli rolling` writes when it is not told otherwise.
-defaultResults = resultsRoot / "rolling"
-# The runs the dashboard draws, one directory per run with a folder per region. Git
-# tracks it; `backtest.publish` is the only code that writes it.
-backtestRoot = Path("backtestResults")
+# The runs the dashboard draws, one CSV per run and region, <run>_<region>.csv, beside
+# results/actions/ and named as its exports are. Git tracks it; `backtest.publish` is
+# the only code that writes it. A run is named by its path without the region,
+# results/backtestResults/<run>, though no such directory exists.
+backtestRoot = resultsRoot / "backtestResults"
 weekDays = 7
 
 # A dashboard entry is one trained model scored one way.
@@ -36,48 +34,58 @@ interval = timedelta(minutes=5)
 class Run(NamedTuple):
     region: str
     days: pd.DataFrame
-    manifest: dict
+    # How often a test day pulled a new AEMO forecast; None where the run never says.
+    forecastEvery: object
     resultsDir: Path
 
 
-def loadRun(region, resultsDir=defaultResults):
-    """One region's finished rows and the configuration that produced them."""
+def publishedFile(resultsDir, region):
+    """The CSV of one region of the published run `resultsDir`."""
     resultsDir = Path(resultsDir)
-    days = records.readDays(resultsDir, region)
-    if days.empty:
+    return resultsDir.parent / exportName(resultsDir.name, region)
+
+
+def loadRun(region, resultsDir):
+    """One region's finished rows and the forecast pull they were produced under."""
+    resultsDir = Path(resultsDir)
+    path = publishedFile(resultsDir, region)
+    if not path.exists():
         raise FileNotFoundError(
-            f"no rolling results for {region} in {resultsDir}; run "
-            f"`cli rolling --region {region} ...` first"
+            f"no published backtest for {region} at {path}; run "
+            f"`cli rolling --region {region} ...` and `python -m backtest.publish` first"
         )
-    path = records.manifestPath(resultsDir, region)
-    manifest = json.loads(path.read_text()) if path.exists() else {}
+    days = records.readDayFile(path)
+    every = days.pop("forecastEvery") if "forecastEvery" in days else None
+    every = None if every is None or every.empty else int(every.iloc[0])
+    days = records.sortDays(days, path)
     if "forecast" in set(days.priceSource):
-        verifyRefresh(resultsDir, region, manifest)
-    return Run(region, days, manifest, resultsDir)
+        verifyRefresh(resultsDir, region, every)
+    return Run(region, days, every, resultsDir)
 
 
-def verifyRefresh(resultsDir, region, manifest):
+def verifyRefresh(resultsDir, region, every):
     """Refuse a forecast-priced run unless its test-day forecast pull is stated and held.
 
     `forecastEvery` is how often a test day pulled a new AEMO forecast, the only refresh
     the backtest screen describes; training reads realised prices and has none. The
-    manifest must state it, and every decision in the actions export must have read the
-    run that schedule implies: day start + (step // every * every) intervals. Returns
-    the verified `every`.
+    published CSV must state it, and every forecast decision in the actions export must
+    have read the run that schedule implies: day start + (step // every * every)
+    intervals. Returns the verified `every`.
     """
-    where = records.manifestPath(resultsDir, region)
-    if "forecastEvery" not in manifest:
+    where = publishedFile(resultsDir, region)
+    if every is None:
         raise ValueError(
             f"{where} does not state forecastEvery, so the backtest's forecast pull "
             "frequency is unknown. A result set from before the refresh read one 04:00 "
-            "run per day: add \"forecastEvery\": 288 if that is how it was produced")
-    every = int(manifest["forecastEvery"])
+            "run per day: stamp its manifest with `python -m backtest.stamp` and "
+            "publish it again")
     path = actionsFile(resultsDir, region)
     if path is None:
         raise FileNotFoundError(
             f"{resultsDir} has forecast rows for {region} but no actions export, so its "
             "forecast pull frequency cannot be checked; run `python -m backtest.actions`")
     rows = _readActions(str(path), path.stat().st_mtime)
+    rows = rows[rows.priceSource == "forecast"]
     opened = rows.intervalTime - interval
     day = (opened - timedelta(hours=dayStartHour)).dt.floor("D") + timedelta(hours=dayStartHour)
     step = (opened - day) // interval
@@ -111,86 +119,75 @@ def scope(frame, day=None, week=None):
     return frame
 
 
-def foldOfDay(frame, day):
-    """Which fold tested `day`, so the day view knows which trajectory file to open."""
-    rows = frame[frame.testDay == pd.Timestamp(day)]
-    return None if rows.empty else int(rows.fold.iloc[0])
-
-
-def trajectories(run, day):
-    """Every per-interval series written for `day`, across train modes and price sources."""
-    fold = foldOfDay(run.days, day)
-    if fold is None:
-        return pd.DataFrame(columns=list(records.trajectoryColumns))
-    path = records.regionDir(run.resultsDir, run.region) / f"fold{fold:02d}.parquet"
-    if not path.exists():
-        return pd.DataFrame(columns=list(records.trajectoryColumns))
-    frame = pd.read_parquet(path)
-    return frame[pd.to_datetime(frame.testDay) == pd.Timestamp(day)]
-
-
-
 # What a dispatch chart reads: one row per interval, in the layout the forecast screen
 # also returns, so `live.blocks` turns either one into the same blocks.
 dispatchColumns = ("settlementdate", "price", "action", "soc")
 
 
-def dispatchPath(trajectory, algo=None, trainMode=None, seed=None, priceSource=None):
+def decisions(run, day):
+    """Every agent decision of `day` in the run's actions export, any model or source."""
+    path = actionsFile(run.resultsDir, run.region)
+    if path is None:
+        return pd.DataFrame(columns=list(actionColumns))
+    rows = _readActions(str(path), path.stat().st_mtime)
+    day = pd.Timestamp(day)
+    return rows[(rows.intervalTime > day) & (rows.intervalTime <= day + timedelta(days=1))]
+
+
+def dispatchPath(rows, algo=None, trainMode=None, seed=None, priceSource=None):
     """One model's intervals for a day: the realised price, and the action it took.
 
-    The action comes from `bought` and `sold`, the same two numbers the forecast screen
-    reads, so both screens draw a dispatch block the same way. `price` is the realised
-    price the agent was paid, whichever price source it observed.
+    `rows` are actions-export rows (`decisions`). `price` is the realised price the
+    agent was paid, whichever price source it observed.
 
-    The seed is part of the match. A fold scores every seed but writes the per-interval
-    trajectory of one of them (`backtest.runner`'s `trajectorySeed`), so a seed whose
-    trajectory is not on disk has to come back empty rather than draw another seed's
-    dispatch under its own name.
+    The seed and the price source are part of the match. An export from before every
+    seed was logged holds seed 0 only, so a seed that is not in it has to come back
+    empty rather than draw another seed's dispatch under its own name.
     """
-    rows = trajectory
     for column, wanted in (("algo", algo), ("trainMode", trainMode), ("seed", seed),
                            ("priceSource", priceSource)):
         if wanted is not None and not rows.empty:
             rows = rows[rows[column] == wanted]
     if rows.empty:
         return pd.DataFrame(columns=list(dispatchColumns))
-    rows = rows.sort_values("interval")
-    bought = rows.bought.to_numpy(dtype=float)
-    sold = rows.sold.to_numpy(dtype=float)
+    rows = rows.sort_values("intervalTime")
     return pd.DataFrame({
-        "settlementdate": pd.to_datetime(rows.settlementdate).to_numpy(),
-        "price": rows.price.to_numpy(dtype=float),
-        "action": np.select([bought > 0, sold > 0], ["charge", "discharge"], "idle"),
+        "settlementdate": pd.to_datetime(rows.intervalTime).to_numpy(),
+        "price": rows.realisedPrice.to_numpy(dtype=float),
+        "action": rows.action.to_numpy(),
         "soc": rows.soc.to_numpy(dtype=float),
     }, columns=list(dispatchColumns))
 
 
-def availableRegions(resultsDir=defaultResults):
-    """Every region with at least one finished fold under `resultsDir`."""
-    root = Path(resultsDir)
-    if not root.is_dir():
-        return []
-    return sorted(child.name for child in root.iterdir()
-                  if child.is_dir() and any(child.glob("fold*.csv")))
+def availableRegions(resultsDir):
+    """Every region published for the run `resultsDir`."""
+    resultsDir = Path(resultsDir)
+    prefix = f"{resultsDir.name}_"
+    return sorted(path.stem[len(prefix):] for path in resultsDir.parent.glob(f"{prefix}*.csv")
+                  # A longer run name that starts with this one is another run.
+                  if "_" not in path.stem[len(prefix):])
 
 
 def actionsFile(resultsDir, region):
-    """The actions export of the run in `resultsDir`, or None when it was not exported.
+    """The actions export of the run `resultsDir`, or None when it was not exported.
 
-    `backtest.actions` names its CSV after the run, and a merged run directory is the
-    run's name with `_all` appended, so the file follows `--results`: pointing the
-    dashboard at another run changes the forecast numbers with every other number. The
-    Space carries it gzipped, which pandas reads the same way. A run published under
-    `backtestRoot` has no exports beside it; its export is the one in
-    `results/actions/`, which git already tracks, rather than a second copy.
+    `backtest.actions` names its CSV after the run, as `backtest.publish` names the
+    run's own, so the export of results/backtestResults/<run> is
+    results/actions/<run>_<region>.csv, and pointing the dashboard at another run
+    changes the forecast numbers with every other number. The Space carries it gzipped,
+    which pandas reads the same way.
     """
     resultsDir = Path(resultsDir)
-    name = exportName(resultsDir.name.removesuffix("_all"), region)
-    for folder in dict.fromkeys((resultsDir.parent / "actions", resultsRoot / "actions")):
-        for path in (folder / name, folder / f"{name}.gz"):
-            if path.exists():
-                return path
+    name = exportName(resultsDir.name, region)
+    folder = resultsDir.parent.parent / "actions"
+    for path in (folder / name, folder / f"{name}.gz"):
+        if path.exists():
+            return path
     return None
+
+
+actionColumns = ("forecastRunTime", "intervalTime", "action", "soc", "forecastPrice",
+                 "realisedPrice", "seed", "algo", "trainMode", "priceSource")
 
 
 @functools.lru_cache(maxsize=4)
@@ -198,8 +195,7 @@ def _readActions(path, modified):
     # `modified` is only in the key, so a re-export is read again rather than served
     # from the cache.
     return pd.read_csv(path, parse_dates=["forecastRunTime", "intervalTime"],
-                       usecols=["forecastRunTime", "intervalTime", "forecastPrice",
-                                "seed", "algo", "trainMode"])
+                       usecols=list(actionColumns), float_precision="round_trip")
 
 
 forecastColumns = ("settlementdate", "forecastPrice", "forecastRunTime")
@@ -216,6 +212,7 @@ def forecastPath(resultsDir, region, day, algo=None, trainMode=None, seed=None):
     if path is None:
         return None
     rows = _readActions(str(path), path.stat().st_mtime)
+    rows = rows[rows.priceSource == "forecast"]
     for column, wanted in (("algo", algo), ("trainMode", trainMode), ("seed", seed)):
         if wanted is not None:
             rows = rows[rows[column] == wanted]
@@ -229,18 +226,18 @@ def forecastPath(resultsDir, region, day, algo=None, trainMode=None, seed=None):
 
 
 def findResults(given=None, root=backtestRoot):
-    """The records directory to read, when the command line does not name one.
+    """The run to read, when the command line does not name one.
 
     The dashboard draws the runs published under `backtestRoot`, so it looks there for
-    a directory that holds finished folds. One candidate is used. Several candidates
-    raise, because picking one of two experiments for the reader would show numbers
-    from a run they did not ask for.
+    the runs its CSVs belong to. One candidate is used. Several candidates raise,
+    because picking one of two experiments for the reader would show numbers from a
+    run they did not ask for.
     """
     if given is not None:
         return Path(given)
     root = Path(root)
-    found = sorted(child for child in root.iterdir()
-                   if availableRegions(child)) if root.is_dir() else []
+    found = sorted({root / path.stem.rsplit("_", 1)[0] for path in root.glob("*_*.csv")}
+                   if root.is_dir() else [])
     if len(found) == 1:
         return found[0]
     if not found:
