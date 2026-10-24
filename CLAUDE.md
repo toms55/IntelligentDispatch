@@ -168,9 +168,14 @@ Rules:
    every result file and weight that goes up. Add a new input to the upload and add it
    there in the same commit, or the hook stops noticing that input.
 7. The Hugging Face write token lives in a secret store, never in the repository. The
-   script reads `$HF_TOKEN`, else the token file `hf auth login` writes, else it asks.
-   It hands the token to one `git push` through a credential helper, so the token
-   reaches no file and no command line. Never put a token in a remote URL.
+   script reads `$HF_TOKEN`, else the token file `hf auth login` writes, else it asks on
+   the terminal. It hands the token to one `git push` through a credential helper, so
+   the token reaches no file and no command line. Never put a token in a remote URL.
+8. Stage 0 resolves the token and tests it against the Space LFS endpoint, before the
+   script stages anything. The push itself blocks every git prompt. git otherwise asks
+   through `SSH_ASKPASS`, and a machine with no working askpass program pushes with
+   empty credentials. Hugging Face answers that anonymous push with "You have read
+   access but not the required permissions", which names the wrong cause.
 
 ### One dispatch chart, drawn once
 

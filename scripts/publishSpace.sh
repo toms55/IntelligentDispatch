@@ -56,6 +56,104 @@ done
 
 say() { printf '\n========== %s ==========\n' "$1"; }
 
+# ------------------------------------------------------------- 0. the token
+# The write token for the Space. Keep it out of the repository and out of the shell
+# history. Three ways to supply it, in the order the script looks:
+#
+#   1. $HF_TOKEN, read from a secret store by the shell that calls this script:
+#        HF_TOKEN=$(secret-tool lookup service huggingface) bash scripts/pushMain.sh
+#   2. the file the Hugging Face CLI writes, after `hf auth login`
+#   3. this script asks, on the terminal. The password it wants is the write token.
+#
+# This runs before stage 1, because a token problem must not cost a whole stage build.
+# Never hand the push to git with no token. git then asks through SSH_ASKPASS, and a
+# machine with no working askpass program pushes with empty credentials instead. Hugging
+# Face answers that anonymous push with "You have read access but not the required
+# permissions", which reads like a token with the wrong role and is not one.
+readToken() {
+  if [[ -n "${HF_TOKEN:-}" ]]; then
+    return 0
+  fi
+  local tokenFile="${HF_TOKEN_PATH:-${HF_HOME:-$HOME/.cache/huggingface}/token}"
+  if [[ -r "$tokenFile" ]]; then
+    HF_TOKEN=$(tr -d '[:space:]' < "$tokenFile")
+    export HF_TOKEN
+    echo "token from $tokenFile"
+    return 0
+  fi
+  # Read from the terminal, not from stdin. The pre-push hook gets its list of refs on
+  # stdin, so a read there would eat them.
+  # Open /dev/tty to test it. A readable mode bit is not enough: a job with no
+  # controlling terminal still sees the device and cannot open it.
+  HF_TOKEN=""
+  export HF_TOKEN
+  if { : < /dev/tty; } 2>/dev/null; then
+    echo "no \$HF_TOKEN and no $tokenFile."
+    printf 'Hugging Face write token for %s (it does not echo): ' "$SPACE"
+    IFS= read -r -s HF_TOKEN < /dev/tty || true
+    printf '\n'
+    HF_TOKEN=$(printf '%s' "$HF_TOKEN" | tr -d '[:space:]')
+  fi
+  if [[ -z "${HF_TOKEN:-}" ]]; then
+    echo "no write token for spaces/$SPACE, so nothing is pushed." >&2
+    echo "Supply one of these:" >&2
+    echo "  export HF_TOKEN=<write token>, then run this again" >&2
+    echo "  hf auth login, which writes $tokenFile" >&2
+    exit 1
+  fi
+}
+
+# A token that only reads authenticates and then fails at the upload. Ask the Space's
+# own LFS endpoint first, because that endpoint is the one that refuses, and its answer
+# covers a classic token and a fine-grained token alike. The object is a dummy, so this
+# uploads nothing.
+#
+# The token goes to curl through stdin, so it stays off the command line.
+checkToken() {
+  if ! command -v curl >/dev/null; then
+    return 0
+  fi
+  local status
+  status=$(
+    printf 'header = "Authorization: Bearer %s"\n' "$HF_TOKEN" | curl -s --config - \
+      -o /dev/null -w '%{http_code}' \
+      -X POST "https://huggingface.co/spaces/$SPACE.git/info/lfs/objects/batch" \
+      -H "Accept: application/vnd.git-lfs+json" \
+      -H "Content-Type: application/vnd.git-lfs+json" \
+      --data '{"operation":"upload","transfers":["basic"],"ref":{"name":"refs/heads/main"},
+               "objects":[{"oid":"0000000000000000000000000000000000000000000000000000000000000000","size":1}]}' \
+      || true
+  )
+  # Only an authentication answer stops the run. Any other status is the endpoint
+  # talking about the dummy object, which says nothing about the token.
+  case "$status" in
+    401)
+      echo "Hugging Face rejected the token for spaces/$SPACE." >&2
+      echo "Check that you copied all of it, and that it is not revoked." >&2
+      exit 1 ;;
+    403)
+      echo "the token reaches Hugging Face, and it cannot write to spaces/$SPACE." >&2
+      echo "Make a new token at https://huggingface.co/settings/tokens:" >&2
+      echo "  a classic token needs the write role," >&2
+      echo "  a fine-grained token needs write access to contents for" >&2
+      echo "  spaces/$SPACE, which you select in its repository list." >&2
+      exit 1 ;;
+    404)
+      echo "Hugging Face cannot see spaces/$SPACE with this token." >&2
+      exit 1 ;;
+    000)
+      echo "cannot reach huggingface.co, so the token is unchecked." >&2 ;;
+    *)
+      echo "token writes to spaces/$SPACE" ;;
+  esac
+}
+
+if [[ "$PUSH" == yes && -n "$SPACE" ]]; then
+  say "0/5 token"
+  readToken
+  checkToken
+fi
+
 # ---------------------------------------------------------------- 1. the code
 say "1/5 code"
 rm -rf "$STAGE"
@@ -189,22 +287,6 @@ if [[ -z "$SPACE" ]]; then
   exit 0
 fi
 
-# The write token for the Space. Keep it out of the repository and out of the shell
-# history. Three ways to supply it, in the order the script looks:
-#
-#   1. $HF_TOKEN, read from a secret store by the shell that calls this script:
-#        HF_TOKEN=$(secret-tool lookup service huggingface) bash scripts/pushMain.sh
-#   2. the file the Hugging Face CLI writes, after `hf auth login`
-#   3. nothing, and git asks. The password it wants is the write token.
-if [[ -z "${HF_TOKEN:-}" ]]; then
-  tokenFile="${HF_TOKEN_PATH:-${HF_HOME:-$HOME/.cache/huggingface}/token}"
-  if [[ -r "$tokenFile" ]]; then
-    HF_TOKEN=$(tr -d '[:space:]' < "$tokenFile")
-    export HF_TOKEN
-    echo "token from $tokenFile"
-  fi
-fi
-
 # A Space is a git repository. Push the stage as one commit, so an update replaces the
 # agents and the results rather than growing the history with every version of them.
 (
@@ -221,15 +303,12 @@ fi
     echo "pushing to https://huggingface.co/spaces/$SPACE"
     # The token stays in the environment of this one command. It is not in the remote
     # URL, not in any git configuration file, and not on the command line, so it cannot
-    # reach the repository or a shell history. With no token, git asks for one, and the
-    # password it asks for is a write token rather than an account password.
-    if [[ -n "${HF_TOKEN:-}" ]]; then
-      HF_TOKEN="$HF_TOKEN" git \
-        -c credential.helper='!f() { test "$1" = get && printf "username=hf\npassword=%s\n" "$HF_TOKEN"; }; f' \
-        push --force space main
-    else
-      git push --force space main
-    fi
+    # reach the repository or a shell history. Stage 0 has a token by now, so block
+    # every prompt: a prompt here means the helper failed, and an unanswered prompt
+    # pushes with empty credentials.
+    env -u GIT_ASKPASS -u SSH_ASKPASS HF_TOKEN="$HF_TOKEN" GIT_TERMINAL_PROMPT=0 git \
+      -c credential.helper='!f() { test "$1" = get && printf "username=hf\npassword=%s\n" "$HF_TOKEN"; }; f' \
+      push --force space main
   else
     echo "committed. To upload:"
     echo "  cd $STAGE && git push --force space main"
