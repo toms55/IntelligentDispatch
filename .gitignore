@@ -13,14 +13,10 @@ runs/
 # --- the published agents: binary weights, moved between machines with rsync ---
 trainedPolicies/
 
-# --- experiment outputs: the per-fold records, not the bulk ---
+# --- experiment outputs: only the full-run actions export, one per run per region ---
 results/**
-!results/**/
+!results/actions/
 !results/actions/*.csv
-!results/**/fold*.csv
-!results/**/fold*.parquet
-!results/**/manifest.json
-!results/*.md
 
 # --- CLI outputs: <module>_<region>_<date>.csv/.png land in the cwd ---
 lp_*.csv
