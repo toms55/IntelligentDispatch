@@ -2,6 +2,7 @@
 from datetime import datetime
 
 import pandas as pd
+import pytest
 
 from backtest import actions
 from utils import nem_interval
@@ -51,3 +52,90 @@ class TestExportName:
     def test_a_run_without_a_region_gets_one(self):
         assert actions.exportName("results/rolling2023_profit", "NSW1") \
             == "rolling2023_profit_NSW1.csv"
+
+
+def rows(fold=0, seed=0, steps=3):
+    frame = trajectory(steps).assign(fold=fold, seed=seed)
+    frame["forecastRunTime"] = pd.Timestamp(DAY)
+    return actions.actionRows(frame, "NSW1")
+
+
+def appendFolds(path, seed, count):
+    """One seed process: appends `count` folds of 288 rows, as the runner does."""
+    for fold in range(count):
+        actions.appendRows(path, rows(fold, seed, 288))
+
+
+class TestLiveFile:
+    # Every seed of a region writes the run's one CSV, beside where exportRun puts it.
+    def test_a_seed_directory_names_the_run_by_its_parent(self, tmp_path):
+        run = tmp_path / "results" / "rolling2024"
+        assert actions.liveFile(run / "seed3", "NSW1") \
+            == tmp_path / "results" / "actions" / "rolling2024_NSW1.csv"
+        assert actions.liveFile(run, "NSW1") == actions.liveFile(run / "seed0", "NSW1")
+
+
+class TestAppendRows:
+    # The header is written once, by whichever fold arrives first.
+    def test_one_header_however_many_folds(self, tmp_path):
+        path = tmp_path / "actions" / "run_NSW1.csv"
+        actions.appendRows(path, rows(0))
+        actions.appendRows(path, rows(1))
+        got = pd.read_csv(path)
+        assert list(got.columns) == list(actions.columns)
+        assert list(got.fold) == [0, 0, 0, 1, 1, 1]
+
+    # Seeds are separate processes on one file. Each fold's block stays whole: every
+    # row parses, none is lost, and a fold's rows sit together.
+    def test_concurrent_seeds_do_not_interleave(self, tmp_path):
+        import multiprocessing
+        path = tmp_path / "run_NSW1.csv"
+        context = multiprocessing.get_context("fork")
+        workers = [context.Process(target=appendFolds, args=(path, seed, 20))
+                   for seed in range(4)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+            assert worker.exitcode == 0
+        got = pd.read_csv(path)
+        assert len(got) == 4 * 20 * 288
+        blocks = (got[["seed", "fold"]] != got[["seed", "fold"]].shift()).any(axis=1).sum()
+        assert blocks == 4 * 20
+
+
+class TestWrittenUnits:
+    def test_a_missing_file_holds_nothing(self, tmp_path):
+        assert actions.writtenUnits(tmp_path / "none.csv") == set()
+
+    def test_it_lists_each_fold_seed_and_model(self, tmp_path):
+        path = tmp_path / "run_NSW1.csv"
+        actions.appendRows(path, rows(0, 0))
+        actions.appendRows(path, rows(0, 1))
+        assert actions.writtenUnits(path) == {(0, 0, "maskableppo", "warm"),
+                                             (0, 1, "maskableppo", "warm")}
+
+
+class TestRefuseExisting:
+    # A run name is used once; a redo takes a new name.
+    def test_a_fresh_name_starts(self, tmp_path):
+        actions.refuseExisting(tmp_path / "results" / "new" / "seed0", "NSW1",
+                               tmp_path / "backtestResults")
+
+    def test_an_existing_actions_csv_refuses(self, tmp_path):
+        run = tmp_path / "results" / "old"
+        actions.appendRows(actions.liveFile(run, "NSW1"), rows())
+        with pytest.raises(ValueError, match="already exists"):
+            actions.refuseExisting(run / "seed0", "NSW1", tmp_path / "backtestResults")
+
+    def test_a_published_region_refuses(self, tmp_path):
+        (tmp_path / "backtestResults" / "old" / "NSW1").mkdir(parents=True)
+        with pytest.raises(ValueError, match="already exists"):
+            actions.refuseExisting(tmp_path / "results" / "old_NSW1", "NSW1",
+                                   tmp_path / "backtestResults")
+
+    # Another region may still join a run name.
+    def test_another_region_of_the_same_run_starts(self, tmp_path):
+        (tmp_path / "backtestResults" / "old" / "NSW1").mkdir(parents=True)
+        actions.refuseExisting(tmp_path / "results" / "old", "SA1",
+                               tmp_path / "backtestResults")

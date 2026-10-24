@@ -474,3 +474,46 @@ class TestTrainingOnForecasts:
         cfg = config._replace(trainSource="forecast")
         assert runner.manifestOf(cfg)["trainSource"] == "forecast"
         assert "forecastEvery" in runner.manifestOf(cfg)
+
+
+class TestActionsFile:
+    # Every seed's forecast-priced decisions reach the CSV as each fold finishes, not
+    # just the trajectory seed's, and realised-priced ones never do.
+    @pytest.fixture
+    def forecastConfig(self, config, monkeypatch, tmp_path):
+        monkeypatch.setattr(runner, "loadForecastCache", lambda region: None)
+        monkeypatch.setattr(runner, "refreshMatrix", lambda days, region, horizon, every, **kw:
+                            np.full((len(days), horizon // every, horizon), 40.0))
+        return config._replace(priceSources=("realised", "forecast"),
+                               foldFilter=frozenset({0, 1}),
+                               actionsFile=tmp_path / "actions" / "run_NSW1.csv")
+
+    def test_every_seed_of_every_fold_is_written(self, forecastConfig, spy):
+        runner.runRolling(forecastConfig)
+        got = pd.read_csv(forecastConfig.actionsFile)
+        assert set(got.seed) == {0, 1}
+        assert set(got.fold) == {0, 1}
+        assert len(got) == 2 * 2 * 7 * 288
+        assert (got.forecastPrice == 40.0).all() and (got.realisedPrice == 50.0).all()
+
+    def test_a_resumed_run_writes_no_row_twice(self, forecastConfig, spy):
+        runner.runRolling(forecastConfig._replace(foldFilter=frozenset({0})))
+        runner.runRolling(forecastConfig)
+        got = pd.read_csv(forecastConfig.actionsFile)
+        assert len(got) == 2 * 2 * 7 * 288
+        assert not got.duplicated(["fold", "seed", "intervalTime"]).any()
+
+    # A fold killed after its CSV rows but before its fold CSV is scored again, and its
+    # rows are not appended a second time.
+    def test_a_fold_killed_before_its_records_is_not_appended_again(
+            self, forecastConfig, spy, monkeypatch):
+        cfg = forecastConfig._replace(foldFilter=frozenset({0}))
+        real = records.writeFold
+        monkeypatch.setattr(records, "writeFold", lambda *a, **k: (_ for _ in ()).throw(
+            RuntimeError("killed")))
+        with pytest.raises(RuntimeError):
+            runner.runRolling(cfg)
+        monkeypatch.setattr(records, "writeFold", real)
+        runner.runRolling(cfg)
+        got = pd.read_csv(cfg.actionsFile)
+        assert len(got) == 2 * 7 * 288

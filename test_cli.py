@@ -495,6 +495,22 @@ class TestRolling:
         assert self.rolling("--dry-run") == 0
         assert "cfg" not in spy
 
+    # The decisions go to the run's one CSV, whichever seed directory --results names.
+    def test_the_actions_csv_follows_the_run_name(self, spy, tmp_path):
+        self.rolling("--results", str(tmp_path / "results" / "x" / "seed2"))
+        assert spy["cfg"].actionsFile == tmp_path / "results" / "actions" / "x_NSW1.csv"
+
+    # A name already used stops a fresh start; --resume continues it.
+    def test_an_existing_name_needs_resume(self, spy, tmp_path):
+        run = tmp_path / "results" / "x"
+        (tmp_path / "results" / "actions").mkdir(parents=True)
+        (tmp_path / "results" / "actions" / "x_NSW1.csv").write_text("fold\n")
+        with pytest.raises(SystemExit, match="already exists"):
+            self.rolling("--results", str(run))
+        assert "cfg" not in spy
+        self.rolling("--results", str(run), "--resume")
+        assert "cfg" in spy
+
 
 class TestExistingSubcommandsSurvive:
     # train and eval keep their single --algo after rolling made it a list elsewhere.

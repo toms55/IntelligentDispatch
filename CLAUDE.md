@@ -341,6 +341,13 @@ cover.
   seed, because every seed has day rows, so the day view of another seed is empty by
   design. It must stay empty: drawing seed 0's dispatch under another seed's name is a
   wrong chart, not a missing one.
+- **The actions CSV is written by the backtest, every seed, as each fold finishes.**
+  `cli rolling` appends one fold's forecast-priced decisions to
+  `results/actions/<run>_<region>.csv` under a lock, because every seed's process shares
+  the file. A run name is used once: a fresh start refuses a name whose CSV or
+  `backtestResults/<run>/<region>` exists, and `--resume` (`RESUME=1` in the folds job)
+  continues one without appending a fold twice. `python -m backtest.actions` is only for
+  runs from before this.
 - `nemosis` downloads AEMO archive files into `data_cache/` on first use, so the first
   call for a date range is slow and network-bound while later calls are local. The
   directory is gitignored and safe to delete.

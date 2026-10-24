@@ -21,7 +21,14 @@
 # Each seed's chain is independent, so each seed runs in its own process. They write to
 # separate result directories, because the runner rewrites a fold CSV whole and two
 # processes on one directory would drop each other's rows. The last step merges them.
-# Resumable: a fold is skipped once its rows are written.
+# Each seed appends its forecast-priced decisions to the region's one actions CSV,
+# results/actions/<run>_<region>.csv, as each fold finishes (backtest/actions.py), so the
+# CSV grows while the job runs and no export step follows.
+#
+# A run name is used once: a job whose actions CSV or backtestResults/<run>/<region>
+# already exists stops before training. Redo under a new RESULTS. A job killed partway
+# (walltime) continues with -v RESUME=1 and the same OUT and RESULTS: a fold is skipped
+# once its rows are written, and its CSV rows are never appended twice.
 
 #PBS -N id-folds23
 #PBS -q medq
@@ -48,6 +55,13 @@ TRAIN_SOURCE=${TRAIN_SOURCE:-realised}   # realised or forecast; settlement is r
 LOGS=${LOGS:-$OUT}
 mkdir -p "$OUT" "$LOGS"
 
+# Checked once here, not by each seed: a seed starting late would otherwise find the CSV
+# an earlier seed had just begun, and refuse its own run.
+if [ "${RESUME:-0}" != 1 ]; then
+  $PY -c 'import sys; from backtest.actions import refuseExisting; refuseExisting(*sys.argv[1:])' \
+    "$RESULTS" "$REGION"
+fi
+
 # Paths for every refresh run of every test day. Needed whenever REFRESH changes.
 if [ "${PREFETCH:-0}" = 1 ]; then
   # Training on forecasts needs every training day too, from 2023-01-01.
@@ -64,7 +78,8 @@ for seed in $SEEDS; do
     --cap-date 2026-10-01T04:00 --baseline-oracle discrete --no-calendar \
     --gap 0.02 --time-limit 1800 --price-source "$PRICE_SOURCE" --forecast-refresh "$REFRESH" \
     --train-source "$TRAIN_SOURCE" \
-    --seeds "$seed" --out "$OUT" --results "$RESULTS/seed$seed" > "$LOGS/seed$seed.log" 2>&1 &
+    --seeds "$seed" --out "$OUT" --results "$RESULTS/seed$seed" --resume \
+    > "$LOGS/seed$seed.log" 2>&1 &
   pids+=($!)
 done
 failed=0
@@ -93,9 +108,6 @@ manifest = json.loads((root / "seed0" / REGION / "manifest.json").read_text())
 records.writeManifest(root / "all", REGION, {**manifest, "seeds": [int(s) for s in seeds]})
 cli._reportRolling(records.readDays(root / "all", REGION), metrics, 0.02)
 EOF
-
-# The whole backtest's dispatch as one CSV, in results/actions/ beside the run.
-$PY -m backtest.actions "$RESULTS"
 
 # The finished region, where the dashboard reads it and git tracks it.
 $PY -m backtest.publish "$RESULTS"

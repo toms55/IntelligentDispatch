@@ -12,7 +12,7 @@ git already tracks, and data.actionsFile finds it there.
 
     uv run python -m backtest.publish results/rolling2023_profit_fc5m_NSW1 [more runs...]
 
-The folds job calls this once it has exported the actions. A region is published only
+The folds job calls this once it has merged the seeds. A region is published only
 if the dashboard can then load it, so a run it cannot draw is refused here rather than
 on the screen. Publishing replaces the region whole, and commits nothing: `git add
 backtestResults` is still the reader's.

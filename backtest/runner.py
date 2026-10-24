@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 
 import config
-from backtest import folds, records, volatility
+from backtest import actions, folds, records, volatility
 from data.forecasts import (decisionPath, decisionRuns, loadForecastCache, refreshMatrix,
                             refreshRunTimes)
 from data.prices import price_series
@@ -78,6 +78,9 @@ class RollingConfig(NamedTuple):
     # Where the last fold's agent is published when the run finishes. The per-fold
     # checkpoints under outDir are working state; this is the one a reader looks for.
     policyRoot: Path = policies.defaultRoot
+    # The CSV every forecast-priced decision is appended to, all seeds, one fold at a
+    # time (backtest/actions.py). None writes none.
+    actionsFile: Optional[Path] = None
 
 
 class Plan(NamedTuple):
@@ -346,12 +349,14 @@ def runRolling(cfg, onProgress=None):
     plan = _plan(cfg)
     existing = records.readDays(cfg.resultsDir, cfg.region)
     done = records.completedUnits(existing)
+    logged = actions.writtenUnits(cfg.actionsFile) if cfg.actionsFile else set()
     testDays = cfg.testWeeks * 7
     written = 0
 
     for position, fold in enumerate(plan.selected):
         rows = existing[existing.fold == fold.index].to_dict("records")
         trajectories = []
+        decisions = []
 
         trainPrices = folds.sliceWindow(plan.prices, fold.trainStart, fold.trainEnd)
         folds.requireFullDays(trainPrices, fold.trainStart, fold.trainEnd)
@@ -408,6 +413,13 @@ def runRolling(cfg, onProgress=None):
                         trajectories += _resultTrajectories(
                             cfg, fold, algo, trainMode, source, results[cfg.trajectorySeed],
                             testPrices, forecasts)
+                    if source == "forecast" and cfg.actionsFile:
+                        decisions += [
+                            row for seed in pending
+                            if (fold.index, seed, algo, trainMode) not in logged
+                            for row in _resultTrajectories(
+                                cfg, fold, algo, trainMode, source, results[seed],
+                                testPrices, forecasts, seed=seed)]
                     written += len(pending)
 
         if trajectories:
@@ -425,6 +437,11 @@ def runRolling(cfg, onProgress=None):
                                                    day + folds.oneDay).to_numpy())]
             records.writeTrajectories(cfg.resultsDir, cfg.region, fold.index,
                                       kept + trajectories)
+        if decisions:
+            # Before the fold CSV: a fold killed between the two is scored again on
+            # resume, and `logged` keeps its rows from being appended twice.
+            actions.appendRows(cfg.actionsFile,
+                               actions.actionRows(pd.DataFrame(decisions), cfg.region))
         records.writeFold(cfg.resultsDir, cfg.region, fold.index, rows)
         if onProgress:
             onProgress(position + 1, len(plan.selected), fold)
@@ -491,13 +508,15 @@ def _resultRows(cfg, plan, fold, algo, trainMode, source, results, position, gap
     return out
 
 
-def _resultTrajectories(cfg, fold, algo, trainMode, source, perWindow, testPrices, forecasts):
+def _resultTrajectories(cfg, fold, algo, trainMode, source, perWindow, testPrices, forecasts,
+                        seed=None):
+    seed = cfg.trajectorySeed if seed is None else seed
     out = []
     for record in perWindow:
         day = fold.testDays[record["window"]]
         observed, runs = ((None, None) if forecasts is None
                           else (decisionPath(forecasts[record["window"]]),
                                 decisionRuns(day, forecasts[record["window"]])))
-        out += list(_trajectoryRows(cfg, fold.index, algo, trainMode, cfg.trajectorySeed,
+        out += list(_trajectoryRows(cfg, fold.index, algo, trainMode, seed,
                                     source, day, record["trajectory"], observed, runs))
     return out

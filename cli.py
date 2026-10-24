@@ -423,7 +423,7 @@ def _runRolling(args):
 
 
 def _rolling(args):
-    from backtest import metrics, records, runner
+    from backtest import actions, metrics, records, runner
 
     start, end = _window(args)
     sources = (("realised", "forecast") if args.price_source == "both"
@@ -445,6 +445,7 @@ def _rolling(args):
         foldFilter=None if args.folds is None else _parseFolds(args.folds),
         allowSolve=args.allow_solve, outDir=Path(args.out),
         resultsDir=Path(args.results), policyRoot=Path(args.policies),
+        actionsFile=actions.liveFile(args.results, args.region),
     )
 
     audit = runner.auditPlan(cfg)
@@ -456,8 +457,11 @@ def _rolling(args):
           f"{audit['last'].testEnd:%Y-%m-%d}")
     print(f"oracle cache   {audit['days'] - audit['missing']} of {audit['days']} days "
           f"present, {audit['missing']} would be solved")
+    print(f"actions        {cfg.actionsFile}")
     if args.dry_run:
         return 0
+    if not args.resume:
+        actions.refuseExisting(args.results, args.region)
 
     written = runner.runRolling(cfg, onProgress=lambda done, total, fold: print(
         f"  [{done:3d}/{total}] fold {fold.index:2d} test {fold.testStart:%Y-%m-%d}"))
@@ -780,6 +784,10 @@ def main(argv=None):
                          help="permit solving oracle windows that are not cached; without "
                               "it a cold cache stops the run instead of silently starting "
                               "hours of MILP")
+    rolling.add_argument("--resume", action="store_true",
+                         help="continue a backtest of this name; without it a name whose "
+                              "actions CSV or backtestResults/ region exists is refused, "
+                              "so a redo takes a new --results name")
     rolling.add_argument("--dry-run", action="store_true",
                          help="print the fold table and the cache audit, run nothing")
     # The cached oracle was solved without calendar aging, so matching it is the
