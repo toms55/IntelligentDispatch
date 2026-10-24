@@ -5,10 +5,11 @@ No server: the layout is built once and the callbacks are called as plain functi
 from pathlib import Path
 
 import pytest
+from dash import no_update
 
 from visualise.dashboard import __main__ as app
 from rl import policies
-from visualise.dashboard import data, live
+from visualise.dashboard import data, figures, live
 from visualise.dashboard.test_data import DAY, REGION, run  # noqa: F401
 from visualise.dashboard.test_live import (path, sawtooth,  # noqa: F401
                                            standIn)
@@ -242,7 +243,7 @@ class TestForecastScreen:
     # what the backtest scored. The backtest label carries a price source; this does not.
     def test_it_offers_the_published_agents(self, run, tmp_path):
         built = app.build(REGION, run, publish(tmp_path))
-        _, options, value = _callback(built, "live-state")("live", REGION, None, 0)
+        _, options, value, *_ = _callback(built, "live-state")("live", REGION, None, 0)
         assert [item["value"] for item in options] == [LIVE_MODEL]
         assert value == LIVE_MODEL
 
@@ -250,13 +251,14 @@ class TestForecastScreen:
     # so there is no model to put in their place.
     def test_a_machine_without_agents_offers_nothing(self, run, tmp_path):
         built = app.build(REGION, run, tmp_path)
-        state, options, value = _callback(built, "live-state")("live", REGION, None, 0)
+        state, options, value, *_ = _callback(built, "live-state")(
+            "live", REGION, None, 0)
         assert options == [] and value is None and state["model"] is None
 
     # A model the new region does not hold falls back before the board fetches it.
     def test_an_unknown_model_falls_back(self, run, tmp_path):
         built = app.build(REGION, run, publish(tmp_path))
-        state, _, value = _callback(built, "live-state")("live", REGION, "gone", 0)
+        state, _, value, *_ = _callback(built, "live-state")("live", REGION, "gone", 0)
         assert value == LIVE_MODEL and state["model"] == LIVE_MODEL
 
     # One screen is shown and the other is hidden, never both.
@@ -306,6 +308,64 @@ class TestForecastScreen:
         assert tiles[0]["value"] == "no data"
 
 
+class TestStartSoc:
+    # Whole percent from 0 to 100 inclusive, as the fraction the environment takes.
+    @pytest.mark.parametrize("text,wanted", [("0", 0.0), ("50", 0.5), ("100", 1.0),
+                                             (" 7 ", 0.07), (50, 0.5)])
+    def test_it_reads_a_whole_percent(self, text, wanted):
+        assert app.parseSoc(text) == pytest.approx(wanted)
+
+    # Anything else is refused, so a half-typed or out-of-range box never reaches the
+    # agent as a state of charge the battery cannot hold.
+    @pytest.mark.parametrize("text", ["", None, "abc", "5.5", "-1", "101", "1e2"])
+    def test_it_refuses_anything_else(self, text):
+        assert app.parseSoc(text) is None
+
+    # The box the reader typed is the state of charge the episode starts from.
+    def test_the_board_starts_the_episode_there(self, monkeypatch, sawtooth, standIn,
+                                                tmp_path):
+        monkeypatch.setattr(live, "forecastPath", lambda region: sawtooth)
+        seen = {}
+        suggest = live.suggest
+        monkeypatch.setattr(live, "suggest",
+                            lambda *args, **kwargs: seen.update(kwargs) or
+                            suggest(*args, **kwargs))
+        _, _, tiles = app.forecastBoard(REGION, LIVE_MODEL, tmp_path, 0.2)
+        assert seen["initialSoc"] == 0.2
+        assert tiles[1]["raw"] == 0.2
+
+    # The button carries the box into the state the board reads.
+    def test_the_button_sends_the_box_to_the_board(self, monkeypatch, run, tmp_path):
+        monkeypatch.setattr(app, "_trigger", lambda: "forecast-run")
+        built = app.build(REGION, run, publish(tmp_path))
+        state, _, _, style, note = _callback(built, "live-state")(
+            "live", REGION, None, 1, None, "80")
+        assert state["soc"] == pytest.approx(0.8)
+        assert note is None and style == app.socStyle
+
+    # A bad box goes red and says what it wants, and the board is left alone: no
+    # NEMWeb read, and the chart on screen still matches the number that drew it.
+    def test_a_bad_box_fetches_nothing(self, monkeypatch, run, tmp_path):
+        monkeypatch.setattr(app, "_trigger", lambda: "forecast-run")
+        built = app.build(REGION, run, publish(tmp_path))
+        state, options, value, style, note = _callback(built, "live-state")(
+            "live", REGION, None, 1, None, "120")
+        assert note == app.socHelp
+        assert style["border"].endswith(figures.lossPole)
+        assert (state, options, value) == (no_update, no_update, no_update)
+
+    # A clock tick is not the reader asking for the number, so it refreshes on the last
+    # good one rather than stalling on a box left half typed.
+    def test_a_tick_runs_on_the_last_good_box(self, monkeypatch, run, tmp_path):
+        monkeypatch.setattr(app, "_trigger", lambda: "forecast-clock")
+        built = app.build(REGION, run, publish(tmp_path))
+        held = {"soc": 0.3, "slot": "none"}
+        state, _, _, style, note = _callback(built, "live-state")(
+            "live", REGION, None, 0, 1, "abc", held)
+        assert state["soc"] == 0.3
+        assert note == app.socHelp and style == app.badSocStyle
+
+
 class TestParseDay:
     def test_it_round_trips(self):
         assert app.parseDay(app.showDay("2025-03-09")) == "2025-03-09"
@@ -327,4 +387,4 @@ class TestForecastClock:
     # A click or a region change refetches whatever the clock says.
     def test_other_inputs_always_refetch(self):
         held = {"slot": "2026-10-23 14:05:00"}
-        assert not app.staleTick("forecast-refresh", "live", held, "2026-10-23 14:05:00")
+        assert not app.staleTick("forecast-run", "live", held, "2026-10-23 14:05:00")

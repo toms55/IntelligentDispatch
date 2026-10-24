@@ -13,16 +13,18 @@ above it names which. Click a day in the month to open it.
 Current forecast. Pick a model and a region, and the board draws the AEMO price path
 published right now, with the dispatch that model would run over it. This screen runs
 the agent itself, so its model list is what `trainedPolicies/` holds on this machine,
-not what the backtest scored. See `visualise/dashboard/live.py` for what the two
-screens do not share.
+not what the backtest scored. The start state of charge is a box, in percent, because
+the charge a real battery holds is not in this repository. See
+`visualise/dashboard/live.py` for what the two screens do not share.
 """
 import argparse
 import calendar as calendarModule
 
 import pandas as pd
-from dash import Dash, Input, Output, State, ctx, dcc, html
+from dash import Dash, Input, Output, State, ctx, dcc, html, no_update
 from dash.exceptions import MissingCallbackContextException, PreventUpdate
 
+import config
 from visualise.dashboard import data, figures, live
 
 tileStyle = {"flex": "1 1 150px", "padding": "14px 16px", "borderRadius": "10px",
@@ -36,7 +38,27 @@ buttonStyle = {"padding": "7px 14px", "borderRadius": "8px", "cursor": "pointer"
                "background": figures.surface, "color": figures.ink}
 labelStyle = {"color": figures.mutedInk, "fontSize": "12px", "display": "block",
               "marginBottom": "4px"}
+socStyle = {**buttonStyle, "width": "72px"}
+badSocStyle = {**socStyle, "border": f"1px solid {figures.lossPole}",
+               "color": figures.lossPole}
 dateFormat = "%d/%m/%Y"
+# The forecast screen asks for the start state of charge in percent, because that is how
+# a battery states its charge. `config.initial_soc` is the default and a fraction.
+defaultSocPercent = round(config.initial_soc * 100)
+socHelp = "Type a whole number from 0 to 100."
+
+
+def parseSoc(text):
+    """The start state of charge a reader typed, as the fraction `rl.env.BessEnv` takes.
+
+    Returns None when the box holds anything but a whole number of percent from 0 to
+    100. The caller then marks the box and leaves the board alone.
+    """
+    try:
+        percent = int(str(text).strip())
+    except (TypeError, ValueError):
+        return None
+    return percent / 100 if 0 <= percent <= 100 else None
 
 
 def _tile(tile):
@@ -190,12 +212,28 @@ def _liveControls(regions, region):
     button have no meaning here, so the box in their place names the run instead."""
     return html.Div([
         html.Div([
-            # Bottom aligned with the dropdowns, and as tall as one (Dash's is 36px).
-            html.Button("Refresh", id="forecast-refresh", n_clicks=0,
-                        style={**buttonStyle, "height": "36px"}),
             # Ticks well inside five minutes, so a refresh lands within a tick of each
             # :00, :05, :10 boundary; `setLiveState` ignores ticks inside one slot.
             dcc.Interval(id="forecast-clock", interval=live.clockTickMs),
+            # The state of charge a real battery holds is not in this repository, so the
+            # reader sets the one the episode starts from. The button is the only input
+            # that reads the box, so a half-typed number never reaches the agent.
+            html.Div([
+                html.Label("Start SoC", style=labelStyle),
+                html.Div([
+                    html.Span("%", style={"color": figures.mutedInk,
+                                          "fontSize": "13px"}),
+                    dcc.Input(id="soc-text", type="text", value=defaultSocPercent,
+                              style=socStyle),
+                    # Bottom aligned with the dropdowns, and as tall as one (Dash's is
+                    # 36px).
+                    html.Button("New forecast", id="forecast-run", n_clicks=0,
+                                style={**buttonStyle, "height": "36px"}),
+                ], style={"display": "flex", "gap": "8px", "alignItems": "center"}),
+                html.Div(id="soc-note",
+                         style={"color": figures.lossPole, "fontSize": "12px",
+                                "marginTop": "4px", "maxWidth": "230px"}),
+            ], style={"marginRight": "auto"}),
             html.Div([html.Label("Model", style=labelStyle),
                       dcc.Dropdown(id="pick-live-model", clearable=False,
                                    style={"minWidth": "260px"})]),
@@ -235,7 +273,7 @@ def layout(regions, region, day):
         ]),
         dcc.Store(id="live-state",
                   data={"screen": "backtest", "region": region, "model": None,
-                        "clicks": 0}),
+                        "clicks": 0, "soc": config.initial_soc}),
         html.Div(id="live-screen", style={"display": "none"}, children=[
             # The forecast is fetched over the network, so the screen says so while
             # it waits rather than sitting blank.
@@ -269,7 +307,7 @@ def liveModels(region, policyRoot=live.defaultCheckpoints):
     return sorted(live.findCheckpoints(region, policyRoot))
 
 
-def forecastBoard(region, model, policyRoot):
+def forecastBoard(region, model, policyRoot, initialSoc=config.initial_soc):
     """The forecast figure, the box above it and its two cards.
 
     Returns (figure, box, tiles).
@@ -284,16 +322,17 @@ def forecastBoard(region, model, policyRoot):
         path = live.forecastPath(region)
     except Exception as error:  # noqa: BLE001 - the message is the output
         return (figures.forecastFigure(empty, note=str(error)), _liveBox(None),
-                figures.forecastTiles(empty))
+                figures.forecastTiles(empty, initialSoc))
     note = None
     try:
-        frame = live.suggest(path, model, region, root=policyRoot)
+        frame = live.suggest(path, model, region, root=policyRoot,
+                             initialSoc=initialSoc)
     except (FileNotFoundError, ValueError) as error:
         frame, note = live.priceFrame(path), str(error)
     figure = figures.forecastFigure(frame, live.blocks(frame), region=region,
                                     model=model, note=note)
     return (figure, _liveBox(None if frame.empty else frame.settlementdate.iloc[0]),
-            figures.forecastTiles(frame))
+            figures.forecastTiles(frame, initialSoc))
 
 
 def _liveBox(start):
@@ -401,23 +440,36 @@ def register(app, loader, policyRoot=live.defaultCheckpoints):
     # does. Two callbacks would let the board fetch a model against a region that does
     # not hold it, which is one wasted NEMWeb read per region change.
     @app.callback(Output("live-state", "data"), Output("pick-live-model", "options"),
-                  Output("pick-live-model", "value"),
+                  Output("pick-live-model", "value"), Output("soc-text", "style"),
+                  Output("soc-note", "children"),
                   Input("screen", "value"), Input("pick-live-region", "value"),
                   Input("pick-live-model", "value"),
-                  Input("forecast-refresh", "n_clicks"),
+                  Input("forecast-run", "n_clicks"),
                   Input("forecast-clock", "n_intervals"),
-                  State("live-state", "data"))
-    def setLiveState(screen, region, model, clicks, ticks=None, previous=None):
+                  State("soc-text", "value"), State("live-state", "data"))
+    def setLiveState(screen, region, model, clicks, ticks=None,
+                     socText=defaultSocPercent, previous=None):
         # The clock refetches only when a new 5-minute slot has opened, so the agent
         # reruns on each AEMO dispatch interval and not on every tick.
         slot = str(live.refreshSlot())
-        if staleTick(_trigger(), screen, previous, slot):
+        trigger = _trigger()
+        if staleTick(trigger, screen, previous, slot):
             raise PreventUpdate
+        soc = parseSoc(socText)
+        style = socStyle if soc is not None else badSocStyle
+        note = None if soc is not None else socHelp
+        if soc is None:
+            # The button is the reader asking for this number, so a bad one fetches
+            # nothing and the box says what it wants. A region change or a clock tick
+            # asked for something else, so each runs on the last good number.
+            if trigger == "forecast-run":
+                return no_update, no_update, no_update, style, note
+            soc = (previous or {}).get("soc", config.initial_soc)
         names = liveModels(region, policyRoot)
         model = model if model in names else (names[0] if names else None)
         return ({"screen": screen, "region": region, "model": model, "clicks": clicks,
-                 "slot": slot},
-                [{"label": name, "value": name} for name in names], model)
+                 "slot": slot, "soc": soc},
+                [{"label": name, "value": name} for name in names], model, style, note)
 
     # The forecast is fetched over the network, so it is drawn when the screen is
     # opened and on demand, never on every callback the other screen fires.
@@ -428,7 +480,8 @@ def register(app, loader, policyRoot=live.defaultCheckpoints):
     def redrawForecast(state):
         if state["screen"] != "live":
             raise PreventUpdate
-        figure, box, tiles = forecastBoard(state["region"], state["model"], policyRoot)
+        figure, box, tiles = forecastBoard(state["region"], state["model"], policyRoot,
+                                           state.get("soc", config.initial_soc))
         return figure, box, [_tile(tile) for tile in tiles]
 
 

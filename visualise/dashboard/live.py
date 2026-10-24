@@ -10,8 +10,9 @@ Two things differ from a backtest day, and both are stated on the screen.
 
 1. The episode starts at the run time, not at 04:00, so it is as long as the forecast
    reaches. PREDISPATCH stops at the end of the trading day.
-2. The state of charge starts at `config.initial_soc`, because the live state of a real
-   battery is not in this repository.
+2. The state of charge starts where the reader sets it, and at `config.initial_soc`
+   until they do, because the live state of a real battery is not in this repository.
+   The screen states the number the board was drawn for.
 """
 from pathlib import Path
 
