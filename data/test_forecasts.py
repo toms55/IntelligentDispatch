@@ -515,6 +515,20 @@ class TestRefresh:
         path = np.arange(288.0)
         np.testing.assert_array_equal(forecasts.activeRun(path, 200), path)
 
+    # Each step names the run activeRun handed it, from the stack's own shape.
+    def test_the_decision_runs(self):
+        grid = np.zeros((6, 288))
+        got = forecasts.decisionRuns(RUN, grid)
+        start = pd.Timestamp(RUN)
+        assert [got[step] - start for step in (0, 47, 48, 287)] == [
+            pd.Timedelta(0), pd.Timedelta(0), pd.Timedelta(hours=4),
+            pd.Timedelta(hours=20)]
+
+    # A single path is the one run that opens the day.
+    def test_a_single_path_is_one_run(self):
+        got = forecasts.decisionRuns(RUN, np.zeros(288))
+        assert set(got) == {pd.Timestamp(RUN)}
+
     # The decision path takes step k from the run active at k.
     def test_the_decision_path(self, refreshArchive):
         grid = forecasts.refreshMatrix([RUN], "SA1")[0]

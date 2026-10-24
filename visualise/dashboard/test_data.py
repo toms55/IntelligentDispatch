@@ -160,6 +160,50 @@ class TestFindResults:
             data.findResults(None, root=tmp_path / "gone")
 
 
+class TestVerifyRefresh:
+    """A forecast-priced run must state its test-day pull and the export must match."""
+
+    def make(self, tmp_path, every, exportEvery=None, stated=True):
+        run = tmp_path / "rolling_all"
+        rows = [dict(row, priceSource="forecast") for row in dayRows(count=2, folds=1)]
+        records.writeFold(run, REGION, 0, rows)
+        manifest = {"region": REGION, "horizon": 288}
+        if stated:
+            manifest["forecastEvery"] = every
+        records.writeManifest(run, REGION, manifest)
+        exportEvery = every if exportEvery is None else exportEvery
+        clock = pd.date_range(DAY + timedelta(minutes=5), periods=288, freq="5min")
+        (tmp_path / "actions").mkdir()
+        pd.DataFrame({
+            "forecastRunTime": [DAY + timedelta(minutes=5 * (step // exportEvery
+                                                             * exportEvery))
+                                for step in range(288)],
+            "intervalTime": clock, "forecastPrice": 50.0, "seed": 0,
+            "algo": "maskableppo", "trainMode": "warm",
+        }).to_csv(tmp_path / "actions" / f"rolling_{REGION}.csv", index=False)
+        return run
+
+    @pytest.mark.parametrize("every", [1, 48, 288])
+    def test_a_matching_export_loads(self, tmp_path, every):
+        assert data.loadRun(REGION, self.make(tmp_path, every)).manifest[
+            "forecastEvery"] == every
+
+    # A run backtested every 4 hours cannot be shown as a once-a-day run.
+    def test_a_mismatched_export_is_refused(self, tmp_path):
+        with pytest.raises(ValueError, match="disagrees with forecastEvery=288"):
+            data.loadRun(REGION, self.make(tmp_path, 288, exportEvery=48))
+
+    def test_an_unstated_refresh_is_refused(self, tmp_path):
+        with pytest.raises(ValueError, match="does not state forecastEvery"):
+            data.loadRun(REGION, self.make(tmp_path, 288, stated=False))
+
+    def test_a_missing_export_is_refused(self, tmp_path):
+        run = self.make(tmp_path, 48)
+        (tmp_path / "actions" / f"rolling_{REGION}.csv").unlink()
+        with pytest.raises(FileNotFoundError, match="actions export"):
+            data.loadRun(REGION, run)
+
+
 class TestTrajectories:
     # A day with no trajectory file gives an empty frame with the right columns.
     def test_a_missing_parquet_is_empty(self, run):

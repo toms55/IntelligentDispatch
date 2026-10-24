@@ -361,6 +361,13 @@ def refreshMatrix(dayStarts, region="SA1", horizon=config.episode_intervals,
     return grid
 
 
+def _refreshIndex(forward, step):
+    """Which refresh of a refreshMatrix stack is the latest published by `step`, and the
+    refresh spacing in intervals the stack implies."""
+    every = forward.shape[1] // forward.shape[0]
+    return min(step // every, forward.shape[0] - 1), every
+
+
 def activeRun(forward, step):
     """The path the agent reads at `step`: the latest refresh published by then.
 
@@ -369,8 +376,24 @@ def activeRun(forward, step):
     forward = np.asarray(forward, dtype=float)
     if forward.ndim == 1:
         return forward
-    every = forward.shape[1] // forward.shape[0]
-    return forward[min(step // every, forward.shape[0] - 1)]
+    return forward[_refreshIndex(forward, step)[0]]
+
+
+def decisionRuns(dayStart, forward):
+    """The run time of the path the agent read at each step, picked as activeRun picks it.
+
+    Read from the stack the agent was actually given, not from a setting, so the
+    trajectory records the pull that happened. A single path is the one 04:00 run.
+    """
+    forward = np.asarray(forward, dtype=float)
+    dayStart = pd.Timestamp(dayStart)
+    if forward.ndim == 1:
+        return [dayStart] * len(forward)
+    runs = []
+    for step in range(forward.shape[1]):
+        index, every = _refreshIndex(forward, step)
+        runs.append(dayStart + index * every * nem_interval)
+    return runs
 
 
 def decisionPath(forward):

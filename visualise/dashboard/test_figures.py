@@ -231,12 +231,12 @@ class TestForecastTile:
     # The one-day tiles read Revenue before the oracle, and the forecast tile takes the
     # place degradation had.
     def test_the_one_day_order(self, frame):
-        tiles = figures.summaryTiles(self._one(frame, "forecast"), forecastRows(48))
+        tiles = figures.summaryTiles(self._one(frame, "forecast"), 48)
         assert [tile["label"] for tile in tiles] == [
             "Captured", "Agent profit", "Revenue", "Oracle profit", "Forecast",
             "Cap Payout"]
 
-    # The wording comes from the run times in the export, so any refresh reads right.
+    # The wording comes from the verified forecastEvery, so any refresh reads right.
     @pytest.mark.parametrize("every, heading, sub", [
         (48, "Refreshed every 4 hours", "Every 4 hours, a new AEMO forecast was pulled "
          "for the backtest, starting at 04:00."),
@@ -247,8 +247,8 @@ class TestForecastTile:
         (288, "Pulled once a day", "One AEMO forecast was pulled at 04:00 and held for "
          "the whole trading day."),
     ])
-    def test_the_refresh_is_read_from_the_runs(self, frame, every, heading, sub):
-        tile = figures.summaryTiles(self._one(frame, "forecast"), forecastRows(every))[4]
+    def test_the_refresh_is_read_from_the_manifest(self, frame, every, heading, sub):
+        tile = figures.summaryTiles(self._one(frame, "forecast"), every)[4]
         assert (tile["value"], tile["sub"]) == (heading, sub)
         assert tile["accent"] == figures.forecastLine
 
@@ -256,7 +256,7 @@ class TestForecastTile:
         tile = figures.summaryTiles(self._one(frame, "realised"))[4]
         assert tile["value"] == "No forecast" and tile["accent"] is None
 
-    def test_a_missing_export_says_so(self, frame):
+    def test_an_unstated_refresh_says_so(self, frame):
         tile = figures.summaryTiles(self._one(frame, "forecast"), None)[4]
         assert tile["value"] == "Refresh unknown"
 
@@ -271,7 +271,7 @@ class TestForecastOverlay:
 
     def test_the_forecast_line_and_chip(self, trajectory):
         figure = figures.dayFigure(self._path(trajectory), [], DAY,
-                                   forecast=forecastRows(48))
+                                   forecast=forecastRows(48), every=48)
         names = [trace.name for trace in figure.data]
         assert "Forecast acted on" in names
         assert "refreshed every 4 hours" in figure.layout.title.text
@@ -307,19 +307,18 @@ class TestDayView:
         figure = figures.dayFigure(path, [], DAY)
         assert {trace.yaxis for trace in figure.data} == {None}
 
-    # A charge block hangs below the mean price and a discharge block stands above it,
-    # which is what makes the pattern readable against the path.
-    def test_the_blocks_straddle_the_mean(self, trajectory):
+    # A block is the same height whatever the price inside it: it spans the axis
+    # domain, so a spike cannot make one run look bigger than another.
+    def test_the_blocks_have_one_height(self, trajectory):
         path = data.dispatchPath(trajectory, priceSource="realised")
         clock = pd.to_datetime(path.settlementdate)
-        rule = float(path.price.mean())
         figure = figures.dayFigure(
             path, [("charge", clock.iloc[0], clock.iloc[5]),
                    ("discharge", clock.iloc[-6], clock.iloc[-1])], DAY)
         # The mean rule is a shape too, so it trails the two blocks.
         charge, discharge = figure.layout.shapes[:2]
-        assert charge.y0 < rule and charge.y1 == pytest.approx(rule)
-        assert discharge.y0 == pytest.approx(rule) and discharge.y1 > rule
+        for block in (charge, discharge):
+            assert (block.yref, block.y0, block.y1) == ("y domain", 0, 1)
 
     # Both screens fill a block with the same colour, so neither teaches a second key.
     def test_the_block_colours_match_the_forecast_screen(self, trajectory):
