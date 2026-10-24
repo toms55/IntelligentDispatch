@@ -17,9 +17,11 @@ from backtest import records
 from backtest.actions import exportName
 
 resultsRoot = Path("results")
-# Where `cli rolling` writes when it is not told otherwise. A run of its own name sits
-# beside it, so `findResults` looks for one when this is not there.
+# Where `cli rolling` writes when it is not told otherwise.
 defaultResults = resultsRoot / "rolling"
+# The runs the dashboard draws, one directory per run with a folder per region. Git
+# tracks it; `backtest.publish` is the only code that writes it.
+backtestRoot = Path("backtestResults")
 weekDays = 7
 
 # A dashboard entry is one trained model scored one way.
@@ -178,14 +180,16 @@ def actionsFile(resultsDir, region):
     `backtest.actions` names its CSV after the run, and a merged run directory is the
     run's name with `_all` appended, so the file follows `--results`: pointing the
     dashboard at another run changes the forecast numbers with every other number. The
-    Space carries it gzipped, which pandas reads the same way.
+    Space carries it gzipped, which pandas reads the same way. A run published under
+    `backtestRoot` has no exports beside it; its export is the one in
+    `results/actions/`, which git already tracks, rather than a second copy.
     """
     resultsDir = Path(resultsDir)
     name = exportName(resultsDir.name.removesuffix("_all"), region)
-    for path in (resultsDir.parent / "actions" / name,
-                 resultsDir.parent / "actions" / f"{name}.gz"):
-        if path.exists():
-            return path
+    for folder in dict.fromkeys((resultsDir.parent / "actions", resultsRoot / "actions")):
+        for path in (folder / name, folder / f"{name}.gz"):
+            if path.exists():
+                return path
     return None
 
 
@@ -224,19 +228,16 @@ def forecastPath(resultsDir, region, day, algo=None, trainMode=None, seed=None):
                         columns=list(forecastColumns))
 
 
-def findResults(given=None, root=resultsRoot):
+def findResults(given=None, root=backtestRoot):
     """The records directory to read, when the command line does not name one.
 
-    `cli rolling --results` names each experiment, so a machine holds its runs under
-    names of their own (`results/rolling2023_profit_all`) and the fixed default misses.
-    The dashboard therefore looks under `root` for a directory that holds finished
-    folds. One candidate is used. Several candidates raise, because picking one of two
-    experiments for the reader would show numbers from a run they did not ask for.
+    The dashboard draws the runs published under `backtestRoot`, so it looks there for
+    a directory that holds finished folds. One candidate is used. Several candidates
+    raise, because picking one of two experiments for the reader would show numbers
+    from a run they did not ask for.
     """
     if given is not None:
         return Path(given)
-    if availableRegions(defaultResults):
-        return Path(defaultResults)
     root = Path(root)
     found = sorted(child for child in root.iterdir()
                    if availableRegions(child)) if root.is_dir() else []
@@ -244,8 +245,8 @@ def findResults(given=None, root=resultsRoot):
         return found[0]
     if not found:
         raise FileNotFoundError(
-            f"no rolling results under {root}; run `cli rolling` first, or pass "
-            "--results")
+            f"no published backtest under {root}; run `cli rolling` and then "
+            "`python -m backtest.publish`, or pass --results")
     names = ", ".join(str(item) for item in found)
     raise FileNotFoundError(f"several runs under {root}: {names}. Pass --results to "
                             "name one")

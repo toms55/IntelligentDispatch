@@ -103,8 +103,12 @@ agent that is not published there cannot run live.
 If you would like to run it locally, the command is:
 
 ```bash
-uv run python -m visualise.dashboard --results results/[your backtest results]
+uv run python -m visualise.dashboard --results backtestResults/rolling2023_profit
 ```
+
+`backtestResults/` holds the backtests the dashboard draws, and git tracks it. A
+finished backtest gets there through `uv run python -m backtest.publish results/<run>`,
+which the folds job runs for you.
 
 I host it with some models I've trained here: https://huggingface.co/spaces/toms55/IntelligentDispatch
 

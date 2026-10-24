@@ -96,3 +96,7 @@ EOF
 
 # The whole backtest's dispatch as one CSV, in results/actions/ beside the run.
 $PY -m backtest.actions "$RESULTS"
+
+# The finished region, where the dashboard reads it and git tracks it.
+$PY -m backtest.publish "$RESULTS"
+echo "published to backtestResults/; commit it with: git add backtestResults results/actions"

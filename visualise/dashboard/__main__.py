@@ -2,8 +2,8 @@
 
     uv run python -m visualise.dashboard
 
-It reads the one run under `results/`. Pass `--results DIR` when that directory holds
-more than one run.
+It reads the one run under `backtestResults/`. Pass `--results DIR` when that directory
+holds more than one run.
 
 Backtest. Pick a model and a region at the top. Below them a date field, a stepper and
 a calendar button drive one board, which shows either the month or one day's dispatch,
@@ -510,7 +510,7 @@ def main(argv=None):
     parser.add_argument("--region", default="NSW1")
     parser.add_argument("--results", default=None,
                         help="the backtest records to read (default: the one run "
-                             f"under {data.resultsRoot}/)")
+                             f"under {data.backtestRoot}/)")
     parser.add_argument("--policies", default=str(live.defaultCheckpoints),
                         help="where training published its final agents "
                              f"(default: {live.defaultCheckpoints})")

@@ -9,18 +9,19 @@
 # covers both kinds of input:
 #
 #   1. the tracked code the upload copies, as the git tree hash of each item
-#   2. the results and the agent weights, which git does not track at all, as the name,
-#      the size and the modification time of every file that goes up
+#   2. the results and the agent weights, as the name, the size and the modification
+#      time of every file that goes up
 #
-# The second kind is why a git diff cannot drive this. `results/` and `models/` are
-# gitignored, so a new training run or a new backtest changes the Space without
-# changing one tracked file.
+# The second kind is why a git diff cannot drive this. `models/` is gitignored, so a
+# new training run changes the Space without changing one tracked file, and a new
+# backtest changes `backtestResults/` before anyone commits it.
 #
 # The defaults name the same results, models and seed as `scripts/publishSpace.sh`.
 # Keep the two in step.
 set -euo pipefail
 
-RESULTS=${RESULTS:-results/rolling2023_profit_all}
+RESULTS=${RESULTS:-backtestResults/rolling2023_profit}
+ACTIONS=${ACTIONS:-results/actions}
 MODELS=${MODELS:-models/rolling2023_profit_fc4h}
 SEED=${SEED:-0}
 
@@ -48,8 +49,8 @@ describe() {
     find "$RESULTS" -type f \( -name 'fold*.csv' -o -name 'fold*.parquet' \
       -o -name 'manifest.json' \) | sort | describe
     # Stage 2 also gzips the run's actions export, one CSV per region.
-    run=$(basename "$RESULTS"); run=${run%_all}
-    find "$(dirname "$RESULTS")/actions" -type f -name "${run}_*.csv" 2>/dev/null \
+    run=$(basename "$RESULTS")
+    find "$ACTIONS" -type f -name "${run}_*.csv" 2>/dev/null \
       | grep -E "/${run}_[A-Z]+[0-9]\.csv$" | sort | describe || true
   fi
   if [[ -d "$MODELS" ]]; then

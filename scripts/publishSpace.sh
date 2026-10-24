@@ -12,7 +12,7 @@
 # The upload holds four things and nothing else:
 #
 #   1. the packages the two screens import
-#   2. one results directory: the fold rows the backtest screen replays
+#   2. one run from `backtestResults/`: the fold rows the backtest screen replays
 #   3. `trainedPolicies/`: one published agent per region, for the forecast screen
 #   4. the Dockerfile, the requirements and the Space card
 #
@@ -23,7 +23,10 @@ set -euo pipefail
 # The Space this repository publishes. Override it with --space, or with $DASHBOARD_SPACE
 # for a test Space. Every caller reads it from here, so the name is in one place.
 SPACE=${DASHBOARD_SPACE:-toms55/IntelligentDispatch}
-RESULTS=results/rolling2023_profit_all
+RESULTS=backtestResults/rolling2023_profit
+# The run's actions exports stay in results/actions/, which git tracks; see
+# backtest/publish.py.
+ACTIONS=results/actions
 MODELS=models/rolling2023_profit_fc4h
 ALGO=maskableppo
 TRAIN_MODE=warm
@@ -76,7 +79,8 @@ printf '*.gz filter=lfs diff=lfs merge=lfs -text\n' >> "$STAGE/.gitattributes"
 # ------------------------------------------------------------- 2. the results
 say "2/5 results from $RESULTS"
 test -d "$RESULTS" || { echo "no such results directory: $RESULTS" >&2; exit 1; }
-target="$STAGE/results/$(basename "$RESULTS")"
+# The same layout every clone has, so the app finds the run without being told.
+target="$STAGE/backtestResults/$(basename "$RESULTS")"
 mkdir -p "$target"
 # Only what the backtest screen opens: the day rows, the trajectories and the manifest.
 (cd "$RESULTS" && find . -name 'fold*.csv' -o -name 'fold*.parquet' \
@@ -89,14 +93,14 @@ done
 # region from about 29 MB to a few, and pandas reads it the same way.
 run=$(basename "$RESULTS"); run=${run%_all}
 mkdir -p "$STAGE/results/actions"
-for path in "$(dirname "$RESULTS")"/actions/"$run"_*.csv; do
+for path in "$ACTIONS"/"$run"_*.csv; do
   [[ -e "$path" ]] || continue
   # Only this run, not a longer name that starts with it (rolling2023_profit_fc4h_...).
   region=$(basename "$path" .csv); region=${region#"$run"_}
   [[ "$region" == *_* ]] && continue
   gzip -c "$path" > "$STAGE/results/actions/$(basename "$path").gz"
 done
-echo "$(find "$target" "$STAGE/results/actions" -type f | wc -l) files, $(du -sh "$STAGE/results" | cut -f1)"
+echo "$(find "$target" "$STAGE/results/actions" -type f | wc -l) files, $(du -shc "$target" "$STAGE/results" | tail -1 | cut -f1)"
 
 # -------------------------------------------------------------- 3. the agents
 # One agent per region, all of one seed, so every region in the dropdown can run the
@@ -127,7 +131,7 @@ say "4/5 smoke test with the solver and archive packages blocked"
 # path reaches one of them, the Space fails on its first request rather than here, so
 # the check runs now, with those names blocked. It runs an agent over a made up price
 # path rather than the AEMO one, so the check needs no network.
-DASHBOARD_RESULTS="results/$(basename "$RESULTS")" \
+DASHBOARD_RESULTS="backtestResults/$(basename "$RESULTS")" \
 DASHBOARD_POLICIES=trainedPolicies \
 DASHBOARD_REGION="$REGION" \
   $PYTHON - "$STAGE" <<'PYTHON'

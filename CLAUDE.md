@@ -97,6 +97,32 @@ To move a trained agent to the dashboard machine, copy one region directory:
 rsync -a trainedPolicies/NSW1/ dashboard-host:~/IntelligentDispatch/trainedPolicies/NSW1/
 ```
 
+### A dashboard backtest lives in `backtestResults/`
+
+`results/` is working output and git ignores it, apart from the actions exports. The
+runs the dashboard draws are tracked, so every clone can draw them. There is exactly
+one layout:
+
+```
+backtestResults/<run>/<region>/
+    fold*.csv       one row per seed, price source and test day
+    fold*.parquet   the seed-0 trajectories the day view draws
+    manifest.json   the configuration that produced them
+```
+
+Rules:
+
+1. `backtest/publish.py` is the only code that writes it. Never copy a run in by hand.
+2. The folds job publishes each region once it has merged the seeds and exported the
+   actions. `<run>` is the results directory's name without the region, so the five
+   regional jobs of one experiment land in one run.
+3. A region is published only if `data.loadRun` can read it, so a run the dashboard
+   cannot draw is refused at publish time.
+4. The actions export is not copied. It stays in `results/actions/<run>_<region>.csv`,
+   already tracked, and `data.actionsFile` finds it there.
+5. Publishing commits nothing. Commit `backtestResults/` and `results/actions/` after a
+   backtest.
+
 ### The two dashboard screens read different things
 
 The backtest screen reads finished rows from `--results`. It replays numbers already
@@ -110,8 +136,9 @@ results: that offers a model the screen cannot load.
 
 The dashboard is hosted on a Hugging Face Space, which builds `deploy/Dockerfile` and
 serves `deploy/app.py`. `scripts/publishSpace.sh` is the only code that stages the
-upload, and the upload is a subset: the packages the two screens import, one results
-directory, one published agent per region, and `deploy/`.
+upload, and the upload is a subset: the packages the two screens import, one run from
+`backtestResults/` with its actions exports, one published agent per region, and
+`deploy/`.
 
 The Space runs on CPU Basic hardware, which has no hourly cost but needs a PRO plan to
 create. Only static Spaces are free, and a Dash application is not static.
@@ -132,9 +159,9 @@ Rules:
    publishes the Space whenever a push updates main. Run `scripts/installHooks.sh` once
    per machine, because git does not track hooks. `scripts/pushMain.sh` does the same
    job on demand.
-6. A Space publish is driven by a fingerprint, not by a git diff. `results/` and
-   `models/` are gitignored, so a new backtest or a retrained agent changes the Space
-   without changing one tracked file. `scripts/spaceFingerprint.sh` covers both: the
+6. A Space publish is driven by a fingerprint, not by a git diff. `models/` is
+   gitignored, so a retrained agent changes the Space without changing one tracked
+   file, and a new backtest changes `backtestResults/` before anyone commits it. `scripts/spaceFingerprint.sh` covers both: the
    git tree hash of each copied code item, and the name, size and modification time of
    every result file and weight that goes up. Add a new input to the upload and add it
    there in the same commit, or the hook stops noticing that input.
@@ -202,6 +229,10 @@ cover.
   - `policies.py` — `trainedPolicies/`: the layout of a finished agent, and the only
     code that writes or lists one. See the convention above.
 
+- **`backtest/`** — the rolling-origin backtest: `runner.py` runs the folds,
+  `records.py` writes them, `actions.py` exports the dispatch, and `publish.py` copies a
+  finished run into `backtestResults/`. See the convention above.
+
 - **`config.py`** — experiment design pinned in one place: episode horizon, SoC reset,
   seeds, splits, the observation layout constants, and the two oracle roles. Module
   constants are lower_snake, matching `utils/constants.py`.
@@ -228,10 +259,10 @@ cover.
   the rolling results, `figures.py` draws, `live.py` runs a published agent over the
   AEMO path published right now. `--results` points at the records, `--policies` at
   `trainedPolicies/`. With no `--results`, `data.findResults` reads the one run under
-  `results/`, because `cli rolling --results` names each experiment and so the fixed
-  default misses. Two runs there raise and name both. A forecast day also reads
-  the run's actions export, `results/actions/<run>_<region>.csv` (the results
-  directory's name without `_all`, see `data.actionsFile`). Its `forecastRunTime`
+  `backtestResults/`. Two runs there raise and name both. A forecast day also reads
+  the run's actions export, `results/actions/<run>_<region>.csv` (the run's
+  directory name without `_all`, beside it or else in `results/actions/`, see
+  `data.actionsFile`). Its `forecastRunTime`
   column is the only source of the forecast line, so pointing `--results` at another
   run changes it along with every other number. The "refreshed every …" tile states
   the manifest's `forecastEvery`, the test-day forecast pull frequency (training has
