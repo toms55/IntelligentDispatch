@@ -110,6 +110,38 @@ def manifestOf(cfg):
             "reward": "profit"}
 
 
+def trainingManifestOf(cfg):
+    """What two runs must agree on before they may share the checkpoints under outDir.
+
+    A checkpoint is found by fold number alone, so this is what pins fold N to one
+    training window and one way of training on it. start, trainWeeks and stepWeeks place
+    the window: a run that moves any of them maps fold N onto other weeks, and its agents
+    may then have trained on prices after the test days they are scored on. Everything
+    that only scores (end, priceSources, the oracle, the seeds and algos, which have
+    their own directories) is left out, so a rescore can still reuse the agents.
+    """
+    keep = {"region", "start", "trainWeeks", "stepWeeks", "warmTimesteps",
+            "coldTimesteps", "trainSource", "horizon", "rewardScale", "calendar",
+            "battery", "capDate"}
+    # The refresh rate reaches training only when training reads forecasts.
+    if cfg.trainSource == "forecast":
+        keep.add("forecastEvery")
+    return {**{key: value for key, value in cfg._asdict().items() if key in keep},
+            "reward": "profit"}
+
+
+def _requireSameTraining(cfg):
+    """Refuse to reuse checkpoints trained under a different configuration."""
+    region = records.regionDir(cfg.outDir, cfg.region)
+    if (not records.manifestPath(cfg.outDir, cfg.region).exists()
+            and any(region.glob("fold*/*/*/agent.zip"))):
+        # Checkpoints from before the manifest existed. Adopting them is the only way to
+        # resume those runs, and from here on they are held to these settings.
+        print(f"{region} holds checkpoints but no manifest; adopting this run's "
+              f"settings for them unverified", file=sys.stderr, flush=True)
+    records.requireSameManifest(cfg.outDir, cfg.region, trainingManifestOf(cfg))
+
+
 def _foldTable(cfg):
     """Every fold in the span, and the ones this run covers. Raises on either empty."""
     everyFold = folds.enumerateFolds(cfg.start, cfg.end, cfg.trainWeeks,
@@ -232,7 +264,8 @@ def _forecastSource(cfg, days):
             f"{runs[first]:%Y-%m-%d %H:%M} with {int(covered[first])} of "
             f"{int(want[first])} intervals; either the prefetch did not cover the whole "
             f"span, or AEMO published no PREDISPATCH run at {runs[first]:%H:%M} that "
-            f"day. Drop the fold with --folds if it is the archive"
+            f"day. Drop the fold with --folds if it is the archive; a warm chain then "
+            f"cannot pass it, so the folds after it need --train-modes cold"
         )
     return source
 
@@ -284,7 +317,18 @@ def checkpointDir(cfg, fold, trainMode, algo, seed):
             / f"{algo}_seed{seed}")
 
 
-def _ensureTrained(cfg, fold, trainMode, algo, seed, parent, trainPrices, scaler,
+def parentDir(cfg, fold, trainMode, algo, seed):
+    """The checkpoint a fold warm starts from, or None for a fresh fit.
+
+    The parent is the fold before it in the whole table, whichever folds this run
+    selected, so a warm agent has always seen every week up to its test window and a
+    --folds selection can resume a chain but never skip part of it."""
+    if trainMode != "warm" or fold == 0:
+        return None
+    return checkpointDir(cfg, fold - 1, trainMode, algo, seed)
+
+
+def _ensureTrained(cfg, fold, trainMode, algo, seed, trainPrices, scaler,
                    trainForecasts=None):
     """Train this fold's agent unless its checkpoint is already on disk.
 
@@ -292,11 +336,12 @@ def _ensureTrained(cfg, fold, trainMode, algo, seed, parent, trainPrices, scaler
     directory = checkpointDir(cfg, fold, trainMode, algo, seed)
     if (directory / "agent.zip").exists():
         return directory
-    warmFrom = parent if trainMode == "warm" else None
-    if warmFrom is not None and not (Path(warmFrom) / "agent.zip").exists():
+    warmFrom = parentDir(cfg, fold, trainMode, algo, seed)
+    if warmFrom is not None and not (warmFrom / "agent.zip").exists():
         raise ValueError(
-            f"fold {fold} warm starts from {warmFrom}, which holds no checkpoint. Run "
-            f"the earlier folds first, or pass trainModes=('cold',) to fit each fold fresh"
+            f"fold {fold} warm starts from fold {fold - 1} at {warmFrom}, which holds no "
+            f"checkpoint. Run the earlier folds first, or pass --train-modes cold to fit "
+            f"each fold fresh"
         )
     trainOne(
         algo, trainPrices, SchadeDegradation(*cfg.battery), seed=seed, timesteps=cfg.warmTimesteps if warmFrom else cfg.coldTimesteps,
@@ -338,6 +383,7 @@ def runRolling(cfg, onProgress=None):
     # Both checks come before _plan, because _plan solves the oracle cache. A guard that
     # fires after the solve it forbids has already spent the hours it exists to save.
     records.requireSameManifest(cfg.resultsDir, cfg.region, manifestOf(cfg))
+    _requireSameTraining(cfg)
 
     audit = auditPlan(cfg)
     if audit["missing"] and not cfg.allowSolve:
@@ -383,11 +429,8 @@ def runRolling(cfg, onProgress=None):
             for trainMode in cfg.trainModes:
                 checkpoints = {}
                 for seed in cfg.seeds:
-                    parent = (None if position == 0 else
-                              checkpointDir(cfg, plan.selected[position - 1].index,
-                                            trainMode, algo, seed))
                     checkpoints[seed] = _ensureTrained(
-                        cfg, fold.index, trainMode, algo, seed, parent, trainPrices,
+                        cfg, fold.index, trainMode, algo, seed, trainPrices,
                         plan.scaler, trainForecasts)
 
                 for source in cfg.priceSources:
@@ -408,7 +451,7 @@ def runRolling(cfg, onProgress=None):
                         rewardScale=cfg.rewardScale, forecasts=forecasts, bounds=bounds,
                     )
                     rows += _resultRows(cfg, plan, fold, algo, trainMode, source, results,
-                                        position, gaps)
+                                        gaps)
                     if cfg.trajectorySeed in results:
                         trajectories += _resultTrajectories(
                             cfg, fold, algo, trainMode, source, results[cfg.trajectorySeed],
@@ -473,18 +516,12 @@ def publishFinal(cfg, fold):
     return published
 
 
-def _resultRows(cfg, plan, fold, algo, trainMode, source, results, position, gaps):
+def _resultRows(cfg, plan, fold, algo, trainMode, source, results, gaps):
     stamp = datetime.now().isoformat(timespec="seconds")
-
-    def parentOf(seed):
-        """The checkpoint this seed warm started from, which is its own, not seed 0's."""
-        return ("" if position == 0 else
-                str(checkpointDir(cfg, plan.selected[position - 1].index,
-                                  trainMode, algo, seed)))
-
     out = []
     for seed, perWindow in sorted(results.items()):
-        parent = parentOf(seed)
+        # The checkpoint this seed warm started from, which is its own, not seed 0's.
+        parent = parentDir(cfg, fold.index, trainMode, algo, seed)
         for record in perWindow:
             day = fold.testDays[record["window"]]
             stats = plan.volatility.loc[day]
@@ -500,9 +537,8 @@ def _resultRows(cfg, plan, fold, algo, trainMode, source, results, position, gap
                               else gaps[record["window"]]),
                 "spikeIntensity": float(stats.spikeIntensity),
                 "highVol": bool(stats.highVol),
-                "timesteps": cfg.warmTimesteps if (trainMode == "warm" and position)
-                             else cfg.coldTimesteps,
-                "warmFrom": parent if trainMode == "warm" else "",
+                "timesteps": cfg.coldTimesteps if parent is None else cfg.warmTimesteps,
+                "warmFrom": "" if parent is None else str(parent),
                 "writtenAt": stamp,
             })
     return out

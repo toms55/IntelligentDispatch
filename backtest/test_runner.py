@@ -181,13 +181,12 @@ class TestWarmChain:
                 assert current["warmFrom"] == previous["outDir"] / f"maskableppo_seed{seed}"
                 assert current["timesteps"] == config.warmTimesteps
 
-    # A non-contiguous fold selection chains each fold to the previous SELECTED fold,
-    # not to the one numerically before it.
-    def test_a_sparse_selection_chains_to_the_previous_selected_fold(self, config, spy):
+    # The parent is the fold numerically before, in the whole table. Chaining fold 3 to
+    # fold 0 would hand it an agent that never saw weeks 1 and 2, so a gap is refused.
+    def test_a_sparse_selection_is_refused(self, config, spy):
         sparse = config._replace(foldFilter=frozenset({0, 3}), seeds=(0,))
-        runner.runRolling(sparse)
-        assert [call["warmFrom"] for call in spy["train"]][0] is None
-        assert spy["train"][1]["warmFrom"] == spy["train"][0]["outDir"] / "maskableppo_seed0"
+        with pytest.raises(ValueError, match="fold 3 warm starts from fold 2"):
+            runner.runRolling(sparse)
 
     # Seeds are separate chains: seed 1 never inherits from seed 0.
     def test_seeds_are_separate_chains(self, config, spy):
@@ -196,16 +195,28 @@ class TestWarmChain:
             if call["warmFrom"] is not None:
                 assert call["warmFrom"].name == f"maskableppo_seed{call['seed']}"
 
-    # One rule, not three: the parent is the previous SELECTED fold. A selection that
-    # starts partway through therefore begins a new chain rather than silently
-    # inheriting, and the empty warmFrom on its first row says so.
-    def test_a_selection_starting_partway_begins_a_new_chain(self, config, spy):
+    # A selection starting partway through resumes the chain from the fold before it.
+    # Restarting it fresh would put a cold-fit agent in rows labelled warm.
+    def test_a_selection_starting_partway_resumes_the_chain(self, config, spy):
+        runner.runRolling(config._replace(foldFilter=frozenset({0, 1}), seeds=(0,)))
         runner.runRolling(config._replace(foldFilter=frozenset({2, 3}), seeds=(0,)))
-        assert spy["train"][0]["warmFrom"] is None
-        assert spy["train"][0]["timesteps"] == config.coldTimesteps
+        first, second = spy["train"][1], spy["train"][2]
+        assert second["warmFrom"] == first["outDir"] / "maskableppo_seed0"
+        assert second["timesteps"] == config.warmTimesteps
         frame = records.readDays(config.resultsDir, REGION)
-        assert (frame[frame.fold == 2].warmFrom == "").all()
-        assert (frame[frame.fold == 3].warmFrom != "").all()
+        assert (frame[frame.fold == 2].warmFrom
+                == str(first["outDir"] / "maskableppo_seed0")).all()
+
+    def test_a_selection_starting_partway_with_no_parent_is_refused(self, config, spy):
+        with pytest.raises(ValueError, match="fold 2 warm starts from fold 1"):
+            runner.runRolling(config._replace(foldFilter=frozenset({2, 3}), seeds=(0,)))
+        assert spy["train"] == []
+
+    # Cold folds inherit nothing, so any selection of them is fine.
+    def test_a_sparse_cold_selection_runs(self, config, spy):
+        runner.runRolling(config._replace(trainModes=("cold",),
+                                          foldFilter=frozenset({0, 3}), seeds=(0,)))
+        assert len(spy["train"]) == 2
 
     # The cold train mode is independent by construction and never inherits anything.
     def test_the_cold_mode_never_warm_starts(self, config, spy):
@@ -306,6 +317,55 @@ class TestResume:
         runner.runRolling(config)
         with pytest.raises(ValueError, match="trainWeeks"):
             runner.runRolling(config._replace(trainWeeks=5))
+
+
+class TestCheckpointReuse:
+    # A checkpoint is found by fold number, so a run into a fresh result set but the same
+    # outDir would otherwise score agents trained some other way. A shifted start maps
+    # fold N onto other weeks: the agent may have trained on prices after its test days.
+    def test_a_shifted_span_is_refused(self, config, spy, tmp_path):
+        runner.runRolling(config)
+        shifted = config._replace(start=START + timedelta(weeks=1),
+                                  resultsDir=tmp_path / "other")
+        with pytest.raises(ValueError, match="start"):
+            runner.runRolling(shifted)
+
+    def test_a_changed_training_budget_is_refused(self, config, spy, tmp_path):
+        runner.runRolling(config)
+        with pytest.raises(ValueError, match="warmTimesteps"):
+            runner.runRolling(config._replace(warmTimesteps=20,
+                                              resultsDir=tmp_path / "other"))
+
+    def test_a_changed_training_source_is_refused(self, config, spy, tmp_path):
+        runner.runRolling(config)
+        changed = config._replace(trainSource="forecast", resultsDir=tmp_path / "other")
+        with pytest.raises(ValueError, match="trainSource"):
+            runner._requireSameTraining(changed)
+
+    # A rescore at another refresh rate reads the same realised-trained agents, so it
+    # is allowed, and trains nothing.
+    def test_a_rescore_reuses_the_agents(self, config, spy, tmp_path):
+        runner.runRolling(config)
+        trained = len(spy["train"])
+        runner.runRolling(config._replace(forecastEvery=1, resultsDir=tmp_path / "other"))
+        assert len(spy["train"]) == trained
+
+    # Under forecast training the refresh rate changes what the agent learnt from.
+    def test_forecast_training_pins_the_refresh_rate(self, config):
+        manifest = runner.trainingManifestOf(config._replace(trainSource="forecast"))
+        assert "forecastEvery" in manifest
+        assert "forecastEvery" not in runner.trainingManifestOf(config)
+
+    # Checkpoints from before the manifest are adopted with a warning, then held to it.
+    def test_unstamped_checkpoints_are_adopted_with_a_warning(self, config, spy, tmp_path,
+                                                              capsys):
+        runner.runRolling(config)
+        records.manifestPath(config.outDir, REGION).unlink()
+        runner.runRolling(config._replace(resultsDir=tmp_path / "other"))
+        assert "unverified" in capsys.readouterr().err
+        with pytest.raises(ValueError, match="warmTimesteps"):
+            runner.runRolling(config._replace(warmTimesteps=20,
+                                              resultsDir=tmp_path / "third"))
 
 
 class TestDryRun:

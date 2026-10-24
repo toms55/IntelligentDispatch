@@ -322,6 +322,13 @@ cover.
   start). The rolling manifest carries `reward: profit`, so a result set from the old
   baselined reward refuses to resume under it. The existing `data_cache/lp_baseline`
   entries are continuous, so none of them match the rolling oracle.
+- **A rolling checkpoint is found by fold number, so `--out` carries its own manifest.**
+  `runs/.../<region>/manifest.json` pins what fold N was trained on and how
+  (`runner.trainingManifestOf`). A run that moves the span start, the train or step
+  weeks, the timesteps or the train source needs a new `--out`, or it would score
+  agents trained on other weeks, possibly after their test days. A rescore that only
+  changes how it scores reuses the agents. A warm fold's parent is the fold before it
+  in the whole table, so `--folds` resumes a chain and refuses to skip part of one.
 - **Rolling test windows never overlap.** `enumerateFolds` refuses `stepWeeks` below
   `testWeeks`, because a shared trading day would count twice in every pooled figure.
 - **Episode windows align to 04:00, the NEM trading day boundary, and that is
