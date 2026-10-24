@@ -124,6 +124,29 @@ Rules:
 5. Publishing commits nothing. Commit `results/backtestResults/` and `results/actions/`
    after a backtest.
 
+### Solved oracle days live in `oracleResults/`
+
+`data_cache/` is gitignored, so a solved day reaches another machine only through
+`oracleResults/`. That directory is tracked. It holds one JSON record per window, named
+by `baseline.cacheKey`, which is the same name the local cache uses.
+
+Rules:
+
+1. `rl/baseline.recordPath` is the only definition of the read order. It reads
+   `oracleResults/` first, then `data_cache/lp_baseline`. Never join either path by hand.
+2. The published corpus wins on purpose. `cacheKey` ignores the solver time limit, so a
+   day re-solved at a longer limit keeps its name. A local cache can still hold the loose
+   bound under that same name.
+3. A new solve is written to `data_cache/lp_baseline`, never to `oracleResults/`.
+   Publishing a day is a separate copy, and it is deliberate.
+4. An explicit `cacheDir` skips the published corpus, which keeps the tests hermetic.
+5. The corpus is keyed at `calendar=False`, `discretePower=True` and
+   `gap=config.backtest_gap`. Those are the rolling backtest's own parameters. Ask for
+   any other combination and every lookup misses, and the day solves again.
+6. Quote `dualBound`, never `profit`. 424 days in the corpus stopped unsolved and carry
+   the do-nothing schedule, so their `profit` is 0.0 while their bound is still valid.
+   `baseline.timedOut` names those days.
+
 ### The two dashboard screens read different things
 
 The backtest screen reads finished rows from `--results`. It replays numbers already

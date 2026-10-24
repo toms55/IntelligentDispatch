@@ -19,15 +19,16 @@ mkdir -p runs
 
 say() { printf '\n========== %s  (%s) ==========\n' "$1" "$(date +%H:%M)"; }
 
-# Stage 1 is the long one: 731 discrete windows, and nothing is cached yet, because the
-# existing data_cache/lp_baseline entries are continuous and the key includes the mode.
+# Stage 1 is the long one: 731 discrete windows. A day already in oracleResults/ is read
+# from there, so only an unpublished day solves.
 # Measured on NSW1 at this gap, discrete, no calendar, single thread: 107s on a quiet day,
 # 194s on an average one, and past 300s on a volatile one. Budget 10 to 14 hours at six
 # workers, and expect the volatile days to use the whole 1800s limit.
 #
 # The limit matters more than it looks. cacheKey does not record it, so a day that stops
 # on the limit writes a loose dual bound that the cache then serves for good. Raising
-# --time-limit later cannot reach those records. Delete the files to redo them.
+# --time-limit later cannot reach those records. Delete the files to redo them, in
+# oracleResults/ as well as data_cache/lp_baseline.
 say "1/2 oracle cache: discrete, no calendar, 731 windows (52 folds use 728)"
 uv run python -u -m cli baseline --split "$SPAN" --region "$REGION" --no-calendar \
   --gap "$GAP" --time-limit "$LIMIT" --workers "$WORKERS" --verbose

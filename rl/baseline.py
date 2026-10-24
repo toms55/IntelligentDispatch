@@ -11,6 +11,22 @@ from optimisation.lp import solve
 from utils import nem_interval_hours
 
 cacheRoot = Path(__file__).resolve().parent.parent / "data_cache" / "lp_baseline"
+# The tracked oracle corpus. data_cache/ is gitignored, so a solved day reaches another
+# machine only through oracleResults/. It wins over the local cache, because cacheKey
+# ignores the solver time limit: a day re-solved at a longer limit keeps its name, and
+# the local copy can still hold the loose bound under that same name.
+publishedRoot = Path(__file__).resolve().parent.parent / "oracleResults"
+
+
+def recordPath(name, cacheDir=None):
+    """Where `name` is read from: the published corpus first, then the local cache.
+
+    An explicit `cacheDir` is used alone, so a test stays off the published corpus.
+    """
+    if cacheDir is not None:
+        return Path(cacheDir) / name
+    published = publishedRoot / name
+    return published if published.exists() else cacheRoot / name
 
 
 def chunkWindows(length, horizon=config.episode_intervals):
@@ -43,11 +59,15 @@ def solveWindow(prices, timestamps, region, horizon=config.episode_intervals,
                 threads=None, cacheDir=None):
     """One window's oracle solution, from cache when it is there."""
     model = model or _defaultModel()
-    directory = Path(cacheDir) if cacheDir else cacheRoot
-    path = directory / cacheKey(region, timestamps[0], horizon, calendar,
-                                discretePower, model, initialSoc, gap)
+    name = cacheKey(region, timestamps[0], horizon, calendar, discretePower, model,
+                    initialSoc, gap)
+    path = recordPath(name, cacheDir)
     if path.exists():
         return json.loads(path.read_text())
+    # A new solve is working state, so it is written locally even when the published
+    # corpus is what gets read. Publishing a day is a separate, deliberate copy.
+    directory = Path(cacheDir) if cacheDir else cacheRoot
+    path = directory / name
 
     common = dict(initialSoc=initialSoc, dtHours=dtHours, calendar=calendar,
                   timeLimit=timeLimit, gap=gap, threads=threads)
