@@ -114,11 +114,8 @@ checkToken() {
     return 0
   fi
   local status
-  # Basic auth as the Space owner, which is what git sends over HTTPS. A made-up user
-  # name authenticates as that other account, and Hugging Face then reports read access
-  # on a token that may write.
   status=$(
-    printf 'user = "%s:%s"\n' "${SPACE%%/*}" "$HF_TOKEN" | curl -s --config - \
+    printf 'header = "Authorization: Bearer %s"\n' "$HF_TOKEN" | curl -s --config - \
       -o /dev/null -w '%{http_code}' \
       -X POST "https://huggingface.co/spaces/$SPACE.git/info/lfs/objects/batch" \
       -H "Accept: application/vnd.git-lfs+json" \
@@ -309,9 +306,8 @@ fi
     # reach the repository or a shell history. Stage 0 has a token by now, so block
     # every prompt: a prompt here means the helper failed, and an unanswered prompt
     # pushes with empty credentials.
-    env -u GIT_ASKPASS -u SSH_ASKPASS HF_TOKEN="$HF_TOKEN" HF_USER="${SPACE%%/*}" \
-      GIT_TERMINAL_PROMPT=0 git \
-      -c credential.helper='!f() { test "$1" = get && printf "username=%s\npassword=%s\n" "$HF_USER" "$HF_TOKEN"; }; f' \
+    env -u GIT_ASKPASS -u SSH_ASKPASS HF_TOKEN="$HF_TOKEN" GIT_TERMINAL_PROMPT=0 git \
+      -c credential.helper='!f() { test "$1" = get && printf "username=hf\npassword=%s\n" "$HF_TOKEN"; }; f' \
       push --force space main
   else
     echo "committed. To upload:"
