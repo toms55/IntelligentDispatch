@@ -6,6 +6,7 @@ from pathlib import Path
 
 import config
 from degradation.schade import SchadeDegradation
+from optimisation import dp
 from optimisation.lp import solve
 from utils import nem_interval_hours
 
@@ -30,6 +31,10 @@ def cacheKey(region, start, horizon, calendar, discretePower, model, initialSoc,
         f"rc={model.replacementCost!r}",
         f"soc={initialSoc!r}",
         f"gap={gap!r}",
+        # Discrete windows are solved exactly by optimisation/dp.py now. Without this
+        # part the key would serve an older MILP record, whose dual bound can sit above
+        # the true optimum.
+        f"solver={'dp' if discretePower else 'milp'}",
     ]
     digest = hashlib.sha1("|".join(parts).encode()).hexdigest()[:16]
     return f"{region}_{start.date()}_{start.strftime('%H%M')}_{digest}.json"
@@ -48,9 +53,15 @@ def solveWindow(prices, timestamps, region, horizon=config.episode_intervals,
     if path.exists():
         return json.loads(path.read_text())
 
-    schedule = solve(list(prices), model, initialSoc=initialSoc, dtHours=dtHours,
-                     calendar=calendar, discretePower=discretePower,
-                     timeLimit=timeLimit, gap=gap, threads=threads)
+    if discretePower:
+        # Exact, and milliseconds rather than minutes. timeLimit, gap and threads do not
+        # apply: there is no search to cut short.
+        schedule = dp.solve(list(prices), model, initialSoc=initialSoc,
+                            dtHours=dtHours, calendar=calendar)
+    else:
+        schedule = solve(list(prices), model, initialSoc=initialSoc, dtHours=dtHours,
+                         calendar=calendar, discretePower=False,
+                         timeLimit=timeLimit, gap=gap, threads=threads)
     record = {
         "start": timestamps[0].isoformat(),
         "profitPerInterval": list(schedule.profitPerInterval),

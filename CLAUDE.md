@@ -97,6 +97,14 @@ cover.
   which is the agent's own action set, and is the only mode that bounds the agent
   fairly. Four extra binaries per interval do it; `_discretePower` explains why
   `atFull`/`atEmpty` cannot be relaxed to continuous.
+  `dp.py` solves that discrete mode exactly, and is what `rl/baseline.py` now calls
+  for it. With three actions the state is one number, so the problem is a shortest
+  path over about 5700 reachable energy levels, and value iteration is exact. There
+  is no gap, no time limit and no dual bound above the optimum. Measured on one week
+  of NSW1: 2.5s against 363s, and the MILP's incumbent was short by up to 1.2%.
+  `lp.py` stays for `discretePower=False`, where power is continuous and no finite
+  state set exists. `dp.valueFunction` also returns the optimum at every state and
+  interval, not only along one path, at the same cost.
 
 - **`rl/`** — the agent.
   - `features.py` owns the observation layout and is the single definition of it.
@@ -144,19 +152,27 @@ cover.
 - **Always pass `threads=1` when solving windows in parallel.** HiGHS otherwise takes
   every core in every worker, and the oversubscription costs an order of magnitude: four
   unrestricted workers ran at about 8 minutes a window against 44 seconds for one solve
-  alone. `buildBaseline` sets it automatically when `workers > 1`.
+  alone. `buildBaseline` sets it automatically when `workers > 1`. This applies to the
+  continuous windows only. A discrete window goes to `optimisation/dp.py`, which is
+  single-threaded numpy and takes milliseconds, so `--workers` buys it nothing.
 - **Quote `Schedule.dualBound`, never `Schedule.profit`, as the bound.** A gap-limited or
   time-limited solve returns an incumbent that can sit *below* the true optimum, and a
   bound that is too low understates the agent's shortfall. Measured on SA1 2024-01-10
   discrete: 1555s to prove 21.8041, or 82s to return 21.7269 with a dual bound of
   21.8353. Note HiGHS minimises internally, so pulp negates a maximisation and the raw
   `mip_dual_bound` comes back with the opposite sign — `_solverInfo` flips it.
+  A discrete window no longer has this problem: `dp.py` is exact and sets `dualBound`
+  equal to `profit` and `mipGap` to 0. Quoting `dualBound` stays the rule, because it
+  is right in both modes.
 - **`cacheKey` does not record the solver time limit.** A window that stops on the limit
   writes a loose dual bound, and `solveWindow` then serves that record from cache for
   good. Raising `--time-limit` later cannot reach it, so delete the files to redo them.
   Measured on NSW1 2024-01-10, discrete, no calendar, 0.02 gap: a 300s limit stopped with
   the incumbent at 14.6996 and the bound still at 17.7368, above the continuous bound of
   17.1258 and so useless as a bound. This is why the rolling backtest uses 1800s.
+  This now bites the continuous windows only. `cacheKey` records which solver wrote a
+  record, so the discrete entries from before `dp.py` are not served, and the DP cannot
+  write a loose bound in the first place.
 - **The rolling backtest uses one discrete oracle for both roles**, unlike `train`/`eval`
   below. Paying for discrete power on the training days buys the reward baseline nothing,
   but one oracle under one set of settings produces every figure the backtest quotes.

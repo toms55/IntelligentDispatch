@@ -30,24 +30,31 @@ def series():
 
 @pytest.fixture
 def fakeSolve(monkeypatch):
-    """Stand in for the MILP, recording how often it ran."""
+    """Stand in for both oracles, recording which one ran and how often.
+
+    A discrete window goes to optimisation/dp.py and a continuous one to the MILP, so
+    both need patching or the real solver runs. Each call records its `solver`.
+    """
     calls = []
 
-    def solve(prices, model, **kwargs):
-        calls.append({"prices": list(prices), **kwargs})
-        n = len(prices)
-        return Schedule(
-            kwargs.get("initialSoc", 0.5), [0.5] * n, [0.0] * n, [0.0] * n,
-            3.0, 1.0, 2.0,
-            revenuePerInterval=[3.0 / n] * n,
-            cyclePerInterval=[0.5 / n] * n,
-            calendarPerInterval=[0.5 / n] * n,
-            degradationPerInterval=[1.0 / n] * n,
-            profitPerInterval=[2.0 / n] * n,
-            status="Optimal", mipGap=0.001, dualBound=2.01,
-        )
+    def recorder(solver):
+        def solve(prices, model, **kwargs):
+            calls.append({"solver": solver, "prices": list(prices), **kwargs})
+            n = len(prices)
+            return Schedule(
+                kwargs.get("initialSoc", 0.5), [0.5] * n, [0.0] * n, [0.0] * n,
+                3.0, 1.0, 2.0,
+                revenuePerInterval=[3.0 / n] * n,
+                cyclePerInterval=[0.5 / n] * n,
+                calendarPerInterval=[0.5 / n] * n,
+                degradationPerInterval=[1.0 / n] * n,
+                profitPerInterval=[2.0 / n] * n,
+                status="Optimal", mipGap=0.001, dualBound=2.01,
+            )
+        return solve
 
-    monkeypatch.setattr(baseline, "solve", solve)
+    monkeypatch.setattr(baseline, "solve", recorder("milp"))
+    monkeypatch.setattr(baseline.dp, "solve", recorder("dp"))
     return calls
 
 
@@ -124,12 +131,14 @@ class TestSolveWindow:
         assert record["dualBound"] == 2.01
         assert record["dualBound"] >= record["profit"]
 
-    def test_passes_the_configured_gap_and_time_limit(self, paper, series, fakeSolve,
-                                                     tmp_path):
+    def test_passes_the_configured_gap_and_time_limit_to_the_milp(self, paper, series,
+                                                                  fakeSolve, tmp_path):
+        """Only the continuous window takes them. The DP has no search to cut short."""
         baseline.solveWindow(
             series.to_numpy(), list(series.index), "SA1", horizon=len(series),
-            model=paper, cacheDir=tmp_path,
+            model=paper, cacheDir=tmp_path, discretePower=False,
         )
+        assert fakeSolve[0]["solver"] == "milp"
         assert fakeSolve[0]["gap"] == config.oracle_gap
         assert fakeSolve[0]["timeLimit"] == config.oracle_time_limit
 
@@ -139,7 +148,16 @@ class TestSolveWindow:
             series.to_numpy(), list(series.index), "SA1", horizon=len(series),
             model=paper, cacheDir=tmp_path,
         )
-        assert fakeSolve[0]["discretePower"] is True
+        assert fakeSolve[0]["solver"] == "dp"
+
+    def test_the_continuous_window_still_goes_to_the_milp(self, paper, series,
+                                                          fakeSolve, tmp_path):
+        baseline.solveWindow(
+            series.to_numpy(), list(series.index), "SA1", horizon=len(series),
+            model=paper, cacheDir=tmp_path, discretePower=False,
+        )
+        assert fakeSolve[0]["solver"] == "milp"
+        assert fakeSolve[0]["discretePower"] is False
 
 
 class TestBuildBaseline:

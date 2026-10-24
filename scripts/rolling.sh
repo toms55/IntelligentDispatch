@@ -19,15 +19,13 @@ mkdir -p runs
 
 say() { printf '\n========== %s  (%s) ==========\n' "$1" "$(date +%H:%M)"; }
 
-# Stage 1 is the long one: 731 discrete windows, and nothing is cached yet, because the
-# existing data_cache/lp_baseline entries are continuous and the key includes the mode.
-# Measured on NSW1 at this gap, discrete, no calendar, single thread: 107s on a quiet day,
-# 194s on an average one, and past 300s on a volatile one. Budget 10 to 14 hours at six
-# workers, and expect the volatile days to use the whole 1800s limit.
+# Stage 1 used to be the long one. The discrete windows now go to optimisation/dp.py,
+# which solves them exactly by dynamic programming, so 731 windows take seconds rather
+# than the 10 to 14 hours the MILP needed at six workers.
 #
-# The limit matters more than it looks. cacheKey does not record it, so a day that stops
-# on the limit writes a loose dual bound that the cache then serves for good. Raising
-# --time-limit later cannot reach those records. Delete the files to redo them.
+# --gap, --time-limit and --workers no longer do anything to a discrete window. They
+# stay on the command line because the flags are shared with the continuous mode, and
+# because --gap is part of the cache key.
 say "1/2 oracle cache: discrete, no calendar, 731 windows (52 folds use 728)"
 uv run python -u -m cli baseline --split "$SPAN" --region "$REGION" --no-calendar \
   --gap "$GAP" --time-limit "$LIMIT" --workers "$WORKERS" --verbose
