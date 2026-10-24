@@ -1,4 +1,6 @@
 """Tests for backtest/publish.py. Run with: uv run pytest backtest/ -q"""
+import json
+
 import pytest
 
 from backtest import publish, records
@@ -73,3 +75,22 @@ class TestPublish:
         stale.write_text("")
         publish.publish(results / "rolling", root)
         assert not stale.exists()
+
+    # A run from before the rename publishes under today's names, its values untouched.
+    def test_an_old_run_is_published_under_current_names(self, results, tmp_path):
+        run = finishedRun(results, "old")
+        regionDir = records.regionDir(run / "all", REGION)
+        for path in regionDir.glob("fold*.csv"):
+            header, _, body = path.read_text().partition("\n")
+            path.write_text(header.replace("trainMode", "arm") + "\n" + body)
+        manifest = records.manifestPath(run / "all", REGION)
+        manifest.write_text(manifest.read_text().replace('"region"', '"arms": ["warm"], "region"'))
+        root = tmp_path / "backtestResults"
+        publish.publish(run, root)
+        target = records.regionDir(root / "old", REGION)
+        for path in regionDir.glob("fold*.csv"):
+            got = (target / path.name).read_text().partition("\n")
+            assert "trainMode" in got[0].split(",")
+            assert got[2] == path.read_text().partition("\n")[2]
+        manifest = json.loads(records.manifestPath(root / "old", REGION).read_text())
+        assert manifest["trainModes"] == ["warm"] and "arms" not in manifest

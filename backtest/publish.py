@@ -18,13 +18,45 @@ on the screen. Publishing replaces the region whole, and commits nothing: `git a
 backtestResults` is still the reader's.
 """
 import argparse
+import json
 import shutil
 from pathlib import Path
+
+import pandas as pd
 
 from backtest import records
 from visualise.dashboard import data
 
 published = ("fold*.csv", "fold*.parquet", "manifest.json")
+
+
+def copyCurrent(source, target):
+    """Copy one published file, under today's names if it predates the rename of the
+    "arm" column to trainMode (and the manifest's "arms" to trainModes).
+
+    Only the name changes: a CSV's header line is rewritten and its rows are copied as
+    text, so no value is re-parsed and re-printed. Files that already use the current
+    names are copied byte for byte.
+    """
+    if source.suffix == ".csv":
+        header, _, body = source.read_text().partition("\n")
+        fields = header.split(",")
+        if "arm" not in fields:
+            return shutil.copy2(source, target)
+        fields[fields.index("arm")] = "trainMode"
+        target.write_text(",".join(fields) + "\n" + body)
+    elif source.suffix == ".parquet":
+        frame = pd.read_parquet(source)
+        if "arm" not in frame:
+            return shutil.copy2(source, target)
+        frame.rename(columns={"arm": "trainMode"}).to_parquet(target, index=False)
+    else:
+        manifest = json.loads(source.read_text())
+        if "arms" not in manifest:
+            return shutil.copy2(source, target)
+        manifest["trainModes"] = manifest.pop("arms")
+        # As records.writeManifest formats it.
+        target.write_text(json.dumps(manifest, indent=2, sort_keys=True, default=str))
 
 
 def runName(runDir, region):
@@ -57,7 +89,7 @@ def publish(runDir, root=data.backtestRoot, name=None):
         target.mkdir(parents=True)
         for pattern in published:
             for path in sorted(source.glob(pattern)):
-                shutil.copy2(path, target / path.name)
+                copyCurrent(path, target / path.name)
         try:
             data.loadRun(region, run)
         except Exception:
