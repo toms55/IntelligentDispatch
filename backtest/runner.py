@@ -12,6 +12,7 @@ nothing on its own.
 The checkpoint on disk is the training record and the fold CSV is the completion record,
 so resume needs no separate log.
 """
+import gc
 import json
 import sys
 from datetime import datetime
@@ -443,6 +444,11 @@ def runRolling(cfg, onProgress=None):
             actions.appendRows(cfg.actionsFile,
                                actions.actionRows(pd.DataFrame(decisions), cfg.region))
         records.writeFold(cfg.resultsDir, cfg.region, fold.index, rows)
+        # A trained agent sits in reference cycles with its env, so under --train-source
+        # forecast each dead fold pins its training grid (about 240 MB at a 5-minute
+        # refresh) until Python next runs a full collection, which training rarely
+        # triggers. Five seeds at 48 GB were killed at fold 103 that way. Collect per fold.
+        gc.collect()
         if onProgress:
             onProgress(position + 1, len(plan.selected), fold)
     publishFinal(cfg, plan.selected[-1])
