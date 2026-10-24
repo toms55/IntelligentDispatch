@@ -98,69 +98,15 @@ rsync -a trainedPolicies/NSW1/ dashboard-host:~/IntelligentDispatch/trainedPolic
 The current forecast screen lists the agents in `trainedPolicies/` and nothing else. An
 agent that is not published there cannot run live.
 
-## Hosting the dashboard
+## The Dashboard
 
-The dashboard runs on a Hugging Face Space. The CPU Basic hardware gives 2 vCPU and
-16 GB of memory at no hourly cost, and reaches NEMWeb, which the current forecast
-screen needs. A Space is a git repository, so an update is a push.
-
-The hardware costs nothing per hour, but creating a Space that runs compute needs a
-PRO plan at $9 a month. Only static Spaces are free, and a Dash application is not
-static.
-
-What the Space holds is not the repository. `scripts/publishSpace.sh` stages four
-things, and nothing else:
-
-1. the packages the two screens import
-2. one results directory: the fold rows the backtest screen replays
-3. `trainedPolicies/`: one published agent per region
-4. `deploy/`: the Dockerfile, the requirements and the Space card
-
-The oracle, the solver and the AEMO archive readers stay out, because no screen solves.
-`deploy/requirements.txt` therefore drops pulp, highspy, nemosis and nemseer, and takes
-torch from the CPU index. Stage 4 of the script builds the app with those four names
-blocked, so an import that reaches one of them fails at home rather than on the Space.
-
-To publish:
-
-1. Create a Space on huggingface.co. Pick the Docker SDK and CPU Basic hardware. A
-   static Space cannot serve this application.
-2. Log in once, so git can push: `pip install huggingface_hub && hf auth login`.
-3. Stage and check the upload, without pushing it:
+If you would like to run it locally, the command is:
 
 ```bash
-bash scripts/publishSpace.sh
+uv run python -m visualise.dashboard --results results/[your backtest results]
 ```
 
-4. Push it:
-
-```bash
-bash scripts/publishSpace.sh --space <user>/<name> --push
-```
-
-The defaults take the 5 agents of seed 0, one per region, from
-`models/rolling2023_profit_fc4h`, and the records from `results/rolling2023_profit_all`.
-`--models`, `--seed` and `--results` change that. The forecast screen offers one agent
-per region plus the threshold rule, so every region in the dropdown can run.
-
-A better agent reaches the Space the same way: train it, then run the script again. It
-pushes one commit over the last one, so the history does not grow by the size of the
-weights every time.
-
-Two limits of CPU Basic:
-
-- The Space sleeps after two days with no visitor, and the next request wakes it. That
-  takes about a minute.
-- The upload is about 75 MB, and most of it is the per-fold trajectories. A second
-  results directory doubles it.
-
-`deploy/app.py` is the entry point the Space serves. It reads `DASHBOARD_REGION`,
-`DASHBOARD_RESULTS` and `DASHBOARD_POLICIES`, because a host sets environment variables
-and does not pass arguments. Locally, run the module instead:
-
-```bash
-uv run python -m visualise.dashboard --results results/rolling2023_profit_all
-```
+I host it with some models I've trained here: https://huggingface.co/spaces/toms55/IntelligentDispatch
 
 ## Data
 
