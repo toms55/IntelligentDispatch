@@ -131,7 +131,7 @@ def summaryTiles(frame, every=None):
              "raw": raw, "sub": sub} for label, value, raw, sub in rows]
 
 
-def forecastTiles(frame, initialSoc=config.initial_soc):
+def forecastTiles(frame, initialSoc):
     """The headline numbers over the forecast board: what the plan earns, and where the
     battery starts.
 
@@ -142,6 +142,11 @@ def forecastTiles(frame, initialSoc=config.initial_soc):
     A board drawn without a policy still carries a state of charge, because the screen
     assumes that rather than the agent choosing it. Its revenue is unknown, so it reads
     as no data in the way every other tile does.
+
+    `initialSoc` has no default. The forecast screen owns that number, as
+    `live.defaultSoc`, and a second default here would be a second answer to the same
+    question. It is not `config.initial_soc`: that one is the episode reset, and it is
+    zero.
     """
     planned = not frame.empty and "revenue" in frame
     revenue = float(frame.revenue.iloc[-1]) if planned else float("nan")

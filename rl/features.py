@@ -11,6 +11,7 @@ import math
 import numpy as np
 
 import config
+from utils import nem_interval
 from utils.market import market_price_floor, marketPriceCap
 
 
@@ -91,9 +92,34 @@ def priceFeatures(prices, start, horizonEnd, scaler):
     return out
 
 
-def observation(soc, prices, start, horizonEnd, scaler):
-    """The full vector: SoC, forward prices, time remaining."""
-    remaining = (horizonEnd - start) / (horizonEnd if horizonEnd else 1)
+def tradingDayRemaining(stamp):
+    """The fraction of the 04:00-to-04:00 NEM trading day left when `stamp`'s interval
+    opens.
+
+    Read from the clock, not from the episode. An episode-relative fraction is the same
+    number only while an episode is a whole trading day that starts at 04:00, and it is
+    wrong everywhere else: the current forecast screen starts its episode at the run
+    time, so it read 1.0 at every hour of the day, and a horizon below 288 would do the
+    same from its second window on.
+
+    AEMO stamps an interval by its end, so the measurement runs from the interval's
+    start. The 04:05 stamp therefore reads exactly 1.0 and the 04:00 stamp 1/288, which
+    reproduces the old formula interval for interval on an aligned 288-interval episode.
+    Every published agent trained under that, so this changes no weight's meaning.
+    """
+    opened = stamp - nem_interval
+    elapsed = (opened.hour + opened.minute / 60 - 4) % 24
+    return 1.0 - elapsed / 24
+
+
+def observation(soc, prices, start, horizonEnd, scaler, remaining):
+    """The full vector: SoC, forward prices, time left in the trading day.
+
+    `remaining` comes from `tradingDayRemaining`. The caller passes it rather than a
+    stamp because only the caller knows whether an interval is still open: the
+    observation returned on truncation has no interval left, and its price slots are all
+    zero, so its clock slot is zero too.
+    """
     values = [soc] + priceFeatures(prices, start, horizonEnd, scaler) + [remaining]
     return np.asarray(values, dtype=np.float32)
 

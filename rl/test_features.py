@@ -155,7 +155,7 @@ class TestPriceFeatures:
 
 class TestObservation:
     def test_assembles_the_slots_in_order(self, ramp, scaler):
-        got = features.observation(0.42, ramp, 0, config.episode_intervals, scaler)
+        got = features.observation(0.42, ramp, 0, config.episode_intervals, scaler, 1.0)
         assert got.shape == (config.observation_size,)
         assert got[0] == pytest.approx(0.42, abs=1e-6)
         priceEnd = 1 + config.price_feature_count
@@ -166,13 +166,41 @@ class TestObservation:
         assert got[-1] == pytest.approx(1.0)
 
     def test_a_forecast_equal_to_the_realised_prices_gives_the_same_vector(self, ramp, scaler):
-        realised = features.observation(0.5, ramp, 24, config.episode_intervals, scaler)
-        forecast = features.observation(0.5, list(ramp), 24, config.episode_intervals, scaler)
+        realised = features.observation(0.5, ramp, 24, config.episode_intervals, scaler, 0.9)
+        forecast = features.observation(0.5, list(ramp), 24, config.episode_intervals, scaler, 0.9)
         assert np.array_equal(realised, forecast)
 
     def test_is_float32(self, ramp, scaler):
-        got = features.observation(0.5, ramp, 0, config.episode_intervals, scaler)
+        got = features.observation(0.5, ramp, 0, config.episode_intervals, scaler, 1.0)
         assert got.dtype == np.float32
+
+
+class TestTradingDayRemaining:
+    """The clock slot. It must reproduce the old episode-relative formula on an aligned
+    288-interval day, or every published agent reads a slot that moved under it."""
+
+    def test_reproduces_the_old_formula_over_an_aligned_day(self):
+        pandas = pytest.importorskip("pandas")
+        stamps = pandas.date_range("2024-01-10 04:05", periods=config.episode_intervals,
+                                   freq="5min")
+        for step, stamp in enumerate(stamps):
+            old = (config.episode_intervals - step) / config.episode_intervals
+            assert features.tradingDayRemaining(stamp) == pytest.approx(old, abs=1e-12)
+
+    def test_the_trading_day_opens_at_one_and_closes_at_one_interval(self):
+        pandas = pytest.importorskip("pandas")
+        assert features.tradingDayRemaining(pandas.Timestamp("2024-01-10 04:05")) == 1.0
+        assert features.tradingDayRemaining(
+            pandas.Timestamp("2024-01-11 04:00")
+        ) == pytest.approx(1 / config.episode_intervals)
+
+    def test_reads_the_clock_not_the_episode(self):
+        """The bug this replaces: the current forecast screen starts its episode at the
+        run time, so an episode-relative fraction read 1.0 at every hour of the day."""
+        pandas = pytest.importorskip("pandas")
+        assert features.tradingDayRemaining(
+            pandas.Timestamp("2024-01-10 14:05")
+        ) == pytest.approx(168 / config.episode_intervals)
 
 
 class TestObservationBounds:
@@ -187,5 +215,5 @@ class TestObservationBounds:
     def test_contain_every_price_the_market_allows(self, scaler):
         low, high = features.observationBounds(scaler)
         extremes = [scaler.floor, scaler.cap] * config.episode_intervals
-        got = features.observation(1.0, extremes, 0, config.episode_intervals, scaler)
+        got = features.observation(1.0, extremes, 0, config.episode_intervals, scaler, 1.0)
         assert np.all(got >= low - 1e-6) and np.all(got <= high + 1e-6)

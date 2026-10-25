@@ -2,7 +2,12 @@ from datetime import datetime
 
 # --- Episode -----------------------------------------------------------------
 episode_intervals = 288
-initial_soc = 0.5
+# The battery starts every episode empty, and nothing values what it holds at the close.
+# A start above zero would hand the agent energy it never bought, and it would then sell
+# that energy at whatever the last interval pays. Starting empty removes both: under
+# perfect foresight the oracle only buys what it can sell well, and the agent is paid the
+# same way, so a day's profit is the trading it actually did.
+initial_soc = 0.0
 gamma = 1.0
 
 

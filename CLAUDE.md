@@ -233,8 +233,12 @@ cover.
 
 - **`rl/`** — the agent.
   - `features.py` owns the observation layout and is the single definition of it.
-    60 slots: SoC, 12 five-minute prices, 46 half-hour bucket means, and intervals
-    remaining. Training and inference both call this and neither is told which it is.
+    60 slots: SoC, 12 five-minute prices, 46 half-hour bucket means, and the fraction
+    of the trading day left. Training and inference both call this and neither is told
+    which it is. The last slot comes from `tradingDayRemaining`, which reads the clock:
+    an episode-relative fraction matches it only while an episode is a whole 04:00
+    trading day, and the current forecast screen starts its episode at the run time, so
+    it read 1.0 at every hour of the day.
   - `env.py` — `BessEnv`, three actions, masking plus clipping at the SoC boundary.
     Takes a price `Series` rather than a date range, which is what keeps tests off the
     network. `forecasts=` swaps what the agent sees without touching what it is paid.
@@ -328,6 +332,15 @@ cover.
   A discrete window no longer has this problem: `dp.py` is exact and sets `dualBound`
   equal to `profit` and `mipGap` to 0. Quoting `dualBound` stays the rule, because it
   is right in both modes.
+- **An episode starts the battery empty, and that is a choice, not an accident.**
+  `config.initial_soc` is 0.0. A start above zero hands the agent energy it never bought,
+  and because nothing values what the battery holds at the close, it then sells that
+  energy at whatever the last interval pays. Starting empty removes both: the oracle only
+  buys what it can sell well, and the agent is paid the same way, so a day's profit is
+  the trading it did. `cacheKey` records the initial SoC, so every `data_cache/lp_baseline`
+  entry solved at 0.5 no longer matches and the oracle re-solves. The forecast screen is
+  separate and still opens at 50% (`live.defaultSoc`), because it reports a real battery
+  part way through a day.
 - **`cacheKey` does not record the solver time limit.** A window that stops on the limit
   writes a loose dual bound, and `solveWindow` then serves that record from cache for
   good. Raising `--time-limit` later cannot reach it, so delete the files to redo them.

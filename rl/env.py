@@ -178,12 +178,19 @@ class BessEnv(gymnasium.Env):
     def _observation(self):
         start = self.windows[self.windowIndex]
         end = start + self.horizon
+        # The episode is over once stepIndex reaches the horizon, and that observation
+        # carries no prices, so its clock slot reads zero rather than the next day's.
+        remaining = (
+            0.0 if self.stepIndex >= self.horizon
+            else features.tradingDayRemaining(self.timestamps[self._offset()])
+        )
         return features.observation(
             self.stored / self.model.MWh,
             self._observedPrices(start, end),
             self.stepIndex,
             self.horizon,
             self.scaler,
+            remaining,
         )
 
     def _observedPrices(self, start, end):

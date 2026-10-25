@@ -10,9 +10,11 @@ Two things differ from a backtest day, and both are stated on the screen.
 
 1. The episode starts at the run time, not at 04:00, so it is as long as the forecast
    reaches. PREDISPATCH stops at the end of the trading day.
-2. The state of charge starts where the reader sets it, and at `config.initial_soc`
-   until they do, because the live state of a real battery is not in this repository.
-   The screen states the number the board was drawn for.
+2. The state of charge starts where the reader sets it, and at `defaultSoc` until they
+   do, because the live state of a real battery is not in this repository. The screen
+   states the number the board was drawn for. That default is not `config.initial_soc`:
+   the episode reset the oracle and the agent share is zero, and this screen reports a
+   real battery part way through a day.
 """
 from pathlib import Path
 
@@ -29,6 +31,9 @@ from rl.train import loadScaler
 from utils import nem_interval
 
 defaultCheckpoints = policies.defaultRoot
+
+# The start state of charge the forecast screen opens on, until the reader sets one.
+defaultSoc = 0.5
 
 columns = ("settlementdate", "price", "action", "soc", "revenue", "profit")
 
@@ -104,7 +109,7 @@ def _policy(label, root, region):
 def suggest(path, label, region, root=defaultCheckpoints,
             battery=(config.battery_mw, config.battery_mwh,
                      config.battery_replacement_cost),
-            initialSoc=config.initial_soc, calendar=False):
+            initialSoc=defaultSoc, calendar=False):
     """One row per forecast interval: the price, the action, the state of charge after
     it, and the running revenue and profit. An empty or one-interval path returns an
     empty frame."""

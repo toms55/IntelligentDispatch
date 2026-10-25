@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import config
 from backtest import actions, metrics
 from visualise.dashboard import figures
 from visualise.dashboard.test_data import DAY, dayRows, run, REGION  # noqa: F401
@@ -77,13 +76,13 @@ class TestForecastTiles:
 
     # The screen names both cards, so neither number has to be guessed at.
     def test_it_names_the_two_cards(self):
-        labels = [tile["label"] for tile in figures.forecastTiles(self.planned())]
+        labels = [tile["label"] for tile in figures.forecastTiles(self.planned(), 0.5)]
         assert labels == ["Expected revenue", "Current state of charge"]
 
     # The last row is the whole horizon, so the card reads it rather than summing again.
     def test_the_revenue_is_the_last_running_total(self):
         frame = self.planned()
-        tiles = {tile["label"]: tile for tile in figures.forecastTiles(frame)}
+        tiles = {tile["label"]: tile for tile in figures.forecastTiles(frame, 0.5)}
         assert tiles["Expected revenue"]["raw"] == pytest.approx(1.45)
         assert tiles["Expected revenue"]["value"] == "$1.45"
         # Profit sits under it, because revenue alone does not pay for the cycling.
@@ -91,8 +90,8 @@ class TestForecastTiles:
 
     # The card reports where the battery starts, which the screen assumes.
     def test_the_state_of_charge_is_the_starting_one(self):
-        tiles = {tile["label"]: tile for tile in figures.forecastTiles(self.planned())}
-        assert tiles["Current state of charge"]["raw"] == pytest.approx(config.initial_soc)
+        tiles = {tile["label"]: tile for tile in figures.forecastTiles(self.planned(), 0.5)}
+        assert tiles["Current state of charge"]["raw"] == pytest.approx(0.5)
         assert tiles["Current state of charge"]["value"] == "50.0%"
         assert "40.0%" in tiles["Current state of charge"]["sub"]
 
@@ -103,7 +102,7 @@ class TestForecastTiles:
 
     # No forecast means no revenue, read the way every other tile reads no data.
     def test_an_empty_frame_has_no_revenue(self):
-        tiles = figures.forecastTiles(pd.DataFrame())
+        tiles = figures.forecastTiles(pd.DataFrame(), 0.5)
         assert tiles[0]["value"] == "no data"
         # The state of charge is still known: the screen assumes it, the agent does not
         # choose it.
@@ -113,7 +112,7 @@ class TestForecastTiles:
     def test_a_price_only_frame_has_no_revenue(self):
         frame = pd.DataFrame({"settlementdate": [pd.Timestamp("2025-01-01 10:05")],
                               "price": [10.0]})
-        tiles = figures.forecastTiles(frame)
+        tiles = figures.forecastTiles(frame, 0.5)
         assert tiles[0]["value"] == "no data" and tiles[0]["sub"] == "no dispatch planned"
 
 

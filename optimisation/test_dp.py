@@ -213,15 +213,25 @@ class TestIsOptimal:
         assert exact.mipGap == 0.0
         assert exact.status == "Optimal"
 
-    def test_flat_prices_sell_the_free_charge_and_buy_nothing(self, paper):
-        """No spread, so a round trip always loses to efficiency and degradation. But
-        the pack starts half full, and that energy is free, so the oracle sells it."""
+    def test_flat_prices_trade_nothing_from_an_empty_pack(self, paper):
+        """No spread, so a round trip always loses to efficiency and degradation, and an
+        empty pack has nothing to sell either. `config.initial_soc` is zero, so this is
+        the case the backtest solves."""
         exact = dp.solve(FLAT_PRICES, paper, initialSoc=config.initial_soc,
                          calendar=False)
         assert exact.bought == pytest.approx([0.0] * len(FLAT_PRICES), abs=1e-12)
+        assert exact.sold == pytest.approx([0.0] * len(FLAT_PRICES), abs=1e-12)
+        assert exact.profit == pytest.approx(0.0, abs=1e-12)
+
+    def test_flat_prices_sell_a_charge_the_pack_was_given(self, paper):
+        """Why `config.initial_soc` is zero. Start the pack half full and the oracle
+        sells that energy into a market with no spread at all, because it never paid for
+        it. That profit comes from the episode boundary, not from trading."""
+        exact = dp.solve(FLAT_PRICES, paper, initialSoc=0.5, calendar=False)
+        assert exact.bought == pytest.approx([0.0] * len(FLAT_PRICES), abs=1e-12)
         assert sum(exact.sold) > 0.0
         assert exact.profit > 0.0
-        assert exact.soc[-1] < config.initial_soc
+        assert exact.soc[-1] < 0.5
 
 
 # --- the DP against the environment ------------------------------------------

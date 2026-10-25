@@ -24,7 +24,6 @@ import pandas as pd
 from dash import Dash, Input, Output, State, ctx, dcc, html, no_update
 from dash.exceptions import MissingCallbackContextException, PreventUpdate
 
-import config
 from visualise.dashboard import data, figures, live
 
 tileStyle = {"flex": "1 1 150px", "padding": "14px 16px", "borderRadius": "10px",
@@ -43,8 +42,11 @@ badSocStyle = {**socStyle, "border": f"1px solid {figures.lossPole}",
                "color": figures.lossPole}
 dateFormat = "%d/%m/%Y"
 # The forecast screen asks for the start state of charge in percent, because that is how
-# a battery states its charge. `config.initial_soc` is the default and a fraction.
-defaultSocPercent = round(config.initial_soc * 100)
+# a battery states its charge. This is its own number, not `config.initial_soc`: that one
+# is the episode reset the oracle and the agent share, and it is zero, while this screen
+# reports a real battery mid-day and has to open on a usable guess.
+defaultSoc = live.defaultSoc
+defaultSocPercent = round(defaultSoc * 100)
 socHelp = "Type a whole number from 0 to 100."
 
 
@@ -273,7 +275,7 @@ def layout(regions, region, day):
         ]),
         dcc.Store(id="live-state",
                   data={"screen": "backtest", "region": region, "model": None,
-                        "clicks": 0, "soc": config.initial_soc}),
+                        "clicks": 0, "soc": defaultSoc}),
         html.Div(id="live-screen", style={"display": "none"}, children=[
             # The forecast is fetched over the network, so the screen says so while
             # it waits rather than sitting blank.
@@ -307,7 +309,7 @@ def liveModels(region, policyRoot=live.defaultCheckpoints):
     return sorted(live.findCheckpoints(region, policyRoot))
 
 
-def forecastBoard(region, model, policyRoot, initialSoc=config.initial_soc):
+def forecastBoard(region, model, policyRoot, initialSoc=defaultSoc):
     """The forecast figure, the box above it and its two cards.
 
     Returns (figure, box, tiles).
@@ -464,7 +466,7 @@ def register(app, loader, policyRoot=live.defaultCheckpoints):
             # asked for something else, so each runs on the last good number.
             if trigger == "forecast-run":
                 return no_update, no_update, no_update, style, note
-            soc = (previous or {}).get("soc", config.initial_soc)
+            soc = (previous or {}).get("soc", defaultSoc)
         names = liveModels(region, policyRoot)
         model = model if model in names else (names[0] if names else None)
         return ({"screen": screen, "region": region, "model": model, "clicks": clicks,
@@ -481,7 +483,7 @@ def register(app, loader, policyRoot=live.defaultCheckpoints):
         if state["screen"] != "live":
             raise PreventUpdate
         figure, box, tiles = forecastBoard(state["region"], state["model"], policyRoot,
-                                           state.get("soc", config.initial_soc))
+                                           state.get("soc", defaultSoc))
         return figure, box, [_tile(tile) for tile in tiles]
 
 

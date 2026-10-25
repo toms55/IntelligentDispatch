@@ -19,13 +19,20 @@ PAPER_REPLACEMENT_COST = 150000.0
 
 MIXED_PRICES = [20.0, 15.0, -50.0, 10.0, 300.0, 25.0, 18.0, 400.0, 12.0, -80.0, 9.0, 250.0]
 
+# `config.initial_soc` is zero, because an episode may not start with energy it never
+# bought. A test of the throughput rate needs a pack that can move in both directions, so
+# it states its own mid-pack start.
+MID_SOC = 0.5
+
 
 @pytest.fixture
 def paper():
     return SchadeDegradation(PAPER_MW, PAPER_MWH, PAPER_REPLACEMENT_COST)
 
 
-def priceSeries(values, start="2024-01-10"):
+def priceSeries(values, start="2024-01-10 04:05"):
+    """Stamped from the first interval of a trading day. The clock slot reads the
+    04:00-to-04:00 day, so an unaligned series would put every test off the boundary."""
     return pd.Series(
         values, index=pd.date_range(start, periods=len(values), freq="5min"), name="RRP"
     )
@@ -120,7 +127,7 @@ class TestEnergyMoves:
         assert info["sold"] == 0.0
 
     def test_a_discharge_step_is_the_rated_throughput(self, paper):
-        env = makeEnv(paper)
+        env = makeEnv(paper, initialSoc=MID_SOC)
         env.reset(seed=0)
         _, _, _, _, info = env.step(DISCHARGE)
         assert info["sold"] == pytest.approx(env.fullStep, rel=1e-12)
@@ -137,13 +144,13 @@ class TestEnergyMoves:
         assert moved[1] == pytest.approx(moved[2], rel=1e-12)
 
     def test_a_step_is_asymmetric_in_soc(self, paper):
-        env = makeEnv(paper)
+        env = makeEnv(paper, initialSoc=MID_SOC)
         env.reset(seed=0)
         _, _, _, _, up = env.step(CHARGE)
         env.reset(seed=0)
         _, _, _, _, down = env.step(DISCHARGE)
-        gained = up["soc"] - config.initial_soc
-        lost = config.initial_soc - down["soc"]
+        gained = up["soc"] - MID_SOC
+        lost = MID_SOC - down["soc"]
         assert gained == pytest.approx(
             env.fullStep * paper.chargeEfficiency / paper.MWh, rel=1e-12
         )
