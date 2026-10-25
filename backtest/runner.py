@@ -28,7 +28,7 @@ from data.forecasts import (decisionPath, decisionRuns, loadForecastCache, refre
                             refreshRunTimes)
 from data.prices import price_series
 from degradation.schade import SchadeDegradation
-from rl.baseline import buildBaseline, cacheKey, cacheRoot
+from rl.baseline import buildBaseline, cacheKey, findRecord
 from rl import policies
 from rl.evaluate import evaluateSeeds
 from rl.features import PriceScaler
@@ -252,9 +252,9 @@ def auditPlan(cfg):
     spanStart, spanEnd = everyFold[0].testStart, everyFold[-1].testEnd
     days = [spanStart + n * folds.oneDay
             for n in range((spanEnd - spanStart) // folds.oneDay)]
-    missing = [day for day in days if not (cacheRoot / cacheKey(
+    missing = [day for day in days if findRecord(cacheKey(
         cfg.region, day + nem_interval, cfg.horizon, cfg.calendar, cfg.discretePower,
-        model, cfg.initialSoc, cfg.gap)).exists()]
+        model, cfg.initialSoc, cfg.gap)) is None]
     return {"folds": len(everyFold), "selected": len(selected),
             "days": len(days), "missing": len(missing),
             "leftoverDays": folds.leftoverDays(everyFold, cfg.end),

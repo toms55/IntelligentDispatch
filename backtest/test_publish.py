@@ -1,10 +1,12 @@
 """Tests for backtest/publish.py. Run with: uv run pytest backtest/ -q"""
+import json
+
 import pandas as pd
 import pytest
 
 from backtest import publish, records
 from visualise.dashboard import data
-from visualise.dashboard.test_data import REGION, dayRows, writeActions
+from visualise.dashboard.test_data import REGION, dayRows, publishRun, writeActions
 
 
 def finishedRun(results, name, region=REGION, sources=("realised",), every=48):
@@ -96,3 +98,84 @@ class TestPublish:
         loaded = data.loadRun(REGION, root / "old").days
         assert "arm" not in loaded and set(loaded.trainMode) == {"warm"}
         assert len(loaded) == 14
+
+
+def corpus(tmp_path, days, region=REGION, bound=38.0, gap=0.0, name="dp"):
+    """A solved oracle corpus, as oracleResults/dp holds one: one JSON per region and
+    day, named by its cache key."""
+    folder = tmp_path / name
+    folder.mkdir(parents=True, exist_ok=True)
+    for index, day in enumerate(days):
+        record = {"start": f"{day:%Y-%m-%d}T04:05:00", "profit": bound,
+                  "dualBound": bound, "mipGap": gap, "status": "Optimal"}
+        path = folder / f"{region}_{day:%Y-%m-%d}_0405_{index:016x}.json"
+        path.write_text(json.dumps(record))
+    return folder
+
+
+class TestRestampOracle:
+    """The oracle columns of a published run, rewritten from a solved corpus. Only the
+    bound moves: the agent rows are what the run already measured."""
+
+    def published(self, results, rows=None):
+        return data.publishedFile(publishRun(results.parent, rows or dayRows()), REGION)
+
+    def test_every_row_takes_the_corpus_bound(self, results, tmp_path):
+        path = self.published(results)
+        rows = records.readDayFile(path)
+        before, after = publish.restampOracle(path, corpus(tmp_path, rows.testDay))
+        stamped = records.readDayFile(path)
+        assert list(stamped.oracleDualBound.unique()) == [38.0]
+        assert list(stamped.oracleGap.unique()) == [0.0]
+        # One bound per day, and both sums count a day once, as the dashboard does.
+        assert (before, after) == (40.0 * 14, 38.0 * 14)
+
+    def test_the_agent_rows_are_untouched(self, results, tmp_path):
+        path = self.published(results)
+        before = records.readDayFile(path)
+        publish.restampOracle(path, corpus(tmp_path, before.testDay))
+        after = records.readDayFile(path)
+        keep = [column for column in after.columns
+                if column not in ("oracleDualBound", "oracleGap")]
+        pd.testing.assert_frame_equal(after[keep], before[keep])
+
+    def test_a_missing_day_refuses_the_file(self, results, tmp_path):
+        path = self.published(results)
+        rows = records.readDayFile(path)
+        with pytest.raises(FileNotFoundError, match="no oracle record"):
+            publish.restampOracle(path, corpus(tmp_path, rows.testDay[:-1]))
+        pd.testing.assert_frame_equal(records.readDayFile(path), rows)
+
+    def test_two_records_for_one_day_refuse_the_file(self, results, tmp_path):
+        path = self.published(results)
+        rows = records.readDayFile(path)
+        folder = corpus(tmp_path, rows.testDay)
+        first = f"{REGION}_{rows.testDay[0]:%Y-%m-%d}_0405_ffffffffffffffff.json"
+        (folder / first).write_text(json.dumps({"dualBound": 1.0, "mipGap": 0.0}))
+        with pytest.raises(ValueError, match="different settings"):
+            publish.restampOracle(path, folder)
+
+    # A bound below an agent is not a bound. It means the corpus solved another problem,
+    # so the file keeps the bound it was scored against.
+    def test_a_bound_below_an_agent_refuses_the_file(self, results, tmp_path):
+        path = self.published(results)
+        rows = records.readDayFile(path)
+        with pytest.raises(ValueError, match="beat the bound"):
+            publish.restampOracle(path, corpus(tmp_path, rows.testDay, bound=5.0))
+        pd.testing.assert_frame_equal(records.readDayFile(path), rows)
+
+    # A file the dashboard cannot draw is not left on disk, as publishing leaves none.
+    def test_a_file_the_dashboard_cannot_load_is_put_back(self, results, tmp_path):
+        rows = [dict(row, priceSource="forecast") for row in dayRows()]
+        path = self.published(results, rows)
+        before = records.readDayFile(path)
+        with pytest.raises(ValueError, match="does not state forecastEvery"):
+            publish.restampOracle(path, corpus(tmp_path, before.testDay))
+        pd.testing.assert_frame_equal(records.readDayFile(path), before)
+
+    def test_the_restamped_file_still_loads(self, results, tmp_path):
+        path = self.published(results)
+        rows = records.readDayFile(path)
+        publish.restampOracle(path, corpus(tmp_path, rows.testDay))
+        run = path.parent / path.stem.removesuffix(f"_{REGION}")
+        assert len(data.loadRun(REGION, run).days) == len(rows)

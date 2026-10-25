@@ -11,7 +11,27 @@ from optimisation import dp
 from optimisation.lp import solve
 from utils import nem_interval_hours
 
-cacheRoot = Path(__file__).resolve().parent.parent / "data_cache" / "lp_baseline"
+_repo = Path(__file__).resolve().parent.parent
+# New records are written here.
+cacheRoot = _repo / "data_cache" / "lp_baseline"
+# The solved corpora git tracks: oracleResults/dp holds the discrete oracle solved
+# exactly by optimisation/dp.py, every trading day of every region, and oracleResults/
+# itself holds the MILP records from before it.
+oracleRoot = _repo / "oracleResults"
+dpRoot = oracleRoot / "dp"
+# Where a record is looked up, in order, and the first entry is where a new one lands.
+# A cache key states every parameter of its solve, the solver included, so a key only
+# ever matches a record of the same problem whichever directory holds it.
+readRoots = (cacheRoot, dpRoot, oracleRoot)
+
+
+def findRecord(name, cacheDir=None):
+    """The path of the cached record `name`, or None when no directory holds it."""
+    for directory in ((Path(cacheDir),) if cacheDir else readRoots):
+        path = directory / name
+        if path.exists():
+            return path
+    return None
 
 
 def chunkWindows(length, horizon=config.episode_intervals):
@@ -48,11 +68,13 @@ def solveWindow(prices, timestamps, region, horizon=config.episode_intervals,
                 threads=None, cacheDir=None):
     """One window's oracle solution, from cache when it is there."""
     model = model or _defaultModel()
+    name = cacheKey(region, timestamps[0], horizon, calendar, discretePower, model,
+                    initialSoc, gap)
+    found = findRecord(name, cacheDir)
+    if found is not None:
+        return json.loads(found.read_text())
     directory = Path(cacheDir) if cacheDir else cacheRoot
-    path = directory / cacheKey(region, timestamps[0], horizon, calendar,
-                                discretePower, model, initialSoc, gap)
-    if path.exists():
-        return json.loads(path.read_text())
+    path = directory / name
 
     if discretePower:
         # Exact, and milliseconds rather than minutes. timeLimit, gap and threads do not

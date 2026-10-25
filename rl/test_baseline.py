@@ -163,6 +163,55 @@ class TestSolveWindow:
         assert fakeSolve[0]["discretePower"] is False
 
 
+class TestReadRoots:
+    """Where a record is looked up. oracleResults/dp holds the discrete oracle solved
+    exactly for every trading day, so a window in it is read rather than solved again."""
+
+    def solve(self, paper, series, **kwargs):
+        return baseline.solveWindow(series.to_numpy(), list(series.index), "SA1",
+                                    horizon=len(series), model=paper, **kwargs)
+
+    def test_a_corpus_record_is_read_and_not_solved(self, paper, series, fakeSolve,
+                                                    tmp_path, monkeypatch):
+        corpus, write = tmp_path / "dp", tmp_path / "new"
+        corpus.mkdir()
+        write.mkdir()
+        monkeypatch.setattr(baseline, "readRoots", (write, corpus))
+        monkeypatch.setattr(baseline, "cacheRoot", write)
+        solved = self.solve(paper, series, cacheDir=corpus)
+        assert len(fakeSolve) == 1
+        assert self.solve(paper, series) == solved
+        assert len(fakeSolve) == 1  # served from the corpus
+        assert not list(write.iterdir())  # and nothing was written beside it
+
+    def test_a_new_window_is_written_to_the_first_root(self, paper, series, fakeSolve,
+                                                       tmp_path, monkeypatch):
+        corpus, write = tmp_path / "dp", tmp_path / "new"
+        corpus.mkdir()
+        monkeypatch.setattr(baseline, "readRoots", (write, corpus))
+        monkeypatch.setattr(baseline, "cacheRoot", write)
+        self.solve(paper, series)
+        assert len(fakeSolve) == 1
+        assert len(list(write.glob("*.json"))) == 1
+        assert not list(corpus.iterdir())
+
+    def test_an_explicit_cache_dir_reads_only_itself(self, paper, series, fakeSolve,
+                                                     tmp_path, monkeypatch):
+        """`--cache-dir` names one directory, so it must not serve another one's record."""
+        corpus, asked = tmp_path / "dp", tmp_path / "asked"
+        corpus.mkdir()
+        asked.mkdir()
+        self.solve(paper, series, cacheDir=corpus)
+        monkeypatch.setattr(baseline, "readRoots", (corpus,))
+        self.solve(paper, series, cacheDir=asked)
+        assert len(fakeSolve) == 2
+        assert len(list(asked.glob("*.json"))) == 1
+
+    def test_findRecord_returns_none_when_no_root_holds_it(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(baseline, "readRoots", (tmp_path,))
+        assert baseline.findRecord("SA1_2024-01-10_0000_deadbeef.json") is None
+
+
 def _quick(value):
     return value
 

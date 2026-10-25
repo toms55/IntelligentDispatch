@@ -113,7 +113,12 @@ results/actions/<run>_<region>.csv           one row per agent decision, every s
 Rules:
 
 1. `backtest/publish.py` is the only code that writes `results/backtestResults/`. Never
-   copy a run in by hand.
+   copy a run in by hand. It also restamps a published run's two oracle columns from a
+   solved corpus: `python -m backtest.publish --restamp-oracle <csv>...` replaces
+   `oracleDualBound` with the optimum in `oracleResults/dp` and `oracleGap` with zero.
+   The agent rows stay as they are, so the run is rescored against a tighter bound and
+   not rerun. A day the corpus does not hold, or a bound below a row's `agentProfit`,
+   refuses the whole file. Both mean the corpus solved another problem.
 2. The folds job publishes each region once it has merged the seeds. `<run>` is the
    results directory's name without the region, so the five regional jobs of one
    experiment share one name.
@@ -242,7 +247,14 @@ cover.
   - `env.py` — `BessEnv`, three actions, masking plus clipping at the SoC boundary.
     Takes a price `Series` rather than a date range, which is what keeps tests off the
     network. `forecasts=` swaps what the agent sees without touching what it is paid.
-  - `baseline.py` — per-window oracle solutions, cached on disk under `data_cache/`.
+  - `baseline.py` — per-window oracle solutions, read from one of three directories and
+    written to the first. `findRecord` is the lookup: `data_cache/lp_baseline`, then
+    `oracleResults/dp`, then `oracleResults/`. `oracleResults/dp` is the corpus git
+    tracks, the discrete oracle solved exactly by `optimisation/dp.py` for every trading
+    day of all five regions, 2023-01-01 to 2026-09-26. A cache key states every parameter
+    of its solve, the solver included, so a key matches a record of the same problem only,
+    whichever directory holds it. `--cache-dir` names one directory and then reads that
+    one alone.
   - `algos.py` — the `--algo` registry: MaskablePPO, DQN, A2C.
   - `train.py`, `evaluate.py` — one run per seed, and regret against the oracle.
   - `policies.py` — `trainedPolicies/`: the layout of a finished agent, and the only
@@ -341,6 +353,12 @@ cover.
   entry solved at 0.5 no longer matches and the oracle re-solves. The forecast screen is
   separate and still opens at 50% (`live.defaultSoc`), because it reports a real battery
   part way through a day.
+- **`oracleResults/dp` is solved at a 0.5 start, which `config.initial_soc` is not any
+  more.** The corpus bounds the published `rolling2023` runs, which were scored at 0.5,
+  and `--restamp-oracle` wrote those bounds into `results/backtestResults/`. A run at
+  today's 0.0 start misses every record in it and solves its own, which the DP does in
+  milliseconds. Resolve the corpus at 0.0 before the next experiment quotes it:
+  `cli baseline --split ... --no-calendar --gap 0.02 --cache-dir oracleResults/dp`.
 - **`cacheKey` does not record the solver time limit.** A window that stops on the limit
   writes a loose dual bound, and `solveWindow` then serves that record from cache for
   good. Raising `--time-limit` later cannot reach it, so delete the files to redo them.
