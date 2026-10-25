@@ -8,7 +8,8 @@ import pytest
 
 from visualise.parse import parseSections
 from visualise.plots import (
-    _bestAcrossSections, _shortTimestamp, buildBestSeedFigure, saveBestSeedFigure,
+    _bestAcrossSections, _shortTimestamp, buildBestSeedFigure, buildSourceComparisonFigure,
+    saveBestSeedFigure, saveSourceComparisonFigure,
 )
 
 REALISED = """## Realised prices
@@ -110,5 +111,48 @@ class TestSaveBestSeedFigure:
         sections = parseSections(REALISED)
         destination = tmp_path / "best.png"
         saveBestSeedFigure(sections, "NSW1", "maskableppo", destination)
+        assert destination.exists()
+        assert destination.stat().st_size > 0
+
+
+class TestBuildSourceComparisonFigure:
+    def test_draws_one_panel_per_source(self):
+        sections = parseSections(REALISED + "\n" + FORECAST)
+        figure = buildSourceComparisonFigure(sections, "NSW1", "maskableppo")
+        assert len(figure.axes) == 2
+
+    def test_each_panel_keeps_its_own_captured_share(self):
+        sections = parseSections(REALISED + "\n" + FORECAST)
+        figure = buildSourceComparisonFigure(sections, "NSW1", "maskableppo")
+        titles = [ax.get_title() for ax in figure.axes]
+        assert titles[0] != titles[1]
+        assert all("of the oracle's profit" in title for title in titles)
+
+    def test_each_panel_names_its_own_price_source(self):
+        sections = parseSections(REALISED + "\n" + FORECAST)
+        figure = buildSourceComparisonFigure(sections, "NSW1", "maskableppo")
+        labels = [
+            " ".join(label.get_text() for label in ax.get_xticklabels())
+            for ax in figure.axes
+        ]
+        assert "Realised prices" in labels[0]
+        assert "AEMO forecast" in labels[1]
+
+    def test_every_panel_carries_the_train_window(self):
+        sections = parseSections(REALISED + "\n" + FORECAST)
+        figure = buildSourceComparisonFigure(
+            sections, "NSW1", "maskableppo",
+            trainWindow=("2024-01-01T04:00:00", "2025-01-01T04:00:00"),
+        )
+        headers = [panel._suptitle.get_text() for panel in figure.subfigs]
+        assert len(headers) == 2
+        assert all("train: 2024-01-01 04:00" in header for header in headers)
+
+
+class TestSaveSourceComparisonFigure:
+    def test_writes_a_file(self, tmp_path):
+        sections = parseSections(REALISED + "\n" + FORECAST)
+        destination = tmp_path / "compare.png"
+        saveSourceComparisonFigure(sections, "NSW1", "maskableppo", destination)
         assert destination.exists()
         assert destination.stat().st_size > 0

@@ -4,18 +4,26 @@ Every function is a pure function of a frame and returns numbers or a Plotly fig
 none of it needs a running server. No number is computed here: the tiles call
 `backtest.metrics`, which is the only module in the project that divides.
 
-Colour follows the job the data does. Profit has polarity, so the calendar uses the
-diverging blue-to-red pair with a neutral grey at zero. The high-volatility marker
-carries no hue at all: it is a dot in primary ink with a surface ring. A third hue has
-nowhere to sit beside a diverging scale that already holds a cool and a warm pole, and
-every candidate failed the colour-vision separation check against the red pole.
+Colour follows the job the data does. Profit has polarity, so a calendar cell is green
+above zero and red below, with a neutral grey at zero. The high-volatility dot is amber,
+which is the one hue that separates from both poles under red-green colour blindness. It
+also sits under the date rather than over the fill, so the two never have to be told
+apart by hue alone.
+
+A dispatch block keeps one colour on both screens: blue to buy, red to sell. The day
+view and the forecast view call `_dispatchFigure`, so neither screen teaches a second
+key.
 """
+import calendar as calendarModule
+import textwrap
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
 import config
 from backtest import metrics
+from data.forecasts import p5minIntervals
 
 surface = "#fcfcfb"
 ink = "#0b0b0b"
@@ -23,14 +31,22 @@ secondaryInk = "#52514e"
 mutedInk = "#898781"
 gridline = "#e1e0d9"
 axisLine = "#c3c2b7"
-profitPole = "#2a78d6"
+profitPole = "#1f9d6a"
 lossPole = "#e34948"
+volDot = "#e8a33a"
 neutral = "#f0efec"
-series = {"realised": "#2a78d6", "forecast": "#eb6834",
-          "agent": "#1baf7a", "oracle": "#4a3aa7"}
-
+# Opaque enough to read as a block, open enough to keep the price path visible.
+chargeBlock = "rgba(42,120,214,0.42)"
+dischargeBlock = "rgba(227,73,72,0.42)"
+# The forecast the agent acted on. A hue of its own, apart from both blocks and both
+# profit poles, and the forecast refresh tile wears it too so the tile keys the line.
+forecastLine = "#7b4fc9"
+# Past this many runs in a day the run rules would cover the chart.
+maxRunRules = 12
 weekdayNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-highVolKey = f"spike intensity at or above ${config.high_vol_intensity:.2f}"
+capPayoutKey = (f"(1/{config.episode_intervals}) \u03a3\u209c"
+                f" max(RRP\u209c \u2212 ${config.spike_threshold:,.0f}, 0)")
+highVolKey = f"cap payout at or above ${config.high_vol_intensity:.2f}"
 
 
 def _money(value):
@@ -41,17 +57,70 @@ def _percent(value):
     return "no data" if pd.isna(value) else f"{value * 100:.1f}%"
 
 
-def summaryTiles(frame):
-    """The headline numbers for whatever scope is selected, straight from metrics."""
+def _span(delta):
+    minutes = int(delta / pd.Timedelta(minutes=1))
+    if minutes % 60:
+        return f"{minutes} minutes" if minutes != 1 else "minute"
+    hours = minutes // 60
+    return f"{hours} hours" if hours != 1 else "hour"
+
+
+def refreshText(priceSource, every):
+    """What the agent observed over a day, as a (heading, subheading) pair.
+
+    `every` is the run's `forecastEvery`, which `data.loadRun` has already checked
+    against every decision in the actions export, so the text states a verified pull
+    frequency rather than one inferred from a day's rows.
+    """
+    if priceSource != "forecast":
+        return ("No forecast",
+                "Dispatched on realised prices, with perfect knowledge of the price.")
+    if every is None:
+        return ("Refresh unknown", "This run does not state its forecast pull frequency.")
+    if every >= config.episode_intervals:
+        return ("Pulled once a day",
+                "One AEMO forecast was pulled at 04:00 and held for the whole "
+                "trading day.")
+    span = _span(pd.Timedelta(minutes=5 * every))
+    return (f"Refreshed every {span}",
+            f"Every {span}, a new AEMO forecast was pulled for the backtest, starting "
+            "at 04:00.")
+
+
+def summaryTiles(frame, every=None):
+    """The headline numbers for whatever scope is selected, straight from metrics.
+
+    One day holds one row, so a win rate and a spread across folds would say nothing.
+    The last three tiles therefore describe the day itself in that case, and one of
+    them says which forecast the agent dispatched against. `every` is the run's verified
+    `forecastEvery`.
+    """
     got = metrics.summarise(frame)
     empty = got["days"] == 0
-    rows = [
+    head = [
         ("Captured", _percent(got["captured"]), got["captured"],
          "agent dollars over oracle dollars"),
         ("Agent profit", _money(got["agentProfit"]), got["agentProfit"],
          "after degradation"),
-        ("Oracle profit", _money(got["oracleProfit"]), got["oracleProfit"],
-         "perfect foresight bound"),
+    ]
+    oracle = ("Oracle profit", _money(got["oracleProfit"]), got["oracleProfit"],
+              "perfect foresight bound")
+    if got["days"] == 1:
+        facts = metrics.dayFacts(frame)
+        heading, sub = refreshText(frame.priceSource.iloc[0], every)
+        tiles = [{"label": label, "value": value, "raw": raw, "sub": sub}
+                 for label, value, raw, sub in head + [
+                     ("Revenue", _money(facts["revenue"]), facts["revenue"],
+                      "before degradation"),
+                     oracle]]
+        return tiles + [
+            {"label": "Forecast", "value": heading, "raw": None, "sub": sub,
+             "accent": forecastLine if frame.priceSource.iloc[0] == "forecast" else None},
+            {"label": "Cap Payout", "value": _money(facts["spikeIntensity"]),
+             "raw": facts["spikeIntensity"], "sub": capPayoutKey},
+        ]
+    rows = head + [
+        oracle,
         ("Win rate", _percent(got["winRate"]), got["winRate"], "days above zero"),
         ("Fold median", _percent(got["foldMedian"]), got["foldMedian"],
          f"IQR {_percent(got['foldIqr'])}"),
@@ -62,60 +131,41 @@ def summaryTiles(frame):
              "raw": raw, "sub": sub} for label, value, raw, sub in rows]
 
 
-def volatilityTiles(frame):
-    """The same summary split on the volatility label. Both sides are always present."""
-    buckets = metrics.byBucket(frame)
-    total = sum(side["oracleProfit"] for side in buckets.values())
-    out = []
-    for high, name in ((True, "High volatility"), (False, "Other days")):
-        side = buckets[high]
-        out.append({
-            "bucket": name, "days": side["days"],
-            "agentProfit": side["agentProfit"], "oracleProfit": side["oracleProfit"],
-            "captured": side["captured"],
-            "oracleShare": side["oracleProfit"] / total if total else float("nan"),
-        })
-    return out
+def forecastTiles(frame, initialSoc=config.initial_soc):
+    """The headline numbers over the forecast board: what the plan earns, and where the
+    battery starts.
 
+    `live.suggest` runs both totals forward, so the last row already covers the whole
+    horizon and nothing is summed here. The figures are an expectation over an AEMO
+    forecast and not a settled result, which is what "expected" says.
 
-def modelPanel(manifest):
-    """The model and MDP description, read from the manifest so a new algorithm needs
-    no change here."""
-    def listed(key, default="--"):
-        value = manifest.get(key)
-        if value in (None, [], ()):
-            return default
-        return ", ".join(str(item) for item in value) if isinstance(
-            value, (list, tuple)) else str(value)
-
-    weeks = manifest.get("trainWeeks")
+    A board drawn without a policy still carries a state of charge, because the screen
+    assumes that rather than the agent choosing it. Its revenue is unknown, so it reads
+    as no data in the way every other tile does.
+    """
+    planned = not frame.empty and "revenue" in frame
+    revenue = float(frame.revenue.iloc[-1]) if planned else float("nan")
+    profit = float(frame.profit.iloc[-1]) if planned else float("nan")
+    endSoc = float(frame.soc.iloc[-1]) if planned else float("nan")
     return [
-        ("Algorithm", listed("algos")),
-        ("Arm", listed("arms")),
-        ("Seeds", listed("seeds")),
-        ("Training window", "--" if weeks is None else f"{weeks} weeks"),
-        ("Test window", f"{manifest.get('testWeeks', '--')} week(s), "
-                        f"step {manifest.get('stepWeeks', '--')}"),
-        ("Timesteps", f"{manifest.get('coldTimesteps', '--')} cold, "
-                      f"{manifest.get('warmTimesteps', '--')} warm top-up"),
-        ("Price source", listed("priceSources")),
-        ("Price cap pinned to", str(manifest.get("capDate", "--"))),
-        ("Observation", f"{config.observation_size} slots: state of charge, "
-                        f"{config.five_minute_interval_count} five-minute prices, "
-                        f"{config.price_bucket_count} half-hour means, intervals left"),
-        ("Actions", "3: charge at the rated power, idle, discharge at the rated power"),
-        ("Reward", "interval profit after degradation, less the oracle baseline, "
-                   f"scaled by {manifest.get('rewardScale', '--')}"),
-        ("Oracle", f"perfect foresight MILP, calendar aging "
-                   f"{'on' if manifest.get('calendar') else 'off'}, "
-                   f"{'discrete' if manifest.get('discretePower') else 'continuous'} "
-                   f"power, gap {manifest.get('gap', '--')}"),
+        {"label": "Expected revenue", "value": _money(revenue), "raw": revenue,
+         "sub": f"{_money(profit)} after degradation" if planned
+                else "no dispatch planned"},
+        {"label": "Current state of charge", "value": _percent(initialSoc),
+         "raw": initialSoc,
+         "sub": f"ends the forecast at {_percent(endSoc)}" if planned
+                else "assumed at the run time"},
     ]
+
+
+def _wrap(text, width=84):
+    """Plotly never wraps annotation text, so a long message runs off the panel."""
+    return "<br>".join(textwrap.wrap(str(text), width))
 
 
 def _emptyFigure(message):
     figure = go.Figure()
-    figure.add_annotation(text=message, showarrow=False, x=0.5, y=0.5,
+    figure.add_annotation(text=_wrap(message), showarrow=False, x=0.5, y=0.5,
                           xref="paper", yref="paper",
                           font=dict(color=secondaryInk, size=14))
     figure.update_layout(**_layout(height=260))
@@ -133,164 +183,242 @@ def _layout(**extra):
     return base
 
 
-calendarMetrics = {
-    "captured": dict(label="Captured", tickformat=".0%", hover="%{z:.1%} captured"),
-    "agentProfit": dict(label="Profit $", tickformat="$,.0f", hover="$%{z:,.2f}"),
-}
+def monthFigure(frame, month, selected=None):
+    """One calendar month, weekdays across and weeks down.
 
+    Fill is the day's profit, green above zero and red below, so a loss can never read
+    as a win. An amber dot under the date marks a high-volatility day. A day the backtest
+    never tested is left unfilled but still carries its number, so the grid reads as a
+    month rather than as a chart.
 
-def calendarFigure(frame, metric="captured"):
-    """One cell per test day, weeks down and weekdays across.
-
-    Fill is diverging and centred on zero, so a loss can never read as a win. A dot in
-    primary ink marks a high-volatility day.
-
-    Captured share is the default rather than dollars because day profit is heavily
-    tailed: a handful of spike days are worth twenty times a normal one, and on a dollar
-    scale every other day collapses to the midpoint. Captured carries the same sign, so
-    the profitable and unprofitable reading is unchanged. Either way the scale clamps at
-    the 95th percentile of absolute value, and the hover carries both true figures.
+    Day profit is heavily tailed: a few spike days are worth twenty times a normal one,
+    and on a raw scale every other day collapses to the midpoint. The scale therefore
+    clamps at the 95th percentile of absolute profit, and the hover carries the true
+    figures.
     """
+    month = pd.Timestamp(month)
+    first = month.normalize().replace(day=1)
+    weekdayOffset = int(first.dayofweek)
+    length = calendarModule.monthrange(first.year, first.month)[1]
+    rows = -(-(weekdayOffset + length) // 7)
+
     days = metrics.perDay(frame)
-    if days.empty:
-        return _emptyFigure("no days in this selection")
-    days = days.groupby("testDay", as_index=False).agg(
-        agentProfit=("agentProfit", "sum"), oracleProfit=("oracleProfit", "sum"),
-        highVol=("highVol", "first"), fold=("fold", "first")).sort_values("testDay")
-    days["captured"] = np.where(days.oracleProfit > 0,
-                                days.agentProfit / days.oracleProfit, np.nan)
-    style = calendarMetrics[metric]
+    if not days.empty:
+        days = days.groupby("testDay", as_index=False).agg(
+            agentProfit=("agentProfit", "sum"), oracleProfit=("oracleProfit", "sum"),
+            highVol=("highVol", "first"), fold=("fold", "first"))
 
-    stamps = pd.to_datetime(days.testDay)
-    firstMonday = (stamps.min()
-                   - pd.Timedelta(days=int(stamps.min().dayofweek))).normalize()
-    column = stamps.dt.dayofweek.to_numpy()
-    row = ((stamps.dt.normalize() - firstMonday).dt.days // 7).to_numpy()
-    weeks = int(row.max()) + 1
+    profit = {}
+    for row in days.to_dict("records"):
+        profit[pd.Timestamp(row["testDay"]).day] = row
 
-    grid = np.full((weeks, 7), np.nan)
-    extra = np.empty((weeks, 7, 4), dtype=object)
+    grid = np.full((rows, 7), np.nan)
+    extra = np.empty((rows, 7, 4), dtype=object)
     extra[:] = ""
-    grid[row, column] = days[metric].to_numpy(dtype=float)
-    extra[row, column, 0] = stamps.dt.date.astype(str).to_numpy()
-    extra[row, column, 1] = days.fold.astype(int).to_numpy()
-    extra[row, column, 2] = days.agentProfit.to_numpy(dtype=float)
-    extra[row, column, 3] = days.oracleProfit.to_numpy(dtype=float)
+    for number in range(1, length + 1):
+        cell = weekdayOffset + number - 1
+        row, column = divmod(cell, 7)
+        found = profit.get(number)
+        extra[row, column] = [str(first.replace(day=number).date()),
+                              "" if found is None else int(found["fold"]),
+                              np.nan if found is None else found["agentProfit"],
+                              np.nan if found is None else found["oracleProfit"]]
+        if found is not None:
+            grid[row, column] = found["agentProfit"]
 
-    # A metric that is NaN everywhere (every oracle day at or below zero) would make
-    # the percentile NaN, and a NaN colour range draws nothing.
+    # A month the agent made nothing on would give a NaN percentile, and a NaN colour
+    # range draws no fill at all.
     limit = (float(np.nanpercentile(np.abs(grid), 95))
              if np.isfinite(grid).any() else 1.0) or 1.0
-    weekLabels = [f"{(firstMonday + pd.Timedelta(weeks=n)):%-d %b}"
-                  for n in range(weeks)]
 
     figure = go.Figure()
     figure.add_trace(go.Heatmap(
-        z=grid, x=weekdayNames, y=weekLabels, customdata=extra,
+        z=grid, x=list(range(7)), y=list(range(rows)), customdata=extra,
         zmid=0, zmin=-limit, zmax=limit,
         colorscale=[[0.0, lossPole], [0.5, neutral], [1.0, profitPole]],
-        # A 2px surface gap between fills, as the mark spec asks.
-        xgap=2, ygap=2, hoverongaps=False,
-        colorbar=dict(title=dict(text=style["label"], side="top"), thickness=10,
-                      outlinewidth=0, tickcolor=axisLine, tickformat=style["tickformat"],
-                      tickfont=dict(color=mutedInk)),
+        xgap=3, ygap=3, hoverongaps=False, showscale=False,
         hovertemplate=("%{customdata[0]} · fold %{customdata[1]}<br>"
-                       + style["hover"]
-                       + "<br>agent $%{customdata[2]:,.2f}"
+                       "profit $%{customdata[2]:,.2f}"
                        "<br>oracle $%{customdata[3]:,.2f}<extra></extra>"),
     ))
 
-    marked = days.highVol.to_numpy(dtype=bool)
+    numbers = dict(x=[], y=[], text=[], colour=[], customdata=[])
+    dots = dict(x=[], y=[], customdata=[])
+    for number in range(1, length + 1):
+        row, column = divmod(weekdayOffset + number - 1, 7)
+        found = profit.get(number)
+        filled = found is not None
+        # White on a saturated fill, ink on a pale one. Judged against the clamped
+        # range, which is what the fill actually uses.
+        strong = filled and abs(found["agentProfit"]) > limit * 0.55
+        numbers["x"].append(column)
+        numbers["y"].append(row - 0.22)
+        numbers["text"].append(str(number))
+        numbers["colour"].append(surface if strong else
+                                 (ink if filled else mutedInk))
+        numbers["customdata"].append(extra[row, column])
+        if filled and bool(found["highVol"]):
+            dots["x"].append(column)
+            dots["y"].append(row + 0.2)
+            dots["customdata"].append(extra[row, column])
+
     figure.add_trace(go.Scatter(
-        x=[weekdayNames[index] for index in column[marked]],
-        y=[weekLabels[index] for index in row[marked]],
-        mode="markers", name="High volatility",
-        marker=dict(symbol="circle", size=9, color=ink,
-                    line=dict(color=surface, width=2)),
-        hoverinfo="skip", showlegend=True,
-    ))
+        x=numbers["x"], y=numbers["y"], mode="text", text=numbers["text"],
+        textfont=dict(color=numbers["colour"], size=13),
+        customdata=numbers["customdata"], hoverinfo="skip", showlegend=False))
+    if dots["x"]:
+        figure.add_trace(go.Scatter(
+            x=dots["x"], y=dots["y"], mode="markers", name="High volatility",
+            marker=dict(symbol="circle", size=8, color=volDot),
+            customdata=dots["customdata"], hoverinfo="skip", showlegend=True))
+
+    shapes = []
+    if selected is not None:
+        chosen = pd.Timestamp(selected)
+        if (chosen.year, chosen.month) == (first.year, first.month):
+            row, column = divmod(weekdayOffset + chosen.day - 1, 7)
+            shapes = [dict(type="rect", x0=column - 0.5, x1=column + 0.5,
+                           y0=row - 0.5, y1=row + 0.5, line=dict(color=ink, width=2),
+                           fillcolor="rgba(0,0,0,0)")]
 
     figure.update_layout(**_layout(
-        height=140 + 44 * weeks, margin=dict(l=76, r=24, t=34, b=56),
-        # The weekday row sits on top, so the legend goes under the grid rather than
-        # colliding with it.
+        height=120 + 62 * rows, margin=dict(l=24, r=24, t=34, b=46), shapes=shapes,
         legend=dict(orientation="h", yanchor="top", y=-0.04, x=0,
                     font=dict(color=secondaryInk)),
     ))
     figure.update_xaxes(side="top", showgrid=False, zeroline=False, showline=False,
-                        tickfont=dict(color=mutedInk))
+                        tickmode="array", tickvals=list(range(7)), ticktext=weekdayNames,
+                        range=[-0.5, 6.5], tickfont=dict(color=mutedInk))
     figure.update_yaxes(autorange="reversed", showgrid=False, zeroline=False,
-                        showline=False, tickfont=dict(color=mutedInk),
-                        title=dict(text="Week starting",
-                                   font=dict(color=mutedInk, size=12)))
+                        showline=False, showticklabels=False)
     return figure
 
 
-def dayFigure(trajectory, day, algo=None, arm=None):
-    """One test day: the price paths on top, the state of charge below.
+def dayFigure(frame, blocks=(), day=None, region=None, model=None, forecast=None,
+              every=None):
+    """One test day: the realised price path, and the dispatch the agent ran over it.
 
-    Two panels rather than two y-scales. Price in $/MWh and state of charge in 0-1 do
-    not share an axis. The oracle series the runner writes is kept whichever agent arm
-    is selected, so the day always shows what perfect foresight would have done.
+    The same figure the current forecast screen draws, over realised prices rather than
+    a forecast. `_dispatchFigure` explains how a block is placed. `forecast`, the day's
+    `data.forecastPath`, adds the price the agent acted on when it observed a forecast.
     """
-    rows = trajectory
-    oracle = rows[rows.arm == "oracle"] if not rows.empty else rows
-    for column, wanted in (("algo", algo), ("arm", arm)):
-        if wanted is not None and not rows.empty:
-            rows = rows[rows[column] == wanted]
-    if rows.empty:
-        return _emptyFigure(f"no trajectory written for {pd.Timestamp(day):%Y-%m-%d}")
+    if frame.empty:
+        named = f" under {model}" if model else ""
+        return _emptyFigure(
+            f"no trajectory written for {pd.Timestamp(day):%Y-%m-%d}{named}. A fold "
+            "scores every seed but writes the per-interval trajectory of one seed "
+            "only, so another seed of the same model holds this day.")
+    clock = pd.to_datetime(frame.settlementdate)
+    # Every realised interval is its own published price, so none is thinned out.
+    drawn = np.ones(len(clock), dtype=bool)
+    overlay = forecast if forecast is not None and not forecast.empty else None
+    chip = None
+    if forecast is not None:
+        chip = "forecast " + refreshText("forecast", every)[0].lower()
+    return _dispatchFigure(
+        clock, frame.price.to_numpy(dtype=float), blocks, drawn,
+        name="Realised price", yTitle="Price $/MWh", hoverTime="%H:%M",
+        title=" · ".join(part for part in (region, model, chip) if part),
+        forecast=overlay)
 
-    realised = rows[rows.priceSource == "realised"]
-    forecast = rows[rows.priceSource == "forecast"]
-    spine = realised if not realised.empty else forecast
-    clock = pd.to_datetime(spine.settlementdate)
+
+def publishedIntervals(clock, fine=p5minIntervals):
+    """Which rows of a forecast path AEMO actually published as separate numbers.
+
+    P5MIN gives the first `fine` intervals one price each. PREDISPATCH gives the rest
+    one price per half hour, which `data.forecasts` then holds flat across the six
+    5-minute slots of that half hour. Drawing all six invents detail the run does not
+    have, so only the half-hour stamp is kept past the P5MIN part.
+    """
+    return (np.arange(len(clock)) < fine) | (clock.dt.minute % 30 == 0).to_numpy()
+
+
+def _dispatchFigure(clock, price, blocks, drawn, *, name, yTitle, hoverTime,
+                    title=None, note=None, forecast=None):
+    """A price path with the dispatch blocks of one policy over it.
+
+    The path is drawn as the step function a dispatch price is: each point holds from
+    the end of the interval before it, so a PREDISPATCH half hour reads as one flat
+    30-minute block and a 5-minute interval as one flat 5-minute block.
+
+    The horizontal rule is the mean price. Each block spans the intervals of one
+    unbroken run of the same action, and the full height of the plot: its height is
+    fixed by the axis domain, never by a price, so a run reads by its colour and width
+    alone and a price spike cannot make one block look bigger than another. The fills
+    sit under the price line, so the path stays readable through them.
+
+    `drawn` selects which rows the line uses. The blocks and the rule always read every
+    interval, so thinning the line never moves a block.
+
+    `forecast` lays the price the agent acted on over the path, each point labelled
+    with the AEMO run it came from, and marks each run's start with a faint rule while
+    there are few enough runs to read. The blocks stay anchored to the paid price.
+    """
+    rule = float(np.mean(price))
+    shapes = []
+    for action, start, end in blocks:
+        # A run with no interval on the path has nothing to stand behind.
+        if not ((clock > start) & (clock <= end)).any():
+            continue
+        shapes.append(dict(
+            type="rect", xref="x", yref="y domain", x0=start, x1=end, layer="below",
+            y0=0, y1=1, line=dict(width=0),
+            fillcolor=dischargeBlock if action == "discharge" else chargeBlock))
 
     figure = go.Figure()
     figure.add_trace(go.Scatter(
-        x=clock, y=spine.price, name="Realised price", mode="lines", yaxis="y",
-        line=dict(color=series["realised"], width=2),
-        hovertemplate="%{x|%H:%M} · $%{y:.2f}<extra>Realised price</extra>"))
-    if not forecast.empty:
+        x=clock[drawn], y=price[drawn], name=name, mode="lines",
+        line=dict(color=ink, width=2, shape="vh"),
+        hovertemplate="%%{x|%s} · $%%{y:.2f}<extra>%s</extra>" % (hoverTime, name)))
+    runs = []
+    if forecast is not None:
+        runTimes = pd.to_datetime(forecast.forecastRunTime)
+        runs = sorted(runTimes.unique())
         figure.add_trace(go.Scatter(
-            x=pd.to_datetime(forecast.settlementdate), y=forecast.observedPrice,
-            name="Forecast seen", mode="lines", yaxis="y",
-            line=dict(color=series["forecast"], width=2, dash="dot"),
-            hovertemplate="%{x|%H:%M} · $%{y:.2f}<extra>Forecast seen</extra>"))
-
-    for source, label, dash in (("realised", "Agent SoC", "solid"),
-                                ("forecast", "Agent SoC on forecast", "dot")):
-        side = rows[rows.priceSource == source]
-        if side.empty:
-            continue
+            x=pd.to_datetime(forecast.settlementdate),
+            y=forecast.forecastPrice.to_numpy(dtype=float),
+            customdata=runTimes.dt.strftime("%d/%m %H:%M"),
+            name="Forecast acted on", mode="lines",
+            line=dict(color=forecastLine, width=1.6, shape="vh"),
+            hovertemplate="run %{customdata} · $%{y:.2f}<extra>Forecast acted on</extra>"))
+    # Two empty traces carry the key. A shape cannot hold a legend entry of its own.
+    for label, colour in (("Discharge: sell", dischargeBlock),
+                          ("Charge: buy", chargeBlock)):
         figure.add_trace(go.Scatter(
-            x=pd.to_datetime(side.settlementdate), y=side.soc, name=label,
-            mode="lines", yaxis="y2",
-            line=dict(color=series["agent"], width=2, dash=dash),
-            hovertemplate="%%{x|%%H:%%M} · %%{y:.1%%}<extra>%s</extra>" % label))
-
-    if not oracle.empty:
-        oracle = oracle[oracle.priceSource == oracle.priceSource.iloc[0]]
-        figure.add_trace(go.Scatter(
-            x=pd.to_datetime(oracle.settlementdate), y=oracle.soc,
-            name="Oracle SoC", mode="lines", yaxis="y2",
-            line=dict(color=series["oracle"], width=2),
-            hovertemplate="%{x|%H:%M} · %{y:.1%}<extra>Oracle SoC</extra>"))
+            x=[None], y=[None], mode="markers", name=label, hoverinfo="skip",
+            marker=dict(symbol="square", size=13, color=colour, line=dict(width=0)),
+            showlegend=True))
 
     figure.update_layout(**_layout(
-        height=520, hovermode="x unified",
-        # Anchored to the lower panel so the shared tick row sits under the whole
-        # figure rather than between the two panels.
-        xaxis=dict(domain=[0, 1], anchor="y2", showgrid=False, linecolor=axisLine,
-                   tickfont=dict(color=mutedInk)),
-        yaxis=dict(domain=[0.54, 1.0], anchor="free", position=0.0,
-                   title=dict(text="Price $/MWh"),
-                   gridcolor=gridline, zeroline=True, zerolinecolor=axisLine,
-                   tickfont=dict(color=mutedInk)),
-        yaxis2=dict(domain=[0.0, 0.42], title=dict(text="State of charge"),
-                    tickformat=".0%", range=[-0.02, 1.02], gridcolor=gridline,
-                    zeroline=False, tickfont=dict(color=mutedInk), anchor="x"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.04, x=0,
-                    font=dict(color=secondaryInk)),
+        height=460, hovermode="x unified", shapes=shapes,
+        title=dict(text=title or "", x=0, font=dict(color=secondaryInk, size=13)),
+        margin=dict(l=56, r=24, t=58, b=40),
+        xaxis=dict(showgrid=False, linecolor=axisLine, tickfont=dict(color=mutedInk)),
+        yaxis=dict(title=dict(text=yTitle), gridcolor=gridline,
+                   zeroline=False, tickfont=dict(color=mutedInk)),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=1,
+                    xanchor="right", font=dict(color=secondaryInk)),
     ))
+    figure.add_hline(y=rule, line=dict(color=axisLine, width=1))
+    if 1 < len(runs) <= maxRunRules:
+        for run in runs:
+            figure.add_vline(x=pd.Timestamp(run), opacity=0.45,
+                             line=dict(color=forecastLine, width=1, dash="dot"))
+    if note:
+        figure.add_annotation(text=_wrap(note), showarrow=False, x=0, y=1.0,
+                              xanchor="left", yanchor="bottom", xref="paper",
+                              yref="paper", align="left",
+                              font=dict(color=lossPole, size=12))
     return figure
+
+
+def forecastFigure(frame, blocks=(), region=None, model=None, note=None):
+    """The forward AEMO price path, with the dispatch a policy would run over it."""
+    if frame.empty:
+        return _emptyFigure(note or "no forecast published for this run time")
+    clock = pd.to_datetime(frame.settlementdate)
+    return _dispatchFigure(
+        clock, frame.price.to_numpy(dtype=float), blocks, publishedIntervals(clock),
+        name="AEMO forecast", yTitle="Forecast price $/MWh",
+        hoverTime="%d/%m %H:%M", note=note,
+        title=" · ".join(part for part in (region, model) if part))

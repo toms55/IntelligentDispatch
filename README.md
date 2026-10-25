@@ -41,6 +41,78 @@ Tests:
 uv run pytest
 ```
 
+## Trained agents
+
+A finished agent lives under `trainedPolicies/`. There is one layout:
+
+```
+trainedPolicies/<region>/<algo>-<trainMode>-s<seed>/
+    agent.zip      the weights
+    scaler.json    the price transform the weights were trained under
+    policy.json    which command wrote it, from which window, and when
+```
+
+The directory name is the label the dashboard shows. `trainedPolicies/` is gitignored,
+so an agent never travels by git.
+
+`cli train` and `cli rolling` publish their own agents at the end of a run. Use
+`cli publish` for an agent trained before that rule, or for one that arrived from
+another machine.
+
+To add an agent:
+
+1. Find the checkpoint directory. It holds `agent.zip` and `scaler.json`.
+2. Publish it. Name the region and the seed the checkpoint was trained on.
+
+```bash
+uv run python -m cli publish models/rolling2023_profit_fc4h/NSW1/seed4 \
+    --region NSW1 --seeds 4
+```
+
+To add several seeds in one call, give one directory per seed, in the order of
+`--seeds`:
+
+```bash
+uv run python -m cli publish \
+    models/rolling2023_profit_fc4h/NSW1/seed0 \
+    models/rolling2023_profit_fc4h/NSW1/seed4 \
+    --region NSW1 --seeds 0 4
+```
+
+`--algo` and `--train-mode` set the rest of the label. They default to `maskableppo`
+and `warm`.
+
+Never build the path by hand. `rl/policies.py` is the only definition of it, and
+`cli publish` is the only way to write one. The command copies `scaler.json` beside the
+weights, because the transform is pinned to a market price cap. Weights read under a
+different cap mean something else.
+
+To remove an agent, delete its directory.
+
+To move an agent to the dashboard machine, copy one region directory:
+
+```bash
+rsync -a trainedPolicies/NSW1/ dashboard-host:~/IntelligentDispatch/trainedPolicies/NSW1/
+```
+
+The current forecast screen lists the agents in `trainedPolicies/` and nothing else. An
+agent that is not published there cannot run live.
+
+## The Dashboard
+
+If you would like to run it locally, the command is:
+
+```bash
+uv run python -m visualise.dashboard --results results/backtestResults/rolling2023_profit
+```
+
+`results/backtestResults/` holds the backtests the dashboard draws, one CSV per run per
+region, and git tracks it. The dispatch each day draws comes from the matching CSV in
+`results/actions/`. A finished backtest gets there through `uv run python -m
+backtest.publish results/<run>`, which the folds job runs for you.
+
+I host it with some models I've trained here: https://huggingface.co/spaces/toms55/IntelligentDispatch
+
 ## Data
 
 `nemosis` downloads AEMO archive files into `data_cache/` on first use, so the first run

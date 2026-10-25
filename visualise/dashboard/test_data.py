@@ -2,13 +2,12 @@
 
 Everything here is a pure function of a frame, so no Dash import and no server.
 """
-import json
 from datetime import datetime, timedelta
 
 import pandas as pd
 import pytest
 
-from backtest import records
+from backtest import actions
 from visualise.dashboard import data
 
 REGION = "NSW1"
@@ -20,7 +19,7 @@ def dayRows(count=14, folds=2):
     for index in range(count):
         day = DAY + timedelta(days=index)
         rows.append({
-            "fold": index // (count // folds), "algo": "maskableppo", "arm": "warm",
+            "fold": index // (count // folds), "algo": "maskableppo", "trainMode": "warm",
             "seed": 0, "priceSource": "realised", "testDay": day,
             "agentProfit": 10.0 - index, "agentRevenue": 12.0, "agentDegradation": 2.0,
             "oracleDualBound": 40.0, "oracleGap": 0.01, "spikeIntensity": 5.0 * (index % 2),
@@ -30,49 +29,65 @@ def dayRows(count=14, folds=2):
     return rows
 
 
+def publishRun(root, rows, name="rolling", region=REGION, every=None):
+    """One published region, as `backtest.publish` writes it: root/backtestResults/
+    <name>_<region>.csv. Returns the run, root/backtestResults/<name>."""
+    frame = pd.DataFrame(rows)
+    if every is not None:
+        frame["forecastEvery"] = every
+    run = root / "backtestResults" / name
+    run.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_csv(data.publishedFile(run, region), index=False)
+    return run
+
+
+def writeActions(root, name, seeds=(0,), every=48, sources=("forecast",)):
+    """An actions export of a run named `name`, as `backtest.actions` writes it:
+    root/actions/<name>_<region>.csv."""
+    rows = []
+    for source in sources:
+        for seed in seeds:
+            for step in range(288):
+                forecast = source == "forecast"
+                rows.append({
+                    "forecastRunTime": (DAY + timedelta(minutes=5 * (step // every * every))
+                                        if forecast else None),
+                    "intervalTime": DAY + timedelta(minutes=5 * (step + 1)),
+                    "action": "charge" if step < 3 else "idle", "soc": 0.5,
+                    "forecastPrice": 10.0 * seed + step if forecast else None,
+                    "realisedPrice": 50.0 + step, "region": REGION, "fold": 0,
+                    "seed": seed, "algo": "maskableppo", "trainMode": "warm",
+                    "priceSource": source})
+    (root / "actions").mkdir(exist_ok=True)
+    pd.DataFrame(rows, columns=list(actions.columns)).to_csv(
+        root / "actions" / f"{name}_{REGION}.csv", index=False)
+
+
 @pytest.fixture
 def run(tmp_path):
-    """One finished two-fold run on disk: fold CSVs plus a manifest."""
-    rows = dayRows()
-    for fold in sorted({row["fold"] for row in rows}):
-        records.writeFold(tmp_path, REGION, fold,
-                          [row for row in rows if row["fold"] == fold])
-    records.writeManifest(tmp_path, REGION, {
-        "region": REGION, "algos": ["maskableppo"], "arms": ["warm"],
-        "trainWeeks": 52, "warmTimesteps": 30000, "coldTimesteps": 300000,
-        "seeds": [0], "capDate": "2026-01-01T04:00:00", "horizon": 288,
-        "priceSources": ["realised"], "battery": [100.0, 200.0, 300000.0],
-        "calendar": False, "discretePower": False, "gap": 0.02, "initialSoc": 0.5,
-        "rewardScale": 1000.0, "testWeeks": 1, "stepWeeks": 1,
-        "start": "2024-01-01T04:00:00", "end": "2026-01-01T04:00:00",
-    })
-    return tmp_path
+    """One finished two-fold run, published."""
+    return publishRun(tmp_path, dayRows(), every=288)
 
 
 class TestLoadRun:
-    # A region with no fold CSV names the directory it looked in.
-    def test_a_missing_run_names_the_directory(self, tmp_path):
-        with pytest.raises(FileNotFoundError, match=str(tmp_path)):
-            data.loadRun("SA1", tmp_path)
+    # A region with no published CSV names the file it looked for.
+    def test_a_missing_run_names_the_file(self, tmp_path):
+        with pytest.raises(FileNotFoundError, match="rolling_SA1.csv"):
+            data.loadRun("SA1", tmp_path / "backtestResults" / "rolling")
 
-    # A finished run comes back with its days and its manifest together.
+    # A finished run comes back with its days and its forecast pull together, and the
+    # pull is not left in the days as a column.
     def test_a_finished_run_loads_both_parts(self, run):
         loaded = data.loadRun(REGION, run)
-        assert len(loaded.days) == 14
-        assert loaded.manifest["trainWeeks"] == 52
-
-    # A manifest written beside no rows is still an error, not an empty dashboard.
-    def test_a_manifest_without_rows_is_refused(self, tmp_path):
-        records.writeManifest(tmp_path, REGION, {"region": REGION})
-        with pytest.raises(FileNotFoundError):
-            data.loadRun(REGION, tmp_path)
+        assert len(loaded.days) == 14 and loaded.forecastEvery == 288
+        assert "forecastEvery" not in loaded.days
 
 
 class TestSelectors:
     # The controls list what the data holds, never what config.py declares.
     def test_it_lists_only_what_is_present(self, run):
         got = data.selectors(data.loadRun(REGION, run).days)
-        assert got == {"algo": ["maskableppo"], "arm": ["warm"],
+        assert got == {"algo": ["maskableppo"], "trainMode": ["warm"],
                        "priceSource": ["realised"], "seed": [0]}
 
     # A second algorithm appears without any dashboard change.
@@ -116,22 +131,160 @@ class TestScope:
             data.scope(frame, day=DAY, week=DAY)
 
 
-class TestFoldOfDay:
-    # A day maps to the fold whose test window holds it, for the trajectory lookup.
-    def test_a_day_maps_to_its_fold(self, run):
-        frame = data.loadRun(REGION, run).days
-        assert data.foldOfDay(frame, DAY) == 0
-        assert data.foldOfDay(frame, DAY + timedelta(days=7)) == 1
-
-    # A day no fold tested has no trajectory to show.
-    def test_an_unknown_day_has_no_fold(self, run):
-        frame = data.loadRun(REGION, run).days
-        assert data.foldOfDay(frame, datetime(2020, 1, 1, 4)) is None
+class TestAvailableRegions:
+    # Each region of a run is its own CSV; a longer run name is another run.
+    def test_it_lists_this_runs_regions_only(self, tmp_path):
+        for region in ("NSW1", "SA1"):
+            publishRun(tmp_path, dayRows(2, folds=1), region=region)
+        publishRun(tmp_path, dayRows(2, folds=1), name="rolling_fc4h")
+        run = tmp_path / "backtestResults" / "rolling"
+        assert data.availableRegions(run) == ["NSW1", "SA1"]
 
 
-class TestTrajectories:
-    # A day with no trajectory file gives an empty frame with the right columns.
-    def test_a_missing_parquet_is_empty(self, run):
-        loaded = data.loadRun(REGION, run)
-        got = data.trajectories(loaded, DAY)
-        assert got.empty and list(got.columns) == list(records.trajectoryColumns)
+class TestFindResults:
+    def make(self, root, name="rolling2023_profit"):
+        """One finished run under `root`, named as an experiment of its own."""
+        return publishRun(root, dayRows(2, folds=1), name=name)
+
+    # A named run is taken as it is, whatever else sits beside it.
+    def test_a_named_run_wins(self, run):
+        assert data.findResults(run) == run
+
+    # The regions of one run are one candidate, not five.
+    def test_the_one_run_is_found(self, tmp_path):
+        wanted = self.make(tmp_path)
+        publishRun(tmp_path, dayRows(2, folds=1), name=wanted.name, region="SA1")
+        assert data.findResults(None, root=tmp_path / "backtestResults") == wanted
+
+    # Two experiments cannot be chosen between, so the message names both.
+    def test_several_runs_name_themselves(self, tmp_path):
+        self.make(tmp_path)
+        self.make(tmp_path, "rolling2023_fc4h")
+        with pytest.raises(FileNotFoundError, match="several runs"):
+            data.findResults(None, root=tmp_path / "backtestResults")
+
+    # An empty tree says what to run, not which path is missing.
+    def test_an_empty_tree_says_what_to_run(self, tmp_path):
+        with pytest.raises(FileNotFoundError, match="cli rolling"):
+            data.findResults(None, root=tmp_path / "gone")
+
+
+class TestVerifyRefresh:
+    """A forecast-priced run must state its test-day pull and the export must match."""
+
+    def make(self, tmp_path, every, exportEvery=None, stated=True):
+        rows = [dict(row, priceSource="forecast") for row in dayRows(count=2, folds=1)]
+        run = publishRun(tmp_path, rows, every=every if stated else None)
+        # The realised rows read no forecast, so they never disagree with it.
+        writeActions(tmp_path, "rolling", every=every if exportEvery is None else exportEvery,
+                     sources=("forecast", "realised"))
+        return run
+
+    @pytest.mark.parametrize("every", [1, 48, 288])
+    def test_a_matching_export_loads(self, tmp_path, every):
+        assert data.loadRun(REGION, self.make(tmp_path, every)).forecastEvery == every
+
+    # A run backtested every 4 hours cannot be shown as a once-a-day run.
+    def test_a_mismatched_export_is_refused(self, tmp_path):
+        with pytest.raises(ValueError, match="disagrees with forecastEvery=288"):
+            data.loadRun(REGION, self.make(tmp_path, 288, exportEvery=48))
+
+    def test_an_unstated_refresh_is_refused(self, tmp_path):
+        with pytest.raises(ValueError, match="does not state forecastEvery"):
+            data.loadRun(REGION, self.make(tmp_path, 288, stated=False))
+
+    def test_a_missing_export_is_refused(self, tmp_path):
+        run = self.make(tmp_path, 48)
+        (tmp_path / "actions" / f"rolling_{REGION}.csv").unlink()
+        with pytest.raises(FileNotFoundError, match="actions export"):
+            data.loadRun(REGION, run)
+
+
+class TestDecisions:
+    # A day's decisions come from the actions export, every model and source.
+    def test_one_day_of_every_source(self, run, tmp_path):
+        writeActions(tmp_path, "rolling", sources=("forecast", "realised"))
+        got = data.decisions(data.loadRun(REGION, run), DAY)
+        assert len(got) == 2 * 288 and set(got.priceSource) == {"forecast", "realised"}
+
+    def test_another_day_is_empty(self, run, tmp_path):
+        writeActions(tmp_path, "rolling")
+        assert data.decisions(data.loadRun(REGION, run), DAY + timedelta(days=1)).empty
+
+    # A run without an export draws an empty chart rather than raising.
+    def test_no_export_is_empty(self, run):
+        got = data.decisions(data.loadRun(REGION, run), DAY)
+        assert got.empty and list(got.columns) == list(data.actionColumns)
+
+
+class TestDispatchPath:
+    def path(self, tmp_path, **overrides):
+        """One day of decisions: charge, then idle."""
+        writeActions(tmp_path, "rolling", seeds=(0,), sources=("forecast", "realised"))
+        rows = data._readActions(str(tmp_path / "actions" / f"rolling_{REGION}.csv"), 0)
+        return rows.assign(**overrides)
+
+    # The action is the one the agent took, the same reading the forecast screen takes
+    # off its own rollout.
+    def test_the_action_is_carried(self, tmp_path):
+        got = data.dispatchPath(self.path(tmp_path), priceSource="realised")
+        assert list(got.action[:3]) == ["charge"] * 3
+        assert set(got.action[3:]) == {"idle"}
+
+    # The price is the realised price the agent was paid, never the one it observed.
+    def test_the_price_is_the_realised_one(self, tmp_path):
+        got = data.dispatchPath(self.path(tmp_path), priceSource="forecast")
+        assert list(got.price) == [50.0 + step for step in range(288)]
+
+    # The chart reads the intervals in order, whatever order the file holds them in.
+    def test_the_rows_come_back_in_interval_order(self, tmp_path):
+        shuffled = self.path(tmp_path).sort_values("realisedPrice", ascending=False)
+        got = data.dispatchPath(shuffled, priceSource="realised")
+        assert list(got.price) == [50.0 + step for step in range(288)]
+
+    # Picking one model must leave the other models and sources out of the chart.
+    def test_it_filters_to_one_model(self, tmp_path):
+        rows = self.path(tmp_path)
+        both = pd.concat([rows, rows.assign(algo="dqn")], ignore_index=True)
+        assert len(data.dispatchPath(both, algo="maskableppo",
+                                     priceSource="forecast")) == 288
+
+    # A seed that is not in the export must come back empty rather than draw seed 0's
+    # dispatch under its own name.
+    def test_a_seed_without_a_trajectory_is_empty(self, tmp_path):
+        rows = self.path(tmp_path)
+        assert data.dispatchPath(rows, seed=3).empty
+        assert len(data.dispatchPath(rows, seed=0, priceSource="realised")) == 288
+
+
+class TestForecastPath:
+    # The export follows --results: the run's name, plus the region.
+    def test_the_export_follows_the_results_directory(self, tmp_path):
+        writeActions(tmp_path, "rolling_fc4h")
+        writeActions(tmp_path, "rolling_fc5m")
+        got = data.actionsFile(tmp_path / "backtestResults" / "rolling_fc4h", REGION)
+        assert got.name == f"rolling_fc4h_{REGION}.csv"
+        assert data.actionsFile(tmp_path / "backtestResults" / "other", REGION) is None
+
+    def test_one_day_of_one_seed(self, tmp_path):
+        writeActions(tmp_path, "rolling", seeds=(0, 1))
+        path = data.forecastPath(tmp_path / "backtestResults" / "rolling", REGION, DAY,
+                                 algo="maskableppo", trainMode="warm", seed=1)
+        assert len(path) == 288 and path.forecastPrice.iloc[0] == 10.0
+        assert path.forecastRunTime.nunique() == 6
+
+    # The realised rows read no forecast, so they never reach the forecast line.
+    def test_the_realised_rows_are_left_out(self, tmp_path):
+        writeActions(tmp_path, "rolling", sources=("forecast", "realised"))
+        path = data.forecastPath(tmp_path / "backtestResults" / "rolling", REGION, DAY)
+        assert len(path) == 288 and path.forecastPrice.notna().all()
+
+    # A seed the export does not hold has no forecast, never another seed's.
+    def test_a_missing_seed_is_empty(self, tmp_path):
+        writeActions(tmp_path, "rolling")
+        assert data.forecastPath(tmp_path / "backtestResults" / "rolling", REGION, DAY,
+                                 seed=3).empty
+
+    def test_no_export_is_none(self, tmp_path):
+        assert data.forecastPath(tmp_path / "backtestResults" / "rolling", REGION,
+                                 DAY) is None

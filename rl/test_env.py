@@ -218,23 +218,16 @@ class TestBoundary:
 
 
 class TestReward:
-    def test_the_baseline_cancels_to_regret(self, paper):
-        schedule = solve(MIXED_PRICES, paper, initialSoc=config.initial_soc,
-                         calendar=False, discretePower=True)
-        env = makeEnv(paper, baseline=[schedule.profitPerInterval])
+    def test_the_reward_is_raw_profit(self, paper):
+        env = makeEnv(paper)
         env.reset(seed=0)
-        total = 0.0
         rng = np.random.default_rng(3)
-        info = {}
         for _ in range(len(MIXED_PRICES)):
             _, reward, _, _, info = env.step(int(rng.integers(3)))
-            total += reward
-        assert total == pytest.approx(
-            info["episode_totals"]["profit"] - schedule.profit, rel=1e-9
-        )
-        assert info["regret"] == pytest.approx(-total, rel=1e-9)
+            assert reward == pytest.approx(info["profit"], rel=1e-12, abs=1e-15)
 
-    def test_the_baseline_does_not_change_which_policy_is_best(self, paper):
+    def test_the_baseline_is_reporting_only(self, paper):
+        """An oracle baseline fills lpProfit and regret, and leaves the reward alone."""
         schedule = solve(MIXED_PRICES, paper, initialSoc=config.initial_soc,
                          calendar=False, discretePower=True)
         actions = [CHARGE, IDLE, CHARGE, DISCHARGE, DISCHARGE, IDLE,
@@ -243,12 +236,12 @@ class TestReward:
         plain.reset(seed=0)
         withBaseline = makeEnv(paper, baseline=[schedule.profitPerInterval])
         withBaseline.reset(seed=0)
-        shifts = []
         for action in actions:
             _, bare, _, _, _ = plain.step(action)
-            _, shifted, _, _, _ = withBaseline.step(action)
-            shifts.append(bare - shifted)
-        assert sum(shifts) == pytest.approx(schedule.profit, rel=1e-9)
+            _, reported, _, _, info = withBaseline.step(action)
+            assert reported == bare
+        assert info["regret"] == pytest.approx(
+            schedule.profit - info["episode_totals"]["profit"], rel=1e-9)
 
     def test_idling_is_not_free_once_calendar_aging_is_on(self, paper):
         env = makeEnv(paper, values=[0.0] * 6, horizon=6, calendar=True)
@@ -418,3 +411,47 @@ class TestForecastObservations:
         obs, _ = env.reset(seed=0)
         assert env.observation_space.contains(obs)
         assert not np.isnan(obs).any()
+
+
+class TestForecastRefresh:
+    """A refresh stack: the agent reads the latest run published by each step."""
+
+    @staticmethod
+    def stack(levels, every=4):
+        horizon = len(MIXED_PRICES)
+        grid = np.full((len(levels), horizon), np.nan)
+        for refresh, level in enumerate(levels):
+            grid[refresh, refresh * every:] = level
+        return grid
+
+    def test_the_view_switches_at_each_refresh(self, paper):
+        env = makeEnv(paper, forecasts=[self.stack([100.0, 200.0, 300.0])])
+        obs, _ = env.reset(seed=0)
+        seen = [obs[1]]
+        for step in range(len(MIXED_PRICES) - 1):
+            obs, *_ = env.step(IDLE)
+            if step + 1 in (3, 4, 8):
+                seen.append(obs[1])
+        assert seen == pytest.approx([env.scaler(level)
+                                      for level in (100.0, 100.0, 200.0, 300.0)], abs=1e-6)
+
+    def test_settlement_still_uses_the_realised_price(self, paper):
+        env = makeEnv(paper, forecasts=[self.stack([999.0, 999.0, 999.0])])
+        env.reset(seed=0)
+        for step in range(5):
+            _, _, _, _, info = env.step(DISCHARGE)
+        assert info["price"] == MIXED_PRICES[4]
+
+    def test_a_stack_of_the_realised_path_scores_the_same(self, paper):
+        mirrored = np.tile(MIXED_PRICES, (3, 1))
+        actions = [CHARGE, IDLE, DISCHARGE, CHARGE, DISCHARGE, IDLE,
+                   CHARGE, DISCHARGE, IDLE, CHARGE, IDLE, DISCHARGE]
+        plain, stacked = makeEnv(paper), makeEnv(paper, forecasts=[mirrored])
+        a, _ = plain.reset(seed=0)
+        b, _ = stacked.reset(seed=0)
+        np.testing.assert_allclose(a, b)
+        for action in actions:
+            a, ra, *_ = plain.step(action)
+            b, rb, *_ = stacked.step(action)
+            np.testing.assert_allclose(a, b)
+            assert ra == pytest.approx(rb)

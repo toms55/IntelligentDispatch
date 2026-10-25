@@ -1,20 +1,39 @@
 #!/bin/bash
 # Stage 2 of the 2023 rolling backtest: 143 one-week folds, 52-week warm-chained
-# training, each scored on realised prices and on the AEMO 04:00 forecast. Needs the
-# oracle cache from scripts/rolling2023_oracle.pbs and the forecast prefetch in
-# data_cache/forecast_paths/NSW1.parquet.
+# training on raw profit, each scored on realised prices and on the AEMO 04:00 forecast.
+# Needs the oracle cache over the test days (2023-12-31 on) from
+# scripts/rolling2023_oracle.pbs and the forecast prefetch in
+# data_cache/forecast_paths/NSW1.parquet. Training days need no oracle.
 #
-#     qsub -W depend=afterok:<oracle job id> scripts/rolling2023_folds.pbs
+#     qsub -W depend=afterok:<oracle job ids> scripts/rolling2023_folds.pbs
+#     qsub scripts/rolling2023_folds.pbs        # the cache is already complete
+#     qsub -v OUT=/abs/runs/x,RESULTS=/abs/results/x scripts/rolling2023_folds.pbs
+#     qsub -v TRAIN_MODES=cold,OUT=...,RESULTS=... scripts/rolling2023_folds.pbs
+#     qsub -v OUT=<trained runs>,LOGS=...,RESULTS=...,PRICE_SOURCE=forecast,REFRESH=5,PREFETCH=1 \
+#          scripts/rolling2023_folds.pbs      # rescore existing checkpoints, no training
+#     qsub -v TRAIN_SOURCE=forecast,REFRESH=5,PREFETCH=1,PREFETCH_SPAN=2023-01-01T04:00..2023-12-31T04:00,OUT=...,RESULTS=... \
+#          scripts/rolling2023_folds.pbs      # train on the AEMO forecast as well
+#
+# TRAIN_MODES=cold fits every fold fresh at the cold budget instead of continuing the
+# previous fold's checkpoint. Give it its own OUT and RESULTS, because a result set
+# records its train modes.
 #
 # Each seed's chain is independent, so each seed runs in its own process. They write to
 # separate result directories, because the runner rewrites a fold CSV whole and two
 # processes on one directory would drop each other's rows. The last step merges them.
-# Resumable: a fold is skipped once its rows are written.
+# Each seed appends its decisions, both price sources, to the region's one actions CSV,
+# results/actions/<run>_<region>.csv, as each fold finishes (backtest/actions.py), so the
+# CSV grows while the job runs and no export step follows.
+#
+# A run name is used once: a job whose actions CSV or results/backtestResults/
+# <run>_<region>.csv already exists stops before training. Redo under a new RESULTS. A job killed partway
+# (walltime) continues with -v RESUME=1 and the same OUT and RESULTS: a fold is skipped
+# once its rows are written, and its CSV rows are never appended twice.
 
 #PBS -N id-folds23
 #PBS -q medq
 #PBS -l ncpus=6
-#PBS -l mem=24GB
+#PBS -l mem=48GB
 #PBS -l walltime=96:00:00
 #PBS -j oe
 
@@ -24,43 +43,72 @@ export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONWARNINGS=ignore
 PY=.venv/bin/python
 
 SEEDS=${SEEDS:-"0 1 2 3 4"}
-OUT=runs/rolling2023
-RESULTS=results/rolling2023
-mkdir -p "$OUT"
+REGION=${REGION:-NSW1}   # pass -v REGION=SA1 etc.
+TRAIN_MODES=${TRAIN_MODES:-warm}   # warm, cold, or "warm cold"
+# Not runs/rolling2023: those names belonged to the oracle-baselined reward.
+OUT=${OUT:-runs/rolling2023_profit}
+RESULTS=${RESULTS:-results/rolling2023_profit}
+PRICE_SOURCE=${PRICE_SOURCE:-both}   # realised, forecast or both
+REFRESH=${REFRESH:-240}   # forecast refresh in minutes; 5 is every interval
+TRAIN_SOURCE=${TRAIN_SOURCE:-realised}   # realised or forecast; settlement is realised
+# Seed logs go here. Set it when OUT holds another run's checkpoints, or its logs are lost.
+LOGS=${LOGS:-$OUT}
+mkdir -p "$OUT" "$LOGS"
+
+# Checked once here, not by each seed: a seed starting late would otherwise find the CSV
+# an earlier seed had just begun, and refuse its own run.
+if [ "${RESUME:-0}" != 1 ]; then
+  $PY -c 'import sys; from backtest.actions import refuseExisting; refuseExisting(*sys.argv[1:])' \
+    "$RESULTS" "$REGION"
+fi
+
+# Paths for every refresh run of every test day. Needed whenever REFRESH changes.
+if [ "${PREFETCH:-0}" = 1 ]; then
+  # Training on forecasts needs every training day too, from 2023-01-01.
+  $PY -u -m cli prefetch --split "pre=${PREFETCH_SPAN:-2023-12-31T04:00..2026-09-26T04:00}" --region "$REGION" \
+    --forecast-refresh "$REFRESH" > "$LOGS/prefetch.log" 2>&1
+fi
 
 # No --allow-solve: every day must already be cached, or the run stops rather than
 # solving MILPs on one core per seed.
 pids=()
 for seed in $SEEDS; do
-  $PY -u -m cli rolling --split "all=2023-01-01T04:00..2026-10-01T04:00" --region NSW1 \
-    --train-weeks 52 --test-weeks 1 --step-weeks 1 --algo maskableppo \
+  $PY -u -m cli rolling --split "all=2023-01-01T04:00..2026-10-01T04:00" --region "$REGION" \
+    --train-weeks 52 --test-weeks 1 --step-weeks 1 --algo maskableppo --train-modes $TRAIN_MODES \
     --cap-date 2026-10-01T04:00 --baseline-oracle discrete --no-calendar \
-    --gap 0.02 --time-limit 1800 --price-source both --seeds "$seed" \
-    --out "$OUT" --results "$RESULTS/seed$seed" > "$OUT/seed$seed.log" 2>&1 &
+    --gap 0.02 --time-limit 1800 --price-source "$PRICE_SOURCE" --forecast-refresh "$REFRESH" \
+    --train-source "$TRAIN_SOURCE" \
+    --seeds "$seed" --out "$OUT" --results "$RESULTS/seed$seed" --resume \
+    > "$LOGS/seed$seed.log" 2>&1 &
   pids+=($!)
 done
 failed=0
 for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
-[ "$failed" -eq 0 ] || { echo "a seed FAILED, see $OUT/seed*.log"; exit 1; }
+[ "$failed" -eq 0 ] || { echo "a seed FAILED, see $LOGS/seed*.log"; exit 1; }
 
 # Merge the seeds into one result set the dashboard and the report can read.
-$PY - "$RESULTS" $SEEDS <<'EOF'
+$PY - "$RESULTS" "$REGION" $SEEDS <<'EOF'
 import json, shutil, sys
 from pathlib import Path
 import pandas as pd
 from backtest import metrics, records
 import cli
 
-root, seeds = Path(sys.argv[1]), sys.argv[2:]
-frame = pd.concat([records.readDays(root / f"seed{s}", "NSW1") for s in seeds],
+root, region, seeds = Path(sys.argv[1]), sys.argv[2], sys.argv[3:]
+REGION = region
+frame = pd.concat([records.readDays(root / f"seed{s}", REGION) for s in seeds],
                   ignore_index=True)
 for fold, rows in frame.groupby("fold"):
     rows = rows.assign(testDay=rows.testDay.dt.to_pydatetime())
-    records.writeFold(root / "all", "NSW1", fold, rows.to_dict("records"))
+    records.writeFold(root / "all", REGION, fold, rows.to_dict("records"))
 # Trajectories are kept for seed 0 only (the runner's trajectorySeed).
-for path in sorted((root / "seed0" / "NSW1").glob("fold*.parquet")):
-    shutil.copy(path, records.regionDir(root / "all", "NSW1") / path.name)
-manifest = json.loads((root / "seed0" / "NSW1" / "manifest.json").read_text())
-records.writeManifest(root / "all", "NSW1", {**manifest, "seeds": [int(s) for s in seeds]})
-cli._reportRolling(records.readDays(root / "all", "NSW1"), metrics, 0.02)
+for path in sorted((root / "seed0" / REGION).glob("fold*.parquet")):
+    shutil.copy(path, records.regionDir(root / "all", REGION) / path.name)
+manifest = json.loads((root / "seed0" / REGION / "manifest.json").read_text())
+records.writeManifest(root / "all", REGION, {**manifest, "seeds": [int(s) for s in seeds]})
+cli._reportRolling(records.readDays(root / "all", REGION), metrics, 0.02)
 EOF
+
+# The finished region, where the dashboard reads it and git tracks it.
+$PY -m backtest.publish "$RESULTS"
+echo "published to results/backtestResults/; commit it with: git add results/backtestResults results/actions"

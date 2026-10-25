@@ -264,9 +264,13 @@ class TestRlSubcommands:
     """Argument plumbing only. Training itself is covered in rl/test_algos.py."""
 
     @pytest.fixture
-    def rlCalls(self, monkeypatch, series):
-        from rl import baseline, evaluate, train
+    def rlCalls(self, monkeypatch, series, tmp_path):
+        from rl import baseline, evaluate, policies, train
         seen = {}
+        # Training publishes its final agent, so the fake has to leave a finished
+        # checkpoint behind, and the publish must land in the temporary directory.
+        monkeypatch.setattr(policies, "defaultRoot", tmp_path / "trainedPolicies")
+        seen["policies"] = tmp_path / "trainedPolicies"
 
         def fakeBuild(prices, **kwargs):
             seen["baseline"] = kwargs
@@ -276,7 +280,11 @@ class TestRlSubcommands:
 
         def fakeTrain(algoName, prices, model, **kwargs):
             seen.setdefault("train", []).append((algoName, kwargs))
-            return None, Path("runs/fake/agent")
+            directory = tmp_path / "runs" / f"{algoName}_seed{kwargs['seed']}"
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / policies.agentFile).write_bytes(b"")
+            (directory / policies.scalerFile).write_text('{"cap": 16600.0}')
+            return None, directory / "agent"
 
         def fakeEvaluateSeeds(checkpoints, prices, model, **kwargs):
             seen["eval"] = (sorted(checkpoints), kwargs)
@@ -316,6 +324,16 @@ class TestRlSubcommands:
         assert len(rlCalls["train"]) == 3
         assert [kwargs["seed"] for _, kwargs in rlCalls["train"]] == [0, 1, 2]
 
+    # Every trained agent ends up under trainedPolicies/, which is where the dashboard
+    # reads it. One fit from fresh weights is a cold agent.
+    def test_train_publishes_each_seed(self, rlCalls):
+        from rl import policies
+
+        cli.main(["train", "2024-01-10", "2024-01-11", "--horizon", "4",
+                  "--seeds", "0", "1", "--timesteps", "10"])
+        found = policies.available("SA1", rlCalls["policies"])
+        assert sorted(found) == ["maskableppo-cold-s0", "maskableppo-cold-s1"]
+
     def test_train_defaults_to_the_configured_seeds(self, rlCalls):
         cli.main(["train", "2024-01-10", "2024-01-11", "--horizon", "4",
                   "--timesteps", "10"])
@@ -335,16 +353,11 @@ class TestRlSubcommands:
         with pytest.raises(SystemExit):
             cli.main(["train", "2024-01-10", "2024-01-11", "--algo", "ppo2"])
 
-    def test_train_subtracts_the_oracle_baseline_by_default(self, rlCalls):
+    def test_train_solves_no_oracle(self, rlCalls):
         cli.main(["train", "2024-01-10", "2024-01-11", "--horizon", "4",
                   "--timesteps", "10"])
-        assert rlCalls["train"][0][1]["baselines"] is not None
-
-    def test_no_baseline_leaves_the_reward_as_raw_profit(self, rlCalls):
-        cli.main(["train", "2024-01-10", "2024-01-11", "--horizon", "4",
-                  "--timesteps", "10", "--no-baseline"])
-        assert rlCalls["train"][0][1]["baselines"] is None
-        assert "baseline" not in rlCalls  # no oracle solve at all
+        assert "baselines" not in rlCalls["train"][0][1]
+        assert "baseline" not in rlCalls
 
     def test_train_pins_the_price_scale_to_the_window_end(self, rlCalls, capsys):
         """2024-01-10 to 2024-01-11 sits in 2023-24, so the cap is 16600."""
@@ -367,11 +380,10 @@ class TestRlSubcommands:
         scalers = [kwargs["scaler"] for _, kwargs in rlCalls["train"]]
         assert all(one == scalers[0] for one in scalers)
 
-    def test_the_horizon_reaches_both_the_env_and_the_oracle(self, rlCalls):
+    def test_the_horizon_reaches_the_env(self, rlCalls):
         cli.main(["train", "2024-01-10", "2024-01-11", "--horizon", "4",
                   "--timesteps", "10"])
         assert rlCalls["train"][0][1]["horizon"] == 4
-        assert rlCalls["baseline"]["horizon"] == 4
 
     def test_eval_refuses_a_missing_checkpoint(self, rlCalls, tmp_path):
         with pytest.raises(SystemExit, match="no checkpoint"):
@@ -483,6 +495,22 @@ class TestRolling:
         assert self.rolling("--dry-run") == 0
         assert "cfg" not in spy
 
+    # The decisions go to the run's one CSV, whichever seed directory --results names.
+    def test_the_actions_csv_follows_the_run_name(self, spy, tmp_path):
+        self.rolling("--results", str(tmp_path / "results" / "x" / "seed2"))
+        assert spy["cfg"].actionsFile == tmp_path / "results" / "actions" / "x_NSW1.csv"
+
+    # A name already used stops a fresh start; --resume continues it.
+    def test_an_existing_name_needs_resume(self, spy, tmp_path):
+        run = tmp_path / "results" / "x"
+        (tmp_path / "results" / "actions").mkdir(parents=True)
+        (tmp_path / "results" / "actions" / "x_NSW1.csv").write_text("fold\n")
+        with pytest.raises(SystemExit, match="already exists"):
+            self.rolling("--results", str(run))
+        assert "cfg" not in spy
+        self.rolling("--results", str(run), "--resume")
+        assert "cfg" in spy
+
 
 class TestExistingSubcommandsSurvive:
     # train and eval keep their single --algo after rolling made it a list elsewhere.
@@ -519,7 +547,7 @@ class TestReportRolling:
     def frame(self):
         days = pd.date_range("2024-01-01 04:00", periods=7, freq="D")
         return pd.DataFrame([
-            {"fold": 0, "algo": "maskableppo", "arm": "warm", "seed": 0,
+            {"fold": 0, "algo": "maskableppo", "trainMode": "warm", "seed": 0,
              "priceSource": source, "testDay": day, "agentProfit": agent,
              "oracleDualBound": 10.0, "oracleGap": 0.5 if step == 0 else 0.01,
              "highVol": False}

@@ -1,0 +1,20 @@
+#!/bin/bash
+# Prefetch the AEMO forecast paths for one region over one span, at one refresh rate.
+#
+#     qsub -v REGION=NSW1,SPAN=2023-01-01T04:00..2023-12-31T04:00,REFRESH=5 scripts/prefetch.pbs
+#
+# Adds to data_cache/forecast_paths/<REGION>.parquet. Reads the raw run cache in
+# data_cache/forecast_raw, so a month already there costs no download.
+
+#PBS -N id-prefetch
+#PBS -q smallq
+#PBS -l ncpus=1
+#PBS -l mem=16GB
+#PBS -l walltime=6:00:00
+#PBS -j oe
+
+set -euo pipefail
+cd "${PBS_O_WORKDIR:-$PWD}"
+export OMP_NUM_THREADS=1 PYTHONWARNINGS=ignore
+.venv/bin/python -u -m cli prefetch --split "pre=${SPAN:?pass -v SPAN=START..END}" \
+  --region "${REGION:?pass -v REGION=...}" --forecast-refresh "${REFRESH:-5}"

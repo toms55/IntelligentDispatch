@@ -49,28 +49,29 @@ def fillBottomUp(soc, segmentCapacities):
     return levels
 
 
-def defaultSolver(verbose=False, timeLimit=None, gap=None, threads=None):
+def defaultSolver(verbose=False, timeLimit=None, gap=None, threads=None, options=None):
     """HiGHS if available, else CBC.
 
     threads should be 1 when solving windows in parallel processes, or HiGHS takes
     every core in every worker.
     """
     if "HiGHS" in pulp.listSolvers(onlyAvailable=True):
-        options = dict(msg=verbose, output_flag=verbose, log_to_console=verbose,
-                       timeLimit=timeLimit, gapRel=gap)
+        settings = dict(msg=verbose, output_flag=verbose, log_to_console=verbose,
+                        timeLimit=timeLimit, gapRel=gap)
         if threads is not None:
-            options["threads"] = threads
-        return pulp.HiGHS(**options)
+            settings["threads"] = threads
+        return pulp.HiGHS(**settings, **(options or {}))
     return pulp.PULP_CBC_CMD(msg=verbose, timeLimit=timeLimit, gapRel=gap,
                              threads=threads)
 
 
 def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=True,
-          solver=None, discretePower=False, timeLimit=None, gap=None, threads=None):
+          solver=None, discretePower=False, timeLimit=None, gap=None, threads=None,
+          options=None):
     """Best possible dispatch against a known price series.
 
     prices: $/MWh per interval. model: a SchadeDegradation. discretePower restricts
-    every interval to full rate or nothing.
+    every interval to full rate or nothing. options are extra HiGHS settings.
     """
     intervals = range(len(prices))
     segmentCapacity = model.segmentCapacities
@@ -131,7 +132,8 @@ def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=Tr
     )
     problem += revenueExpr - pulp.lpSum(cycleExpr) - pulp.lpSum(calendarExpr)
 
-    problem.solve(solver or defaultSolver(timeLimit=timeLimit, gap=gap, threads=threads))
+    problem.solve(solver or defaultSolver(timeLimit=timeLimit, gap=gap, threads=threads,
+                                            options=options))
     status = pulp.LpStatus[problem.status]
     if status != "Optimal" and stored[0][0].value() is None:
         raise AssertionError(f"solver returned {status} with no feasible solution")

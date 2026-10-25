@@ -6,7 +6,8 @@
     python -m cli eval  --split val   --algo maskableppo
 
 `lp` is the oracle. `baseline` solves and caches one oracle schedule per episode window,
-which the reward subtracts. `train` and `eval` are the agent.
+which `eval` scores against. `train` and `eval` are the agent.  The reward is the agent's
+own profit, so training needs no oracle.
 
 A window is either two explicit dates or a named `--split` out of config.py.
 """
@@ -26,6 +27,7 @@ from data.prices import price_series
 from utils import nem_interval
 from degradation.schade import SchadeDegradation
 from optimisation.lp import defaultSolver, solve
+from rl import policies
 
 
 DEFAULT_PATH = ""  # --csv / --plot given without a PATH; filled in by _outputPath
@@ -274,7 +276,6 @@ def _runBaseline(args):
 
 
 def _runTrain(args):
-    from rl import baseline
     from rl.features import PriceScaler, scalerFor
     from rl.train import trainOne
     from utils.market import marketPriceCap
@@ -284,26 +285,24 @@ def _runTrain(args):
     scaler = (PriceScaler(marketPriceCap(args.cap_date)) if args.cap_date
               else scalerFor(prices.index))
     print(f"price scale     cap {scaler.cap:.0f}, knee {scaler.knee:.0f}")
-    baselines = None
-    if not args.no_baseline:
-        # The baseline only has to be a constant per window/interval, so it need not
-        # share the environment's battery model -- dropping Q^CAL here is much cheaper.
-        baselines = baseline.profitPerInterval(baseline.buildBaseline(
-            prices, region=args.region, horizon=args.horizon,
-            calendar=not (args.no_calendar or args.baseline_no_calendar),
-            model=model, initialSoc=args.initial_soc,
-            discretePower=args.baseline_oracle == "discrete",
-            gap=args.gap, timeLimit=args.time_limit, workers=args.workers,
-        ))
     for seed in args.seeds:
         with _stage(f"train {args.algo} seed {seed}", quiet=not args.verbose):
             _, path = trainOne(
-                args.algo, prices, model, baselines=baselines, seed=seed,
+                args.algo, prices, model, seed=seed,
                 timesteps=args.timesteps, calendar=not args.no_calendar,
                 horizon=args.horizon, rewardScale=args.reward_scale, outDir=args.out,
                 scaler=scaler,
             )
         print(f"wrote          {path}.zip")
+        # One fit from fresh weights is a cold agent, which is the train mode the
+        # rolling backtest gives the same thing. The dashboard reads this directory.
+        published = policies.publish(
+            path.parent, args.region, args.algo, "cold", seed,
+            root=args.policies, command="train", timesteps=args.timesteps,
+            window=[args.start.isoformat(), args.end.isoformat()],
+            priceCap=scaler.cap,
+        )
+        print(f"published      {published}")
     return 0
 
 
@@ -328,15 +327,16 @@ def _runEval(args):
 
     forecasts = None
     if args.forecast:
-        from data.forecasts import forecastMatrix
+        from data.forecasts import refreshMatrix
         from rl.baseline import chunkWindows
 
-        # Run time is one interval before the episode's first interval.
-        runTimes = [
+        # An episode opens one interval before its first interval ends.
+        dayStarts = [
             prices.index[start] - nem_interval for start in
             chunkWindows(len(prices), args.horizon)
         ]
-        forecasts = forecastMatrix(runTimes, args.region, args.horizon)
+        forecasts = refreshMatrix(dayStarts, args.region, args.horizon,
+                                  _refreshIntervals(args, args.horizon))
 
     if args.heuristic:
         from rl.env import BessEnv
@@ -393,6 +393,26 @@ def _parseFolds(value):
     return frozenset(chosen)
 
 
+def _runPublish(args):
+    """Put an existing checkpoint under trainedPolicies/.
+
+    Training publishes on its own. This is for the agents trained before the
+    convention, and for an agent moved between machines by hand.
+    """
+    if len(args.seeds) != len(args.checkpoint):
+        raise SystemExit(
+            f"{len(args.checkpoint)} directories against {len(args.seeds)} seeds: "
+            f"give one --seeds value per directory, in the same order"
+        )
+    for seed, checkpoint in zip(args.seeds, args.checkpoint):
+        published = policies.publish(
+            checkpoint, args.region, args.algo, args.train_mode, seed,
+            root=args.policies, command="publish",
+        )
+        print(f"published      {checkpoint} -> {published}")
+    return 0
+
+
 def _runRolling(args):
     # A bad span, a cold oracle cache and a changed manifest are all the operator's to
     # fix, so they exit with the message rather than a traceback.
@@ -403,7 +423,7 @@ def _runRolling(args):
 
 
 def _rolling(args):
-    from backtest import metrics, records, runner
+    from backtest import actions, metrics, records, runner
 
     start, end = _window(args)
     sources = (("realised", "forecast") if args.price_source == "both"
@@ -412,8 +432,10 @@ def _rolling(args):
         region=args.region, start=start, end=end, capDate=args.cap_date,
         trainWeeks=args.train_weeks, testWeeks=args.test_weeks,
         stepWeeks=args.step_weeks, algos=tuple(args.algo), seeds=tuple(args.seeds),
-        arms=tuple(args.arms), warmTimesteps=args.warm_timesteps,
+        trainModes=tuple(args.trainModes), warmTimesteps=args.warm_timesteps,
         coldTimesteps=args.cold_timesteps, priceSources=sources,
+        trainSource=args.train_source,
+        forecastEvery=_refreshIntervals(args, args.horizon),
         horizon=args.horizon, rewardScale=args.reward_scale,
         initialSoc=args.initial_soc, calendar=not args.no_calendar,
         discretePower=args.baseline_oracle == "discrete",
@@ -422,7 +444,8 @@ def _rolling(args):
         trajectorySeed=None if args.trajectory_seed < 0 else args.trajectory_seed,
         foldFilter=None if args.folds is None else _parseFolds(args.folds),
         allowSolve=args.allow_solve, outDir=Path(args.out),
-        resultsDir=Path(args.results),
+        resultsDir=Path(args.results), policyRoot=Path(args.policies),
+        actionsFile=actions.liveFile(args.results, args.region),
     )
 
     audit = runner.auditPlan(cfg)
@@ -434,16 +457,33 @@ def _rolling(args):
           f"{audit['last'].testEnd:%Y-%m-%d}")
     print(f"oracle cache   {audit['days'] - audit['missing']} of {audit['days']} days "
           f"present, {audit['missing']} would be solved")
+    print(f"actions        {cfg.actionsFile}")
     if args.dry_run:
         return 0
+    if not args.resume:
+        actions.refuseExisting(args.results, args.region)
 
     written = runner.runRolling(cfg, onProgress=lambda done, total, fold: print(
         f"  [{done:3d}/{total}] fold {fold.index:2d} test {fold.testStart:%Y-%m-%d}"))
     frame = records.readDays(cfg.resultsDir, cfg.region)
     print(f"wrote          {written} new unit(s), {len(frame)} rows in "
           f"{records.regionDir(cfg.resultsDir, cfg.region)}")
+    print(f"published      {len(cfg.algos) * len(cfg.trainModes) * len(cfg.seeds)} "
+          f"agent(s) to {Path(args.policies) / cfg.region}")
     _reportRolling(frame, metrics, cfg.gap)
     return 0
+
+
+def _refreshIntervals(args, horizon):
+    """--forecast-refresh minutes in dispatch intervals. Refuses one that does not divide
+    the episode, since every refresh must start on the step grid."""
+    every, rest = divmod(args.forecast_refresh, 5)
+    if rest or every <= 0 or horizon % every:
+        raise SystemExit(
+            f"--forecast-refresh {args.forecast_refresh} minutes must be a whole number "
+            f"of 5-minute intervals that divides the {horizon}-interval episode"
+        )
+    return every
 
 
 def _runPrefetch(args):
@@ -451,19 +491,22 @@ def _runPrefetch(args):
 
     start, end = _window(args)
     # Always the full episode horizon: a shorter one is a slice of this cache.
-    target = prefetchForecasts(start, end, args.region, config.episode_intervals)
+    target = prefetchForecasts(
+        start, end, args.region, config.episode_intervals,
+        every=_refreshIntervals(args, config.episode_intervals))
     print(f"wrote {target}")
     return 0
 
 
 def _reportRolling(frame, metrics, gap):
-    # One block per (algo, arm, source): pooling them would average unlike runs.
-    for (algo, arm, source), part in frame.groupby(["algo", "arm", "priceSource"]):
+    # One block per (algo, trainMode, source): pooling them would average unlike runs.
+    for (algo, trainMode, source), part in frame.groupby(
+            ["algo", "trainMode", "priceSource"]):
         overall = metrics.summarise(part)
         days = part.drop_duplicates("testDay")
         # NaN is a solve with no gap at all, so it counts as loose too.
         loose = int((~(days.oracleGap <= gap + 1e-9)).sum())
-        print(f"\n{algo} {arm} on {source} prices")
+        print(f"\n{algo} {trainMode} on {source} prices")
         print(f"days           {overall['days']}  ({loose} with a loose bound, gap "
               f"above {gap:.2%}: captured is a floor there)")
         print(f"agent profit   {overall['agentProfit']:12.4f}")
@@ -476,10 +519,10 @@ def _reportRolling(frame, metrics, gap):
             label = "high vol" if high else "low vol "
             print(f"  {label}     {got['days']:4d} days  agent {got['agentProfit']:10.4f}  "
                   f"oracle {got['oracleProfit']:10.4f}  captured {got['captured']:7.2%}")
-    for (algo, arm), part in frame.groupby(["algo", "arm"]):
+    for (algo, trainMode), part in frame.groupby(["algo", "trainMode"]):
         if set(part.priceSource) >= {"realised", "forecast"}:
             delta = metrics.difference(part, "priceSource", "realised", "forecast")
-            print(f"\n{algo} {arm}: realised minus forecast {delta.pooled:.4f} over "
+            print(f"\n{algo} {trainMode}: realised minus forecast {delta.pooled:.4f} over "
                   f"{len(delta.perFold)} folds")
 
 
@@ -587,7 +630,15 @@ def main(argv=None):
                                  "the cache key does not record the limit, so a loose "
                                  f"record is permanent (default: {limitDefault})")
 
-    def addRlArgs(parser, oracleDefault, forecastFlag=True, algoList=False):
+    def addRefreshArg(parser):
+        minutes = config.forecast_refresh_intervals * 5
+        parser.add_argument("--forecast-refresh", type=int, default=minutes,
+                            metavar="MINUTES",
+                            help="replace the forecast with AEMO's latest run this often "
+                                 "within an episode, from its 04:00 start; 5 is every "
+                                 f"interval, 1440 one run per day (default: {minutes})")
+
+    def addRlArgs(parser, oracleDefault=None, forecastFlag=True, algoList=False):
         parser.add_argument("--algo", default=["maskableppo"] if algoList else "maskableppo",
                             nargs="+" if algoList else None,
                             choices=list(config.algorithms),
@@ -606,22 +657,30 @@ def main(argv=None):
                             help=f"fixed divisor on the reward (default: {config.reward_scale})")
         parser.add_argument("--out", default="runs", metavar="DIR",
                             help="where checkpoints live (default: runs)")
+        parser.add_argument("--policies", default=str(policies.defaultRoot),
+                            metavar="DIR",
+                            help=f"where the final trained agent of each run is "
+                                 f"published, and where the dashboard reads it "
+                                 f"(default: {policies.defaultRoot})")
+        parser.add_argument("--verbose", action="store_true",
+                            help="show an elapsed-time ticker per run")
+        if oracleDefault is None:
+            return  # train: the reward is raw profit, so no oracle is consulted
         parser.add_argument("--workers", type=int, default=1, metavar="N",
                             help="parallel oracle solves when the cache is cold "
                                  "(default: 1)")
-        parser.add_argument("--verbose", action="store_true",
-                            help="show an elapsed-time ticker per run")
         parser.add_argument("--baseline-oracle", choices=["continuous", "discrete"],
                             default=oracleDefault,
-                            help="which oracle supplies the per-interval profit; the "
-                                 "reward baseline can use continuous, a quoted bound must "
-                                 f"be discrete (default: {oracleDefault})")
+                            help="which oracle supplies the per-interval profit and the "
+                                 "bound; a quoted bound must be discrete "
+                                 f"(default: {oracleDefault})")
         if forecastFlag:
             parser.add_argument("--forecast", action="store_true",
                                 help="fill the price slots from the AEMO forecast "
                                      "published at each episode's run time, instead of "
                                      "realised prices; settlement still uses realised "
                                      "prices")
+            addRefreshArg(parser)
 
     lp = addParser("lp", "perfect-foresight MILP oracle")
     addSolverArgs(lp)
@@ -647,8 +706,9 @@ def main(argv=None):
     baselineCmd.set_defaults(run=_runBaseline)
 
     train = addParser("train", "train an agent, one run per seed")
-    addSolverArgs(train, gapDefault=config.oracle_gap)
-    addRlArgs(train, "continuous" if not config.baseline_discrete_power else "discrete")
+    train.add_argument("--no-calendar", action="store_true",
+                       help="drop calendar aging from the environment's degradation cost")
+    addRlArgs(train)
     train.add_argument("--timesteps", type=int, default=100000, metavar="N",
                        help="environment steps per seed (default: 100000)")
     train.add_argument("--cap-date", type=datetime.fromisoformat, default=None,
@@ -658,11 +718,6 @@ def main(argv=None):
                             "window. Pass the end of the window you will score on to "
                             "keep full resolution over prices above the training year's "
                             "cap. The scale is saved beside the checkpoint either way")
-    train.add_argument("--no-baseline", action="store_true",
-                       help="reward is raw profit, with no oracle baseline subtracted")
-    train.add_argument("--baseline-no-calendar", action="store_true",
-                       help="drop calendar aging from the baseline solve only, leaving it "
-                            "on in the environment")
     train.set_defaults(run=_runTrain)
 
     evalCmd = addParser("eval", "score trained agents against the oracle")
@@ -698,8 +753,8 @@ def main(argv=None):
                          help="pin the observation price scale to the market price cap in "
                               "force then; required, because a per-fold cap would make "
                               "folds either side of 1 July incomparable")
-    rolling.add_argument("--arms", nargs="+", default=["warm"],
-                         choices=["warm", "cold"],
+    rolling.add_argument("--train-modes", dest="trainModes", nargs="+",
+                         default=["warm"], choices=["warm", "cold"],
                          help="warm continues the previous fold's checkpoint, cold starts "
                               "fresh each fold (default: warm)")
     rolling.add_argument("--warm-timesteps", type=int, default=30000, metavar="N",
@@ -711,6 +766,12 @@ def main(argv=None):
                          default="realised",
                          help="what fills the observation's price slots; settlement always "
                               "uses realised prices (default: realised)")
+    rolling.add_argument("--train-source", choices=["realised", "forecast"],
+                         default="realised",
+                         help="what fills the price slots in training: forecast trains "
+                              "on the AEMO runs at the --forecast-refresh rate; "
+                              "settlement is realised either way (default: realised)")
+    addRefreshArg(rolling)
     rolling.add_argument("--results", default="results/rolling", metavar="DIR",
                          help="where the per-fold CSV and parquet go "
                               "(default: results/rolling)")
@@ -723,6 +784,10 @@ def main(argv=None):
                          help="permit solving oracle windows that are not cached; without "
                               "it a cold cache stops the run instead of silently starting "
                               "hours of MILP")
+    rolling.add_argument("--resume", action="store_true",
+                         help="continue a backtest of this name; without it a name whose "
+                              "actions CSV or published CSV exists is refused, "
+                              "so a redo takes a new --results name")
     rolling.add_argument("--dry-run", action="store_true",
                          help="print the fold table and the cache audit, run nothing")
     # The cached oracle was solved without calendar aging, so matching it is the
@@ -732,7 +797,31 @@ def main(argv=None):
                               "cache and must be re-solved")
     rolling.set_defaults(run=_runRolling, out="runs/rolling", no_calendar=True)
 
+    # Not addParser: this command takes directories, not a window, and the shared
+    # parser's optional start/end positionals would swallow the first one.
+    publish = subcommands.add_parser(
+        "publish", formatter_class=_formatter,
+        help="put an existing checkpoint under trainedPolicies/")
+    publish.add_argument("checkpoint", nargs="+", metavar="DIR",
+                         help="one training output directory per seed, each holding "
+                              "agent.zip and scaler.json, in the order of --seeds")
+    publish.add_argument("--region", default=config.default_region, metavar="ID",
+                         help=f"NEM region the agent was trained for "
+                              f"(default: {config.default_region})")
+    publish.add_argument("--algo", default="maskableppo",
+                         choices=list(config.algorithms),
+                         help="which algorithm trained it (default: maskableppo)")
+    publish.add_argument("--train-mode", default="warm", choices=["warm", "cold"],
+                         help="warm continued an earlier checkpoint, cold started fresh "
+                              "(default: warm)")
+    publish.add_argument("--seeds", type=int, nargs="+", default=[0], metavar="N",
+                         help="the seed each DIR was trained on (default: 0)")
+    publish.add_argument("--policies", default=str(policies.defaultRoot), metavar="DIR",
+                         help=f"where to publish (default: {policies.defaultRoot})")
+    publish.set_defaults(run=_runPublish)
+
     prefetch = addParser("prefetch", "cache the AEMO forecast paths for a region")
+    addRefreshArg(prefetch)
     prefetch.set_defaults(run=_runPrefetch)
 
     args = parser.parse_args(argv)

@@ -9,15 +9,26 @@ The checkpoint on disk is the training record. There is no separate ledger: a un
 done when its rows are in the fold CSV, and training is done when agent.zip exists.
 """
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from backtest import folds, records, runner
+from rl import policies
 from utils import nem_interval
 
 START = datetime(2024, 1, 1, 4)
 REGION = "NSW1"
+
+
+def refreshFrame(days, every=48, horizon=288):
+    """A prefetched cache holding every refresh run of `days`, fully covered."""
+    runs = [pd.Timestamp(day) + offset * nem_interval
+            for day in days for offset in range(0, horizon, every)]
+    return pd.DataFrame([[1.0] * horizon] * len(runs), index=runs,
+                        columns=[str(n) for n in range(1, horizon + 1)])
 
 
 @pytest.fixture
@@ -32,12 +43,13 @@ def prices():
 def config(tmp_path, prices):
     return runner.RollingConfig(
         region=REGION, start=START, end=prices.index[-1], capDate=datetime(2026, 1, 1, 4),
-        trainWeeks=4, seeds=(0, 1), arms=("warm",),
+        trainWeeks=4, seeds=(0, 1), trainModes=("warm",),
         warmTimesteps=10, coldTimesteps=100,
         # buildBaseline is faked, so nothing solves. Without this the suite reads the
         # real data_cache/lp_baseline, which is gitignored and absent on a clean clone.
         allowSolve=True,
         outDir=tmp_path / "runs", resultsDir=tmp_path / "results",
+        policyRoot=tmp_path / "trainedPolicies",
     )
 
 
@@ -63,6 +75,9 @@ def spy(monkeypatch, prices):
         directory = kwargs["outDir"] / f"{algo}_seed{kwargs['seed']}"
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "agent.zip").write_bytes(b"")
+        # The real trainOne writes the transform beside the weights, and publishing
+        # refuses a checkpoint that holds only one of the two.
+        (directory / "scaler.json").write_text('{"cap": 23200.0}')
         return None, directory / "agent"
 
     def fakeEvaluate(checkpoints, testPrices, model, **kwargs):
@@ -104,6 +119,18 @@ class TestSpanWideWork:
         asked = spy["baseline"][0]
         assert (asked["calendar"], asked["discretePower"]) == (False, True)
         assert asked["gap"] == 0.02
+
+    # The reward is raw profit, so training days need no oracle: the build starts at the
+    # first test day, and no training call is handed a baseline.
+    def test_the_oracle_covers_the_test_days_only(self, config, monkeypatch, spy):
+        windows = []
+        fake = runner.buildBaseline
+        monkeypatch.setattr(runner, "buildBaseline",
+                            lambda window, **kw: windows.append(window) or fake(window, **kw))
+        runner.runRolling(config)
+        first = folds.enumerateFolds(config.start, config.end, 4)[0]
+        assert windows[0].index[0] == first.testStart + nem_interval
+        assert all("baselines" not in call for call in spy["train"])
 
 
 class TestFoldWindows:
@@ -180,21 +207,21 @@ class TestWarmChain:
         assert (frame[frame.fold == 2].warmFrom == "").all()
         assert (frame[frame.fold == 3].warmFrom != "").all()
 
-    # The cold arm is independent by construction and never inherits anything.
-    def test_the_cold_arm_never_warm_starts(self, config, spy):
-        runner.runRolling(config._replace(arms=("cold",), seeds=(0,)))
+    # The cold train mode is independent by construction and never inherits anything.
+    def test_the_cold_mode_never_warm_starts(self, config, spy):
+        runner.runRolling(config._replace(trainModes=("cold",), seeds=(0,)))
         assert all(call["warmFrom"] is None for call in spy["train"])
         assert all(call["timesteps"] == config.coldTimesteps for call in spy["train"])
 
 
 class TestOutput:
-    # One row per fold, day, algorithm, arm, seed and price source.
+    # One row per fold, day, algorithm, train mode, seed and price source.
     def test_one_row_per_fold_day_seed(self, config, spy):
         runner.runRolling(config)
         frame = records.readDays(config.resultsDir, REGION)
         expected = len(folds.enumerateFolds(config.start, config.end, 4)) * 7 * 2
         assert len(frame) == expected
-        assert set(frame.arm) == {"warm"} and set(frame.seed) == {0, 1}
+        assert set(frame.trainMode) == {"warm"} and set(frame.seed) == {0, 1}
 
     # The volatility label is joined onto every row, so the calendar and the high/low
     # split need nothing but the CSV.
@@ -210,7 +237,20 @@ class TestOutput:
         runner.runRolling(config._replace(trajectorySeed=1))
         written = pd.read_parquet(config.resultsDir / REGION / "fold00.parquet")
         assert set(written.seed) == {1}
-        assert set(written.arm) == {"warm", "oracle"}
+        assert set(written.trainMode) == {"warm", "oracle"}
+
+    # A forecast-priced row names the run the agent read; a realised one names none.
+    def test_trajectories_record_the_run_read(self, config):
+        fold = SimpleNamespace(index=0, testDays=[pd.Timestamp(START)])
+        steps = [{"price": 1.0, "soc": 0.5, "bought": 0.0, "sold": 0.0, "profit": 0.0}] * 288
+        perWindow = [{"window": 0, "trajectory": steps}]
+        stack = np.zeros((1, 6, 288))
+        rows = runner._resultTrajectories(config, fold, "maskableppo", "warm", "forecast",
+                                          perWindow, None, stack)
+        assert rows[48]["forecastRunTime"] == pd.Timestamp(START) + pd.Timedelta(hours=4)
+        realised = runner._resultTrajectories(config, fold, "maskableppo", "warm",
+                                              "realised", perWindow, None, None)
+        assert realised[0]["forecastRunTime"] is None
 
     # Two algorithms get disjoint checkpoint directories, so neither overwrites the
     # other's warm chain.
@@ -218,6 +258,30 @@ class TestOutput:
         runner.runRolling(config._replace(algos=("maskableppo", "dqn"), seeds=(0,)))
         written = {call["outDir"] / f"{call['algo']}_seed0" for call in spy["train"]}
         assert len({path.name for path in written}) == 2
+
+
+class TestPublishesTheFinalAgent:
+    # The run ends by putting its last fold under trainedPolicies/, which is the only
+    # place the dashboard looks. The per-fold checkpoints stay working state.
+    def test_the_last_fold_is_published(self, config, spy):
+        runner.runRolling(config)
+        found = policies.available(REGION, config.policyRoot)
+        assert sorted(found) == ["maskableppo-warm-s0", "maskableppo-warm-s1"]
+
+    # policy.json says which fold it came from, because the weights do not.
+    def test_it_records_the_fold_it_came_from(self, config, spy):
+        runner.runRolling(config)
+        facts = policies.describe(
+            policies.policyDir(REGION, "maskableppo", "warm", 0, config.policyRoot))
+        last = runner._plan(config).selected[-1]
+        assert facts["fold"] == last.index and facts["command"] == "rolling"
+
+    # A resumed run that trains nothing still publishes, so a run finished in two
+    # passes still leaves the dashboard an agent to read.
+    def test_a_resumed_run_still_publishes(self, config, spy):
+        runner.runRolling(config)
+        assert runner.runRolling(config) == 0
+        assert policies.available(REGION, config.policyRoot)
 
 
 class TestResume:
@@ -250,7 +314,7 @@ class TestDryRun:
     def test_the_audit_counts_folds_and_cache_misses(self, config, spy):
         report = runner.auditPlan(config)
         assert report["folds"] == 6
-        assert report["days"] == 70          # fold 0's train start to fold 5's test end
+        assert report["days"] == 42          # fold 0's test start to fold 5's test end
         assert 0 <= report["missing"] <= report["days"]
         assert spy["train"] == [] and spy["evaluate"] == []
 
@@ -275,10 +339,10 @@ class TestAuditReportsTheSelection:
 
 
 class TestForecastSource:
-    # A span with no forecast arm never touches the forecast cache.
+    # A span with no forecast price source never touches the forecast cache.
     def test_a_realised_only_run_loads_nothing(self, config, monkeypatch):
         monkeypatch.setattr(runner, "loadForecastCache",
-                            lambda region: pytest.fail("loaded without a forecast arm"))
+                            lambda region: pytest.fail("loaded without a forecast price source"))
         assert runner._forecastSource(config, [START]) is None
 
     # No prefetched cache falls back to the live per-run path.
@@ -289,27 +353,170 @@ class TestForecastSource:
 
     # A test day the prefetch never reached names the prefetch command.
     def test_a_missing_day_names_the_prefetch(self, config, monkeypatch):
-        frame = pd.DataFrame([[1.0] * 288], index=[pd.Timestamp(START)],
-                             columns=[str(n) for n in range(1, 289)])
+        frame = refreshFrame([START])
         monkeypatch.setattr(runner, "loadForecastCache", lambda region: frame)
         cfg = config._replace(priceSources=("forecast",))
         with pytest.raises(ValueError, match="cli prefetch"):
             runner._forecastSource(cfg, [START, START + folds.oneDay])
 
+    # A refresh run AEMO never published is held at the latest earlier run, shifted onto
+    # its own run time, as a live agent would have seen it.
+    def test_a_missing_refresh_run_holds_the_earlier_one(self, config, monkeypatch):
+        frame = refreshFrame([START])
+        earlier = pd.Timestamp(START) + pd.Timedelta(hours=12)
+        frame.loc[earlier] = np.arange(1.0, 289.0)
+        lost = pd.Timestamp(START) + pd.Timedelta(hours=16)
+        frame = frame.drop(lost)
+        monkeypatch.setattr(runner, "loadForecastCache", lambda region: frame)
+        cfg = config._replace(priceSources=("forecast",))
+        source = runner._forecastSource(cfg, [START])
+        np.testing.assert_array_equal(source.loc[lost].iloc[:240], np.arange(49.0, 289.0))
+        assert source.loc[lost].iloc[240:].isna().all()
+
+    # The episode's opening run has nothing earlier to hold, so its absence is refused.
+    def test_a_missing_opening_run_is_refused(self, config, monkeypatch):
+        frame = refreshFrame([START]).drop(pd.Timestamp(START))
+        monkeypatch.setattr(runner, "loadForecastCache", lambda region: frame)
+        cfg = config._replace(priceSources=("forecast",))
+        with pytest.raises(ValueError, match="first 2024-01-01 04:00"):
+            runner._forecastSource(cfg, [START])
+
     # A day present but only partly covered is refused, not padded to zero in silence.
     def test_a_partial_day_is_refused(self, config, monkeypatch):
-        row = [1.0] * 11 + [None] * 277
-        frame = pd.DataFrame([row], index=[pd.Timestamp(START)],
-                             columns=[str(n) for n in range(1, 289)])
+        frame = refreshFrame([START])
+        frame.iloc[0, 11:] = None
         monkeypatch.setattr(runner, "loadForecastCache", lambda region: frame)
         cfg = config._replace(priceSources=("forecast",))
         with pytest.raises(ValueError, match="11 of 288"):
             runner._forecastSource(cfg, [START])
 
-    # A fully covered day passes the cache straight through.
-    def test_a_complete_day_is_accepted(self, config, monkeypatch):
-        frame = pd.DataFrame([[1.0] * 288], index=[pd.Timestamp(START)],
-                             columns=[str(n) for n in range(1, 289)])
+    # A later run need only reach the episode end: the 16:00 run covers 144 steps.
+    def test_a_refresh_run_need_only_reach_the_episode_end(self, config, monkeypatch):
+        frame = refreshFrame([START])
+        frame.loc[pd.Timestamp(START) + pd.Timedelta(hours=12), "145":] = None
         monkeypatch.setattr(runner, "loadForecastCache", lambda region: frame)
         cfg = config._replace(priceSources=("forecast",))
         assert runner._forecastSource(cfg, [START]) is frame
+
+    # ...and one that stops short of it, as when AEMO skipped the PREDISPATCH run, keeps
+    # its own steps and takes the rest from the earlier run.
+    def test_a_refresh_run_short_of_the_episode_end_holds_the_tail(self, config, monkeypatch):
+        frame = refreshFrame([START])
+        frame.loc[pd.Timestamp(START) + pd.Timedelta(hours=8)] = 2.0
+        short = pd.Timestamp(START) + pd.Timedelta(hours=12)
+        frame.loc[short, "144":] = None
+        monkeypatch.setattr(runner, "loadForecastCache", lambda region: frame)
+        cfg = config._replace(priceSources=("forecast",))
+        row = runner._forecastSource(cfg, [START]).loc[short]
+        assert (row.iloc[:143] == 1.0).all() and row.iloc[143] == 2.0
+
+    # One run per day is still a valid design, and needs only the 04:00 run.
+    def test_a_daily_refresh_needs_only_the_0400_run(self, config, monkeypatch):
+        frame = refreshFrame([START]).iloc[:1]
+        monkeypatch.setattr(runner, "loadForecastCache", lambda region: frame)
+        cfg = config._replace(priceSources=("forecast",), forecastEvery=288)
+        assert runner._forecastSource(cfg, [START]) is frame
+
+    # A fully covered day passes the cache straight through.
+    def test_a_complete_day_is_accepted(self, config, monkeypatch):
+        frame = refreshFrame([START])
+        monkeypatch.setattr(runner, "loadForecastCache", lambda region: frame)
+        cfg = config._replace(priceSources=("forecast",))
+        assert runner._forecastSource(cfg, [START]) is frame
+
+
+class TestManifest:
+    # The test-day forecast pull is recorded, so the dashboard can check what it shows.
+    def test_a_forecast_run_records_the_refresh(self, config):
+        cfg = config._replace(priceSources=("realised", "forecast"))
+        assert runner.manifestOf(cfg)["forecastEvery"] == 48
+
+    # A realised-only set records it too: every result set states its pull frequency.
+    def test_a_realised_only_run_records_it_too(self, config):
+        assert runner.manifestOf(config)["forecastEvery"] == 48
+
+
+class TestTrainingOnForecasts:
+    def _run(self, config, spy, monkeypatch, trainSource):
+        days = [START + n * folds.oneDay for n in range(10 * 7)]
+        monkeypatch.setattr(runner, "loadForecastCache",
+                            lambda region: refreshFrame(days))
+        runner.runRolling(config._replace(trainSource=trainSource, foldFilter=frozenset({0})))
+        return spy["train"]
+
+    # Training on realised prices passes no forecast, as before.
+    def test_realised_training_passes_no_forecast(self, config, spy, monkeypatch):
+        assert all(call["forecasts"] is None
+                   for call in self._run(config, spy, monkeypatch, "realised"))
+
+    # One refresh stack per training day, on the episode's own step grid.
+    def test_forecast_training_reads_one_stack_per_training_day(self, config, spy,
+                                                                 monkeypatch):
+        calls = self._run(config, spy, monkeypatch, "forecast")
+        assert calls
+        for call in calls:
+            assert call["forecasts"].shape == (4 * 7, 288 // 48, 288)
+            assert len(call["prices"]) == 4 * 7 * 288
+
+    # A training day the prefetch never reached stops the run before any fit.
+    def test_a_training_day_missing_from_the_cache_is_refused(self, config, spy,
+                                                              monkeypatch):
+        late = [START + n * folds.oneDay for n in range(7, 10 * 7)]
+        monkeypatch.setattr(runner, "loadForecastCache", lambda region: refreshFrame(late))
+        with pytest.raises(ValueError, match="cli prefetch"):
+            runner.runRolling(config._replace(trainSource="forecast",
+                                              foldFilter=frozenset({0})))
+        assert spy["train"] == []
+
+    # Only a forecast-trained set records its source, so older result sets still resume.
+    def test_the_manifest_records_a_forecast_training_source(self, config):
+        assert "trainSource" not in runner.manifestOf(config)
+        cfg = config._replace(trainSource="forecast")
+        assert runner.manifestOf(cfg)["trainSource"] == "forecast"
+        assert "forecastEvery" in runner.manifestOf(cfg)
+
+
+class TestActionsFile:
+    # Every seed's decisions, both price sources, reach the CSV as each fold finishes,
+    # not just the trajectory seed's.
+    @pytest.fixture
+    def forecastConfig(self, config, monkeypatch, tmp_path):
+        monkeypatch.setattr(runner, "loadForecastCache", lambda region: None)
+        monkeypatch.setattr(runner, "refreshMatrix", lambda days, region, horizon, every, **kw:
+                            np.full((len(days), horizon // every, horizon), 40.0))
+        return config._replace(priceSources=("realised", "forecast"),
+                               foldFilter=frozenset({0, 1}),
+                               actionsFile=tmp_path / "actions" / "run_NSW1.csv")
+
+    def test_every_seed_of_every_fold_is_written(self, forecastConfig, spy):
+        runner.runRolling(forecastConfig)
+        got = pd.read_csv(forecastConfig.actionsFile)
+        assert set(got.seed) == {0, 1}
+        assert set(got.fold) == {0, 1}
+        assert len(got) == 2 * 2 * 2 * 7 * 288
+        assert (got.realisedPrice == 50.0).all()
+        forecast = got.priceSource == "forecast"
+        assert forecast.sum() == len(got) // 2 and (got.forecastPrice[forecast] == 40.0).all()
+        assert got.forecastPrice[~forecast].isna().all()
+
+    def test_a_resumed_run_writes_no_row_twice(self, forecastConfig, spy):
+        runner.runRolling(forecastConfig._replace(foldFilter=frozenset({0})))
+        runner.runRolling(forecastConfig)
+        got = pd.read_csv(forecastConfig.actionsFile)
+        assert len(got) == 2 * 2 * 2 * 7 * 288
+        assert not got.duplicated(["fold", "seed", "priceSource", "intervalTime"]).any()
+
+    # A fold killed after its CSV rows but before its fold CSV is scored again, and its
+    # rows are not appended a second time.
+    def test_a_fold_killed_before_its_records_is_not_appended_again(
+            self, forecastConfig, spy, monkeypatch):
+        cfg = forecastConfig._replace(foldFilter=frozenset({0}))
+        real = records.writeFold
+        monkeypatch.setattr(records, "writeFold", lambda *a, **k: (_ for _ in ()).throw(
+            RuntimeError("killed")))
+        with pytest.raises(RuntimeError):
+            runner.runRolling(cfg)
+        monkeypatch.setattr(records, "writeFold", real)
+        runner.runRolling(cfg)
+        got = pd.read_csv(cfg.actionsFile)
+        assert len(got) == 2 * 2 * 7 * 288

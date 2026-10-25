@@ -12,6 +12,7 @@ import numpy as np
 from gymnasium import spaces
 
 import config
+from data.forecasts import activeRun
 from rl import features
 from utils import nem_interval_hours
 
@@ -22,7 +23,9 @@ class BessEnv(gymnasium.Env):
     """One episode is one LP chunk: `horizon` intervals from a fixed starting SoC.
 
     prices: a pandas Series of RRP with a DatetimeIndex. baseline: per-window lists of
-    the LP's own per-interval profit, keyed by window index. Needs `gamma = 1`.
+    the LP's own per-interval profit, keyed by window index. It is reporting only: it
+    fills `lpProfit` and the episode's `regret`, and never enters the reward, which is
+    the agent's own profit.
 
     scaler: the price transform the observation uses. It defaults to the cap in force at
     the end of `prices`, which is right for a fresh run. When you score a checkpoint,
@@ -48,8 +51,10 @@ class BessEnv(gymnasium.Env):
         self.calendar = calendar
         self.rewardScale = rewardScale
         self.shuffle = shuffle
-        # None means realised prices (training). Settlement always uses the realised
-        # price regardless.
+        # None means realised prices (training). Otherwise one entry per window: a
+        # single path, or a data.forecasts.refreshMatrix stack of runs, of which the
+        # agent reads the latest published by each step. Settlement always uses the
+        # realised price regardless.
         self.forecasts = forecasts
 
         self.windows = list(range(0, len(self.prices) - horizon + 1, horizon))
@@ -97,7 +102,7 @@ class BessEnv(gymnasium.Env):
         qCd, qCal, degradationCost = self._degradation(socPrev, socNew)
         profit = revenue - degradationCost
         baseline = self._baselineAt(self.stepIndex)
-        reward = (profit - baseline) / self.rewardScale
+        reward = profit / self.rewardScale
 
         self.totals["revenue"] += revenue
         self.totals["degradation"] += degradationCost
@@ -186,7 +191,7 @@ class BessEnv(gymnasium.Env):
         filled with realised prices, so a forecast run never leaks the true past."""
         if self.forecasts is None:
             return self.prices[start:end]
-        forward = np.asarray(self.forecasts[self.windowIndex], dtype=float)
+        forward = activeRun(self.forecasts[self.windowIndex], self.stepIndex)
         path = np.zeros(self.horizon, dtype=float)
         usable = min(self.horizon - self.stepIndex, len(forward) - self.stepIndex)
         if usable > 0:

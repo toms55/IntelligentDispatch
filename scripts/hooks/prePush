@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Publish the Hugging Face Space when a push updates main, so main and the hosted
+# dashboard never drift. `scripts/installHooks.sh` installs the shim that calls this.
+#
+# The hook runs before the push to GitHub, because git has no hook that runs after one.
+# A failed publish therefore does not block the push: it prints what to run instead.
+#
+# It skips, with a reason, in five cases:
+#
+#   1. $NO_SPACE_PUBLISH is set, for a push that is meant to reach GitHub alone
+#   2. the push does not update main
+#   3. the checked out branch is not main
+#   4. the working tree is not clean, because the upload is staged from it
+#   5. nothing the Space serves has changed since the last publish
+set -euo pipefail
+
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+
+say() { printf 'pre-push: %s\n' "$1" >&2; }
+
+if [[ -n "${NO_SPACE_PUBLISH:-}" ]]; then
+  say "NO_SPACE_PUBLISH is set, so the Space is not published"
+  exit 0
+fi
+
+# Each line of stdin is: <local ref> <local sha> <remote ref> <remote sha>. A local sha
+# of all zeros deletes the remote branch, and a deletion publishes nothing.
+zero=$(git hash-object --stdin </dev/null | tr '0-9a-f' '0')
+updatesMain=no
+while read -r _localRef localSha remoteRef _remoteSha; do
+  if [[ "$remoteRef" == refs/heads/main && "$localSha" != "$zero" ]]; then
+    updatesMain=yes
+  fi
+done
+if [[ "$updatesMain" != yes ]]; then
+  exit 0
+fi
+
+branch=$(git rev-parse --abbrev-ref HEAD)
+if [[ "$branch" != main ]]; then
+  say "pushing main from $branch, so the Space is not published"
+  say "the upload is staged from the working tree. Publish from a main checkout."
+  exit 0
+fi
+if [[ -n "$(git status --porcelain)" ]]; then
+  say "the working tree is not clean, so the Space is not published"
+  say "the upload is staged from the working tree. Commit, then run scripts/pushMain.sh"
+  exit 0
+fi
+
+record=$(bash scripts/spaceFingerprint.sh --path)
+fingerprint=$(bash scripts/spaceFingerprint.sh)
+if [[ -r "$record" && "$(cat "$record")" == "$fingerprint" ]]; then
+  say "the Space already holds this code, these results and these weights"
+  exit 0
+fi
+
+say "the Space is behind. Publishing it before the push to GitHub."
+# The script runs `uv`, which lives in the dev shell. A plain `git push` from a plain
+# shell has to work, so enter the dev shell when uv is not already on the path.
+if command -v uv >/dev/null; then
+  publish=(bash scripts/publishSpace.sh --push)
+else
+  publish=(nix develop --command bash scripts/publishSpace.sh --push)
+fi
+if "${publish[@]}"; then
+  printf '%s\n' "$fingerprint" > "$record"
+  say "the Space is published. Pushing to GitHub now."
+else
+  say "the publish failed, and the push to GitHub goes ahead."
+  say "the Space is now behind main. Fix the fault, then run scripts/pushMain.sh"
+fi
+exit 0

@@ -55,6 +55,9 @@ def fakeSolve(monkeypatch):
 
     monkeypatch.setattr(baseline, "solve", recorder("milp"))
     monkeypatch.setattr(baseline.dp, "solve", recorder("dp"))
+    # In-process, so the calls land in this list rather than in a forked child's copy.
+    monkeypatch.setattr(baseline, "_withDeadline",
+                        lambda seconds, function, *a, **k: function(*a, **k))
     return calls
 
 
@@ -158,6 +161,115 @@ class TestSolveWindow:
         )
         assert fakeSolve[0]["solver"] == "milp"
         assert fakeSolve[0]["discretePower"] is False
+
+
+def _quick(value):
+    return value
+
+
+def _hang():
+    import time
+    time.sleep(60)
+
+
+class TestWithDeadline:
+    def test_returns_what_the_function_returns(self):
+        assert baseline._withDeadline(30, _quick, 7) == 7
+
+    def test_kills_a_function_that_overruns(self):
+        with pytest.raises(TimeoutError):
+            baseline._withDeadline(0.5, _hang)
+
+
+def _allocate():
+    return bytearray(2**30)
+
+
+class TestMemoryCap:
+    def test_a_runaway_child_dies_alone(self, monkeypatch):
+        monkeypatch.setattr(baseline, "memoryCap", 256 * 2**20)
+        with pytest.raises(RuntimeError, match="died"):
+            baseline._withDeadline(30, _allocate)
+
+    def test_a_small_child_is_unaffected(self, monkeypatch):
+        monkeypatch.setattr(baseline, "memoryCap", 256 * 2**20)
+        assert baseline._withDeadline(30, _quick, 7) == 7
+
+
+class TestFallback:
+    """The MILP's kill-and-retry chain. solveWindow sends a discrete window to the DP,
+    which has no limit to overrun, so the discrete chain is driven directly here."""
+
+    @pytest.fixture
+    def overruns(self, monkeypatch, fakeSolve):
+        """Make the first `count` attempts overrun."""
+        def install(count):
+            def deadline(seconds, function, *a, **k):
+                if len(fakeSolve) < count:
+                    function(*a, **k)
+                    raise TimeoutError
+                return function(*a, **k)
+            monkeypatch.setattr(baseline, "_withDeadline", deadline)
+        return install
+
+    @staticmethod
+    def discrete(paper, series):
+        common = dict(initialSoc=config.initial_soc, dtHours=1 / 12, calendar=True,
+                      timeLimit=config.oracle_time_limit, gap=config.oracle_gap,
+                      threads=None)
+        return baseline._solveWithFallback(list(series), paper, True, common)
+
+    def test_kills_past_the_limit_plus_grace(self, paper, series, monkeypatch, fakeSolve,
+                                             tmp_path):
+        seen = []
+        monkeypatch.setattr(baseline, "_withDeadline", lambda seconds, function, *a, **k:
+                            seen.append(seconds) or function(*a, **k))
+        baseline.solveWindow(series.to_numpy(), list(series.index), "SA1",
+                             horizon=len(series), model=paper, cacheDir=tmp_path,
+                             timeLimit=100, discretePower=False)
+        assert seen == [100 + baseline.killGrace]
+
+    def test_a_clean_solve_is_not_a_fallback(self, paper, series, fakeSolve, tmp_path):
+        for discretePower in (True, False):
+            record = baseline.solveWindow(series.to_numpy(), list(series.index), "SA1",
+                                          horizon=len(series), model=paper,
+                                          cacheDir=tmp_path, discretePower=discretePower)
+            assert record["fallback"] is None
+            assert baseline.timedOut([record], 0.01) == []
+
+    def test_retries_with_restarts_off(self, paper, series, fakeSolve, overruns):
+        overruns(1)
+        _, fallback = self.discrete(paper, series)
+        assert fallback == "noRestart"
+        assert fakeSolve[1]["options"] == {"mip_allow_restart": False}
+        assert fakeSolve[1]["discretePower"] is True
+
+    def test_then_falls_back_to_the_continuous_bound(self, paper, series, fakeSolve,
+                                                    overruns):
+        overruns(2)
+        _, fallback = self.discrete(paper, series)
+        assert fallback == "continuous"
+        assert fakeSolve[2]["discretePower"] is False
+
+    def test_a_dead_child_falls_back_like_an_overrun(self, paper, series, fakeSolve,
+                                                     monkeypatch):
+        def deadline(seconds, function, *a, **k):
+            if len(fakeSolve) < 1:
+                function(*a, **k)
+                raise RuntimeError("solve died with exit code -9")
+            return function(*a, **k)
+        monkeypatch.setattr(baseline, "_withDeadline", deadline)
+        _, fallback = self.discrete(paper, series)
+        assert fallback == "noRestart"
+
+    def test_gives_up_after_every_attempt_overruns(self, paper, series, fakeSolve,
+                                                   overruns, tmp_path):
+        overruns(1)
+        with pytest.raises(TimeoutError):
+            baseline.solveWindow(series.to_numpy(), list(series.index), "SA1",
+                                 horizon=len(series), model=paper, cacheDir=tmp_path,
+                                 discretePower=False)
+        assert list(tmp_path.glob("*.json")) == []
 
 
 class TestBuildBaseline:

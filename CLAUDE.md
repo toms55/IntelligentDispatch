@@ -60,6 +60,131 @@ uv run python -m cli lp --help
 uv run pytest
 ```
 
+## Conventions (mandatory)
+
+These are rules, not defaults. Break one and the training machine and the dashboard
+machine stop agreeing.
+
+### A trained agent lives in `trainedPolicies/`
+
+Training runs on one machine and the dashboard runs on another, so the agents have to
+travel. There is exactly one layout for a finished agent:
+
+```
+trainedPolicies/<region>/<algo>-<trainMode>-s<seed>/
+    agent.zip      the weights
+    scaler.json    the price transform the weights were trained under
+    policy.json    which command wrote it, from which window, and when
+```
+
+Rules:
+
+1. Never build that path by hand. `rl/policies.py` is the only definition of it. Call
+   `policies.publish(...)` to write and `policies.available(region)` to read.
+2. Every command that trains an agent publishes its final agent there before it exits.
+   `cli train` publishes each seed. `cli rolling` publishes the last fold of the run.
+3. Always copy `scaler.json` with the weights. The transform is pinned to a market
+   price cap. Weights read under a different cap mean something else.
+4. The directory name is the dashboard label. Do not add a second naming scheme.
+5. Working state stays out. The rolling backtest keeps one checkpoint per fold under
+   `--out` (`runs/rolling`), because it warm starts the next fold from the last one.
+   Those are not published, and nothing reads them across machines.
+6. `trainedPolicies/` is gitignored. Move it with `rsync` or `scp`, not with git.
+
+To move a trained agent to the dashboard machine, copy one region directory:
+
+```bash
+rsync -a trainedPolicies/NSW1/ dashboard-host:~/IntelligentDispatch/trainedPolicies/NSW1/
+```
+
+### A dashboard backtest lives in `results/backtestResults/`
+
+`results/` is working output and git ignores it, apart from the published runs and
+their actions exports. Those are tracked, so every clone can draw them. Each is one CSV
+per run per region, named the same way:
+
+```
+results/backtestResults/<run>_<region>.csv   one row per seed, price source and test
+                                             day, every fold, plus forecastEvery
+results/actions/<run>_<region>.csv           one row per agent decision, every seed and
+                                             price source; the day view draws it
+```
+
+Rules:
+
+1. `backtest/publish.py` is the only code that writes `results/backtestResults/`. Never
+   copy a run in by hand.
+2. The folds job publishes each region once it has merged the seeds. `<run>` is the
+   results directory's name without the region, so the five regional jobs of one
+   experiment share one name.
+3. A region is published only if `data.loadRun` can read it, so a run the dashboard
+   cannot draw is refused at publish time.
+4. `forecastEvery` is the one manifest value the dashboard reads, so it travels as a
+   column. The manifest and the fold trajectories stay with the raw results.
+5. Publishing commits nothing. Commit `results/backtestResults/` and `results/actions/`
+   after a backtest.
+
+### The two dashboard screens read different things
+
+The backtest screen reads finished rows from `--results`. It replays numbers already
+written, so it needs no weights and its model list comes from the results.
+
+The current forecast screen runs the agent now, so it needs the weights. Its model
+list comes from `trainedPolicies/` and from nowhere else. Never fill it from the
+results: that offers a model the screen cannot load.
+
+### One definition of the hosted dashboard
+
+The dashboard is hosted on a Hugging Face Space, which builds `deploy/Dockerfile` and
+serves `deploy/app.py`. `scripts/publishSpace.sh` is the only code that stages the
+upload, and the upload is a subset: the packages the two screens import, one run from
+`results/backtestResults/` with its actions exports, one published agent per region,
+and `deploy/`.
+
+The Space runs on CPU Basic hardware, which has no hourly cost but needs a PRO plan to
+create. Only static Spaces are free, and a Dash application is not static.
+
+Rules:
+
+1. `deploy/requirements.txt` holds the runtime dependencies of the two screens only.
+   It is not a copy of `pyproject.toml`. pulp, highspy, nemosis, nemseer and matplotlib
+   stay out, because no screen solves and no screen reads the AEMO archive.
+2. Stage 4 of the script builds the app with those five names blocked. If a new import
+   on the dashboard path reaches one of them, that check fails and the Space does not.
+3. The agents travel through `policies.publish`, so the Space gets the same layout every
+   other machine has. Never stage weights with `cp`.
+4. The script pushes one commit over the last one. The weights are binary, so a history
+   of them would grow the Space by their size on every update.
+5. main and the Space hold the same code. The Space is a separate git repository, so a
+   push to GitHub does not reach it. The `pre-push` hook in `scripts/hooks/prePush`
+   publishes the Space whenever a push updates main. Run `scripts/installHooks.sh` once
+   per machine, because git does not track hooks. `scripts/pushMain.sh` does the same
+   job on demand.
+6. A Space publish is driven by a fingerprint, not by a git diff. `models/` is
+   gitignored, so a retrained agent changes the Space without changing one tracked
+   file, and a new backtest changes `results/backtestResults/` before anyone commits
+   it. `scripts/spaceFingerprint.sh` covers both: the
+   git tree hash of each copied code item, and the name, size and modification time of
+   every result file and weight that goes up. Add a new input to the upload and add it
+   there in the same commit, or the hook stops noticing that input.
+7. The Hugging Face write token lives in a secret store, never in the repository. The
+   script reads `$HF_TOKEN`, else the token file `hf auth login` writes, else it asks on
+   the terminal. It hands the token to one `git push` through a credential helper, so
+   the token reaches no file and no command line. Never put a token in a remote URL.
+8. Stage 0 resolves the token and tests it against the Space LFS endpoint, before the
+   script stages anything. The push itself blocks every git prompt. git otherwise asks
+   through `SSH_ASKPASS`, and a machine with no working askpass program pushes with
+   empty credentials. Hugging Face answers that anonymous push with "You have read
+   access but not the required permissions", which names the wrong cause.
+
+### One dispatch chart, drawn once
+
+A charge or discharge run reads the same way on both screens. `figures._dispatchFigure`
+is the only code that draws it, and `live.blocks` is the only code that finds the runs.
+The backtest day view feeds it realised prices from `data.dispatchPath`. The forecast
+view feeds it the AEMO path. Do not write a second dispatch chart, and do not give a
+block a second colour.
+
 ## Architecture
 
 Flat package layout at the repo root — no `src/`. Tests sit beside the code they
@@ -116,6 +241,12 @@ cover.
   - `baseline.py` — per-window oracle solutions, cached on disk under `data_cache/`.
   - `algos.py` — the `--algo` registry: MaskablePPO, DQN, A2C.
   - `train.py`, `evaluate.py` — one run per seed, and regret against the oracle.
+  - `policies.py` — `trainedPolicies/`: the layout of a finished agent, and the only
+    code that writes or lists one. See the convention above.
+
+- **`backtest/`** — the rolling-origin backtest: `runner.py` runs the folds,
+  `records.py` writes them, `actions.py` exports the dispatch, and `publish.py` writes a
+  finished run into `results/backtestResults/`. See the convention above.
 
 - **`config.py`** — experiment design pinned in one place: episode horizon, SoC reset,
   seeds, splits, the observation layout constants, and the two oracle roles. Module
@@ -129,10 +260,43 @@ cover.
   caches one per window, `train` fits one agent per seed, `eval` scores them. A window is
   two dates or a named `--split`.
 
-- **`scripts/overnight.sh`** — the six stages of the full experiment in order, each
+- **`scripts/overnight.sh`** — the five stages of the full experiment in order, each
   resumable because the oracle cache is keyed on its own parameters.
 - **`scripts/rolling.sh`** — the two stages of the rolling-origin backtest: the discrete
   oracle cache over the whole span, then the 52 folds.
+- **`scripts/pushMain.sh`** — one push for both remotes: main to GitHub, then the same
+  code to the Space through `scripts/publishSpace.sh`.
+- **`scripts/hooks/prePush`** — the same job on a plain `git push` that updates main.
+  `scripts/installHooks.sh` installs it, and `scripts/spaceFingerprint.sh` tells it
+  whether anything the Space serves has changed.
+
+- **`visualise/dashboard/`** — the Dash app. Two screens behind tabs. `data.py` reads
+  the rolling results, `figures.py` draws, `live.py` runs a published agent over the
+  AEMO path published right now. `--results` points at the records, `--policies` at
+  `trainedPolicies/`. `--results` names a run as `results/backtestResults/<run>`, the
+  path of its CSVs without the region. With no `--results`, `data.findResults` reads
+  the one run under `results/backtestResults/`. Two runs there raise and name both.
+  A day view reads the run's actions export, `results/actions/<run>_<region>.csv`
+  (see `data.actionsFile`): its rows are the dispatch the chart draws, for either
+  price source, and its `forecastRunTime` column is the only source of the forecast
+  line, so pointing `--results` at another run changes both along with every other
+  number. The "refreshed every …" tile states the published `forecastEvery` column,
+  copied from the manifest: the test-day forecast pull frequency (training has
+  none). `data.verifyRefresh` refuses a forecast-priced run that omits it or
+  whose export disagrees with it, so the tile never describes a pull the backtest did
+  not make. Every manifest records it, realised-only runs included. Each forecast
+  trajectory row records the run the agent actually read (`forecastRunTime`, from
+  `forecasts.decisionRuns`), and the export copies it, so the check compares the
+  manifest against what happened. Never edit a finished manifest by hand:
+  `python -m backtest.stamp` is the only code that does, and it stamps an old run once
+  a day only when every row predates the intra-day refresh.
+  The current forecast screen refetches and reruns the agent on every NEM dispatch
+  interval, at minutes ending in 0 or 5 (`live.refreshSlot`), as a live BESS would
+  submit a new action each interval.
+
+- **`deploy/`** — the hosted dashboard: the Dockerfile, the runtime requirements, the
+  WSGI entry point and the Space card. `scripts/publishSpace.sh` stages and pushes it.
+  See the convention above.
 
 - **`conftest.py`** — exists only to put the repo root on `sys.path` so
   `degradation/schade.py` can resolve `from utils import ...` during collection.
@@ -173,26 +337,43 @@ cover.
   This now bites the continuous windows only. `cacheKey` records which solver wrote a
   record, so the discrete entries from before `dp.py` are not served, and the DP cannot
   write a loose bound in the first place.
-- **The rolling backtest uses one discrete oracle for both roles**, unlike `train`/`eval`
-  below. Paying for discrete power on the training days buys the reward baseline nothing,
-  but one oracle under one set of settings produces every figure the backtest quotes.
-  `scripts/rolling.sh` builds that cache. The existing `data_cache/lp_baseline` entries
-  are continuous, so none of them match.
+- **The reward is raw profit; no oracle baseline is subtracted.** The oracle is only the
+  bound the agent is scored against, so `train` solves nothing, and the rolling backtest
+  needs its discrete oracle cache over the test days only (from the first fold's test
+  start). The rolling manifest carries `reward: profit`, so a result set from the old
+  baselined reward refuses to resume under it. The existing `data_cache/lp_baseline`
+  entries are continuous, so none of them match the rolling oracle.
 - **Rolling test windows never overlap.** `enumerateFolds` refuses `stepWeeks` below
   `testWeeks`, because a shared trading day would count twice in every pooled figure.
-- The reward baseline and the reported bound are different jobs and use different
-  oracles. The baseline only has to be constant per window and interval, so the cheap
-  continuous solve does it; the bound must be discrete. See `config.py`.
 - **Episode windows align to 04:00, the NEM trading day boundary, and that is
   load-bearing.** PREDISPATCH always stops at the end of a trading day, so its horizon
   depends on the time of day: a 04:00 run reaches 288 intervals, 08:00 reaches 240, and
   12:00 only 192. 04:00 is the one run time where exactly one episode fits.
-- `gamma` must stay 1.0 while the reward subtracts a per-interval baseline. Under
-  discounting the subtraction stops being a constant shift and reweights the oracle's own
-  profit profile into the agent's incentives.
+- `gamma` is 1.0: an episode is one trading day of profit, and every interval counts
+  the same.
 - **A PREDISPATCH run is filed under its trading day.** The run labelled 04:00 on the
   1st is the previous trading day's last and sits in the previous month's MMSDM file;
   `fileLag` in `forecasts.py` is why `runRows` reads that month too.
+- **Dash drops a heatmap point's `customdata` on click.** It reads `customdata` out of
+  the trace by the point number, and a heatmap point number is a `[row, column]` pair
+  rather than one integer. The calendar therefore finds the clicked day from the row
+  and the column that do arrive, against the month on screen. See `clickedDay` in
+  `visualise/dashboard/__main__.py`. A per-cell date in `customdata` reaches the hover
+  template but never the callback.
+- **An old actions export holds seed 0 only.** Exports made by `python -m
+  backtest.actions` come from the fold trajectories, which hold `trajectorySeed` (0)
+  only, so the day view of another seed is empty by design. It must stay empty:
+  drawing seed 0's dispatch under another seed's name is a wrong chart, not a missing
+  one. A backtest that writes its CSV as it runs logs every seed.
+- **The actions CSV is written by the backtest, every seed and price source, as each
+  fold finishes.** `cli rolling` appends one fold's decisions to
+  `results/actions/<run>_<region>.csv` under a lock, because every seed's process shares
+  the file. `priceSource` is copied from the runner's row, never inferred, and a
+  realised row whose observed price is not its paid price is refused. A run name is
+  used once: a fresh start refuses a name whose actions CSV or
+  `results/backtestResults/<run>_<region>.csv` exists, and `--resume` (`RESUME=1` in the
+  folds job) continues one without appending a fold twice. `python -m backtest.actions`
+  is only for runs from before this.
 - `nemosis` downloads AEMO archive files into `data_cache/` on first use, so the first
   call for a date range is slow and network-bound while later calls are local. The
   directory is gitignored and safe to delete.

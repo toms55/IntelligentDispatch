@@ -33,24 +33,17 @@ mkdir -p "$OUT" results
 
 say() { printf '\n========== %s  (%s) ==========\n' "$1" "$(date +%H:%M)"; }
 
-say "1/4 training baseline: continuous, no calendar, 366 windows"
-uv run python -u -m cli baseline --region "$REGION" --split "$TRAIN" \
-  --continuous --no-calendar \
-  --gap "$GAP" --time-limit "$LIMIT" --workers "$WORKERS" --verbose
-
-say "2/4 train MaskablePPO, 5 seeds, calendar aging ON in the environment"
+say "1/3 train MaskablePPO, 5 seeds, calendar aging ON in the environment"
 uv run python -u -m cli train --region "$REGION" --split "$TRAIN" \
   --algo maskableppo --seeds $SEEDS \
-  --timesteps "$TIMESTEPS" --cap-date "$CAP_DATE" \
-  --baseline-oracle continuous --baseline-no-calendar \
-  --gap "$GAP" --time-limit "$LIMIT" --workers "$WORKERS" --out "$OUT" --verbose
+  --timesteps "$TIMESTEPS" --cap-date "$CAP_DATE" --out "$OUT" --verbose
 
-say "3/4 test bound: continuous, no calendar, 365 windows"
+say "2/3 test bound: continuous, no calendar, 365 windows"
 uv run python -u -m cli baseline --region "$REGION" --split "$TEST" \
   --continuous --no-calendar \
   --gap "$GAP" --time-limit "$LIMIT" --workers "$WORKERS" --verbose
 
-say "4/4 test 2025: realised prices, then the AEMO forecast"
+say "3/3 test 2025: realised prices, then the AEMO forecast"
 # --no-calendar applies to both the oracle lookup and the environment here, so the agent
 # is scored on the same terms the bound was solved under.
 uv run python -u -m cli eval --region "$REGION" --split "$TEST" \

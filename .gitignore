@@ -9,7 +9,17 @@ __pycache__/
 data_cache/
 model/
 runs/
-results/*
+
+# --- the published agents: binary weights, moved between machines with rsync ---
+trainedPolicies/
+
+# --- experiment outputs: only the published runs and their actions exports, one CSV
+# --- each per run per region ---
+results/**
+!results/actions/
+!results/actions/*.csv
+!results/backtestResults/
+!results/backtestResults/*.csv
 
 # --- CLI outputs: <module>_<region>_<date>.csv/.png land in the cwd ---
 lp_*.csv
@@ -23,3 +33,11 @@ lp_*.csv
 *.xls
 *.xlsx
 *.zip
+
+# --- local helper and PBS job logs ---
+/id
+id-*.o[0-9]*
+
+# ad hoc price exports
+/forecast_*.csv
+/real_prices_*.csv

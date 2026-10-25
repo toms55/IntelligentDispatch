@@ -15,19 +15,21 @@ from pathlib import Path
 import pandas as pd
 
 dayColumns = (
-    "fold", "algo", "arm", "seed", "priceSource", "testDay",
+    "fold", "algo", "trainMode", "seed", "priceSource", "testDay",
     "agentProfit", "agentRevenue", "agentDegradation", "oracleDualBound", "oracleGap",
     "spikeIntensity", "highVol", "timesteps", "warmFrom", "writtenAt",
 )
 
 trajectoryColumns = (
-    "fold", "algo", "arm", "seed", "priceSource", "testDay",
+    "fold", "algo", "trainMode", "seed", "priceSource", "testDay",
     "interval", "settlementdate", "price", "observedPrice",
     "soc", "bought", "sold", "profit",
+    # The AEMO run the agent read for this decision; None where it read realised prices.
+    "forecastRunTime",
 )
 
 # What makes a row's work already done, for resume. One unit covers a whole test window.
-unitColumns = ("fold", "algo", "arm", "seed", "priceSource")
+unitColumns = ("fold", "algo", "trainMode", "seed", "priceSource")
 
 _dayTypes = {"fold": "int64", "seed": "int64", "timesteps": "int64",
              "highVol": "bool", "agentProfit": "float64", "agentRevenue": "float64",
@@ -80,7 +82,37 @@ def readTrajectories(resultsDir, region, fold):
     path = regionDir(resultsDir, region) / f"fold{fold:02d}.parquet"
     if not path.exists():
         return []
-    return pd.read_parquet(path).to_dict("records")
+    frame = pd.read_parquet(path)
+    # Rows written before forecastRunTime was recorded carry none.
+    for column in trajectoryColumns:
+        if column not in frame:
+            frame[column] = None
+    return frame.to_dict("records")
+
+
+def readDayFile(path):
+    """One CSV of day rows, as the folds or a published run hold them."""
+    # keep_default_na so an absent warmFrom stays "" rather than becoming NaN, and
+    # round_trip so a float reads back as the value written rather than one ulp off,
+    # which a republish would then write out.
+    frame = pd.read_csv(path, parse_dates=["testDay"], dtype=_dayTypes,
+                        keep_default_na=False, float_precision="round_trip")
+    # Result sets from before the rename call trainMode "arm".
+    return frame.rename(columns={"arm": "trainMode"})
+
+
+def sortDays(frame, where):
+    """Rows in fold order, refused if any unit and day appears twice."""
+    frame = frame.sort_values(["fold", "algo", "trainMode", "seed", "priceSource",
+                               "testDay"], ignore_index=True)
+    keys = list(unitColumns) + ["testDay"]
+    duplicated = frame[frame.duplicated(keys, keep=False)]
+    if not duplicated.empty:
+        raise ValueError(
+            f"{len(duplicated)} duplicate rows in {where}; "
+            f"first is {duplicated.iloc[0][keys].to_dict()}"
+        )
+    return frame
 
 
 def readDays(resultsDir, region):
@@ -88,25 +120,12 @@ def readDays(resultsDir, region):
     paths = sorted(regionDir(resultsDir, region).glob("fold*.csv"))
     if not paths:
         return pd.DataFrame(columns=list(dayColumns))
-    frame = pd.concat(
-        # keep_default_na so an absent warmFrom stays "" rather than becoming NaN
-        [pd.read_csv(path, parse_dates=["testDay"], dtype=_dayTypes,
-                     keep_default_na=False) for path in paths],
-        ignore_index=True,
-    ).sort_values(["fold", "algo", "arm", "seed", "priceSource", "testDay"],
-                  ignore_index=True)
-    keys = list(unitColumns) + ["testDay"]
-    duplicated = frame[frame.duplicated(keys, keep=False)]
-    if not duplicated.empty:
-        raise ValueError(
-            f"{len(duplicated)} duplicate rows in {regionDir(resultsDir, region)}; "
-            f"first is {duplicated.iloc[0][keys].to_dict()}"
-        )
-    return frame
+    return sortDays(pd.concat(map(readDayFile, paths), ignore_index=True),
+                    regionDir(resultsDir, region))
 
 
 def completedUnits(frame):
-    """The (fold, algo, arm, seed, priceSource) tuples already on disk."""
+    """The (fold, algo, trainMode, seed, priceSource) tuples already on disk."""
     if frame.empty:
         return set()
     return set(map(tuple, frame[list(unitColumns)].drop_duplicates().to_numpy().tolist()))

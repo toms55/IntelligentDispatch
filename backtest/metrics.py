@@ -15,7 +15,7 @@ import pandas as pd
 
 from backtest import records
 
-dayKeys = ["fold", "algo", "arm", "priceSource", "testDay"]
+dayKeys = ["fold", "algo", "trainMode", "priceSource", "testDay"]
 Difference = namedtuple("Difference", "perFold pooled")
 
 
@@ -67,6 +67,17 @@ def summarise(frame):
         "foldIqr": (quartiles[0.75] - quartiles[0.25]) if quartiles is not None
                    else float("nan"),
     }
+
+
+def dayFacts(frame):
+    """One day's revenue, degradation cost and spike intensity, seeds averaged."""
+    if frame.empty:
+        return {"revenue": float("nan"), "degradation": float("nan"),
+                "spikeIntensity": float("nan"), "highVol": False}
+    return {"revenue": frame.agentRevenue.mean(),
+            "degradation": frame.agentDegradation.mean(),
+            "spikeIntensity": frame.spikeIntensity.mean(),
+            "highVol": bool(frame.highVol.iloc[0])}
 
 
 def byBucket(frame):

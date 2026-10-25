@@ -354,7 +354,8 @@ PREFETCH_RUNS = [JAN, JAN + pd.Timedelta(days=1), pd.Timestamp("2024-02-01 04:00
 
 @pytest.fixture
 def fakeMonths(monkeypatch):
-    """Two months of 04:00 runs, plus one 08:00 run the prefetch must drop."""
+    """Two months of 04:00 runs, plus one 08:00 refresh run. The other refresh runs are
+    absent, as runs AEMO never published are."""
     runs = PREFETCH_RUNS + [JAN + pd.Timedelta(hours=4)]
     state = {"PREDISPATCH": predispatchFrame(runs), "P5MIN": p5minFrame(runs)}
     return FakeArchive(state, installFakeArchive(monkeypatch, state))
@@ -369,20 +370,29 @@ class TestPrefetch:
         months = sorted({entry for entry in fakeMonths.asked if entry[0] == "month"})
         assert months == sorted(("month", kind, year, month)
                                 for kind in ("P5MIN", "PREDISPATCH")
-                                for year, month in ((2023, 12), (2024, 1), (2024, 2)))
+                                for year, month in ((2023, 12), (2024, 1), (2024, 2),
+                                                    (2024, 3)))
 
-    # The cache holds one row per run time and one column per horizon step.
+    # The cache holds one row per run time and one column per horizon step. Refresh runs
+    # AEMO never published are left out rather than stored empty.
     def test_the_cache_is_one_row_per_run(self, fakeMonths, tmp_path):
         forecasts.prefetchForecasts(JAN, pd.Timestamp("2024-02-29 04:00"), "SA1",
                                     cacheDir=tmp_path)
         cached = forecasts.loadForecastCache("SA1", cacheDir=tmp_path)
-        assert list(cached.index) == PREFETCH_RUNS
+        assert list(cached.index) == sorted(PREFETCH_RUNS + [JAN + pd.Timedelta(hours=4)])
         assert len(cached.columns) == 288
 
-    # Runs at any hour other than 04:00 never reach the cache.
-    def test_only_0400_runs_are_kept(self, fakeMonths, tmp_path):
+    # The refresh runs are kept beside the 04:00 one.
+    def test_refresh_runs_are_kept(self, fakeMonths, tmp_path):
         forecasts.prefetchForecasts(JAN, pd.Timestamp("2024-02-29 04:00"), "SA1",
                                     cacheDir=tmp_path)
+        cached = forecasts.loadForecastCache("SA1", cacheDir=tmp_path)
+        assert JAN + pd.Timedelta(hours=4) in cached.index
+
+    # A daily refresh keeps only the 04:00 runs.
+    def test_a_daily_refresh_keeps_only_0400_runs(self, fakeMonths, tmp_path):
+        forecasts.prefetchForecasts(JAN, pd.Timestamp("2024-02-29 04:00"), "SA1",
+                                    cacheDir=tmp_path, every=288)
         cached = forecasts.loadForecastCache("SA1", cacheDir=tmp_path)
         assert set(cached.index.time) == {JAN.time()}
 
@@ -398,6 +408,22 @@ class TestPrefetch:
         before = len(fakeMonths.asked)
         forecasts.forecastMatrix(PREFETCH_RUNS, "SA1", source=source)
         assert len(fakeMonths.asked) == before
+
+    # A 5-minute refresh reads the half-hourly PREDISPATCH run at or before each run time,
+    # from the months alone, and matches the live path.
+    def test_a_five_minute_refresh_floors_predispatch(self, monkeypatch, tmp_path):
+        state = {"PREDISPATCH": predispatchFrame(
+                     pd.date_range(JAN, periods=48, freq="30min")),
+                 "P5MIN": p5minFrame(pd.date_range(JAN, periods=288, freq="5min"))}
+        asked = installFakeArchive(monkeypatch, state)
+        forecasts.prefetchForecasts(JAN, JAN, "SA1", cacheDir=tmp_path, every=1)
+        assert not [entry for entry in asked if entry[0] == "report"]
+        source = forecasts.loadForecastCache("SA1", cacheDir=tmp_path)
+        runs = list(pd.date_range(JAN, periods=288, freq="5min"))
+        cached = forecasts.forecastMatrix(runs, "SA1", source=source)
+        assert not np.isnan(cached[:, 0]).any()
+        np.testing.assert_allclose(cached, forecasts.forecastMatrix(runs, "SA1"),
+                                   equal_nan=True)
 
     # The cached matrix equals what the live per-run path produces.
     def test_the_cached_matrix_matches_the_live_one(self, fakeMonths, tmp_path):
@@ -427,3 +453,86 @@ class TestPrefetch:
         np.testing.assert_allclose(
             got, forecasts.forecastMatrix(PREFETCH_RUNS, "SA1", source=source)[:, :12],
             equal_nan=True)
+
+
+# --- refresh within an episode --------------------------------------------------
+
+REFRESH_RUNS = [RUN + pd.Timedelta(hours=4 * n) for n in range(6)]
+
+
+@pytest.fixture
+def refreshArchive(monkeypatch):
+    """All six runs of RUN's trading day, each with its own price level."""
+    state = {"PREDISPATCH": predispatchFrame(REFRESH_RUNS),
+             "P5MIN": p5minFrame(REFRESH_RUNS)}
+    return FakeArchive(state, installFakeArchive(monkeypatch, state))
+
+
+class TestRefresh:
+    # Every four hours from the 04:00 start, the last one at midnight.
+    def test_the_run_times(self):
+        got = forecasts.refreshRunTimes(RUN)
+        assert [run.strftime("%H:%M") for run in got] == [
+            "04:00", "08:00", "12:00", "16:00", "20:00", "00:00"]
+        assert got[-1] == pd.Timestamp("2024-01-11 00:00")
+
+    # A refresh that does not divide the episode would start off the step grid.
+    def test_a_refresh_must_divide_the_episode(self):
+        with pytest.raises(ValueError, match="does not divide"):
+            forecasts.refreshRunTimes(RUN, every=50)
+
+    # Row r is run r on the episode grid: NaN before it was published, its own path
+    # after, cut at the episode end.
+    def test_each_run_sits_at_its_own_offset(self, refreshArchive):
+        grid = forecasts.refreshMatrix([RUN], "SA1")
+        assert grid.shape == (1, 6, 288)
+        for refresh, run in enumerate(REFRESH_RUNS):
+            offset = refresh * 48
+            assert np.isnan(grid[0, refresh, :offset]).all()
+            expected = forecasts.forecastSeries(run, "SA1", 288 - offset).to_numpy()
+            np.testing.assert_allclose(grid[0, refresh, offset:], expected)
+
+    # A daily refresh is the old single 04:00 path.
+    def test_a_daily_refresh_is_the_0400_path(self, refreshArchive):
+        grid = forecasts.refreshMatrix([RUN], "SA1", every=288)
+        np.testing.assert_allclose(grid[:, 0], forecasts.forecastMatrix([RUN], "SA1"))
+
+    # The prefetched cache gives the same grid as the live path.
+    def test_the_cached_grid_matches_the_live_one(self, refreshArchive, tmp_path):
+        forecasts.prefetchForecasts(RUN, RUN, "SA1", cacheDir=tmp_path)
+        source = forecasts.loadForecastCache("SA1", cacheDir=tmp_path)
+        np.testing.assert_allclose(forecasts.refreshMatrix([RUN], "SA1", source=source),
+                                   forecasts.refreshMatrix([RUN], "SA1"), equal_nan=True)
+
+    # The agent reads the latest run published by each step.
+    def test_the_active_run(self):
+        grid = np.arange(6)[:, None] * np.ones((6, 288))
+        assert [forecasts.activeRun(grid, step)[0] for step in (0, 47, 48, 287)] == [
+            0, 0, 1, 5]
+
+    # A single path is its own active run, whatever the step.
+    def test_a_single_path_is_always_active(self):
+        path = np.arange(288.0)
+        np.testing.assert_array_equal(forecasts.activeRun(path, 200), path)
+
+    # Each step names the run activeRun handed it, from the stack's own shape.
+    def test_the_decision_runs(self):
+        grid = np.zeros((6, 288))
+        got = forecasts.decisionRuns(RUN, grid)
+        start = pd.Timestamp(RUN)
+        assert [got[step] - start for step in (0, 47, 48, 287)] == [
+            pd.Timedelta(0), pd.Timedelta(0), pd.Timedelta(hours=4),
+            pd.Timedelta(hours=20)]
+
+    # A single path is the one run that opens the day.
+    def test_a_single_path_is_one_run(self):
+        got = forecasts.decisionRuns(RUN, np.zeros(288))
+        assert set(got) == {pd.Timestamp(RUN)}
+
+    # The decision path takes step k from the run active at k.
+    def test_the_decision_path(self, refreshArchive):
+        grid = forecasts.refreshMatrix([RUN], "SA1")[0]
+        got = forecasts.decisionPath(grid)
+        assert got.shape == (288,)
+        for step in (0, 47, 48, 150, 287):
+            assert got[step] == grid[step // 48, step]
