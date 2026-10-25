@@ -263,7 +263,7 @@ def _runBaseline(args):
         calendar=not args.no_calendar, discretePower=not args.continuous,
         model=_battery(args), initialSoc=args.initial_soc,
         gap=args.gap, timeLimit=args.time_limit, workers=args.workers,
-        onDone=progress if args.verbose else None,
+        cacheDir=args.cache_dir, onDone=progress if args.verbose else None,
     )
     profit = sum(record["profit"] for record in records)
     bound = sum(record["dualBound"] for record in records)
@@ -703,6 +703,9 @@ def main(argv=None):
                                   "for a three-action agent")
     baselineCmd.add_argument("--verbose", action="store_true",
                              help="print each window as it finishes")
+    baselineCmd.add_argument("--cache-dir", type=Path, default=None, metavar="DIR",
+                             help="read and write the records here instead of "
+                                  "data_cache/lp_baseline")
     baselineCmd.set_defaults(run=_runBaseline)
 
     train = addParser("train", "train an agent, one run per seed")
