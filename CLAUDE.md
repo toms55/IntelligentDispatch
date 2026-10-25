@@ -71,7 +71,7 @@ Training runs on one machine and the dashboard runs on another, so the agents ha
 travel. There is exactly one layout for a finished agent:
 
 ```
-trainedPolicies/<region>/<algo>-<trainMode>-s<seed>/
+trainedPolicies/<region>/<algo>-<trainMode>[-<tag>]-s<seed>/
     agent.zip      the weights
     scaler.json    the price transform the weights were trained under
     policy.json    which command wrote it, from which window, and when
@@ -85,7 +85,9 @@ Rules:
    `cli train` publishes each seed. `cli rolling` publishes the last fold of the run.
 3. Always copy `scaler.json` with the weights. The transform is pinned to a market
    price cap. Weights read under a different cap mean something else.
-4. The directory name is the dashboard label. Do not add a second naming scheme.
+4. The directory name is the dashboard label. Do not add a second naming scheme. A run
+   whose agents mean something else (another episode start, say) passes
+   `cli rolling --policy-tag` so it publishes beside the existing agents, not over them.
 5. Working state stays out. The rolling backtest keeps one checkpoint per fold under
    `--out` (`runs/rolling`), because it warm starts the next fold from the last one.
    Those are not published, and nothing reads them across machines.

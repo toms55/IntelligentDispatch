@@ -4,13 +4,15 @@ Training and the dashboard run on different machines, so the agents have to trav
 This module is the only definition of how they are laid out, and every writer and
 reader goes through it.
 
-    trainedPolicies/<region>/<algo>-<trainMode>-s<seed>/
+    trainedPolicies/<region>/<algo>-<trainMode>[-<tag>]-s<seed>/
         agent.zip      the weights
         scaler.json    the price transform the weights were trained under
         policy.json    where the agent came from, and when
 
 The directory name is the label the dashboard shows, so a reader needs no index file
-to list what is on the machine. `policy.json` is read by a person, not by the loader.
+to list what is on the machine. The optional tag keeps a run whose agents mean something
+else, such as a different episode start, beside the ones already published rather than
+over them. `policy.json` is read by a person, not by the loader.
 Copy a region directory to another machine and the dashboard picks it up.
 
 Working state stays where it is. The rolling backtest still writes one checkpoint per
@@ -28,16 +30,18 @@ scalerFile = "scaler.json"
 metadataFile = "policy.json"
 
 
-def label(algo, trainMode, seed):
+def label(algo, trainMode, seed, tag=None):
     """The name of one published agent. This is what the dashboard dropdown shows."""
-    return f"{algo}-{trainMode}-s{int(seed)}"
+    middle = f"{trainMode}-{tag}" if tag else trainMode
+    return f"{algo}-{middle}-s{int(seed)}"
 
 
-def policyDir(region, algo, trainMode, seed, root=defaultRoot):
-    return Path(root) / region / label(algo, trainMode, seed)
+def policyDir(region, algo, trainMode, seed, root=defaultRoot, tag=None):
+    return Path(root) / region / label(algo, trainMode, seed, tag)
 
 
-def publish(checkpoint, region, algo, trainMode, seed, root=defaultRoot, **facts):
+def publish(checkpoint, region, algo, trainMode, seed, root=defaultRoot, tag=None,
+            **facts):
     """Copy a finished checkpoint into `trainedPolicies/` and return its directory.
 
     `checkpoint` is a training output directory holding `agent.zip` and `scaler.json`.
@@ -45,7 +49,7 @@ def publish(checkpoint, region, algo, trainMode, seed, root=defaultRoot, **facts
     in `facts` is written into `policy.json` beside them.
 
     A second publish of the same name replaces the files. That is what a later run of
-    the same experiment should do.
+    the same experiment should do. A `tag` gives a different experiment its own name.
     """
     checkpoint = Path(checkpoint)
     missing = [name for name in (agentFile, scalerFile)
@@ -55,13 +59,13 @@ def publish(checkpoint, region, algo, trainMode, seed, root=defaultRoot, **facts
             f"{checkpoint} holds no {' or '.join(missing)}, so it is not a finished "
             f"checkpoint and cannot be published"
         )
-    directory = policyDir(region, algo, trainMode, seed, root)
+    directory = policyDir(region, algo, trainMode, seed, root, tag)
     directory.mkdir(parents=True, exist_ok=True)
     for name in (agentFile, scalerFile):
         shutil.copy2(checkpoint / name, directory / name)
     (directory / metadataFile).write_text(json.dumps({
         "region": region, "algo": algo, "trainMode": trainMode, "seed": int(seed),
-        "label": label(algo, trainMode, seed),
+        "label": label(algo, trainMode, seed, tag),
         "source": str(checkpoint),
         "publishedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         **facts,

@@ -79,6 +79,8 @@ class RollingConfig(NamedTuple):
     # Where the last fold's agent is published when the run finishes. The per-fold
     # checkpoints under outDir are working state; this is the one a reader looks for.
     policyRoot: Path = policies.defaultRoot
+    # Appended to the published name, so a run can sit beside agents already there.
+    policyTag: Optional[str] = None
     # The CSV every agent decision is appended to, both price sources and all seeds,
     # one fold at a time (backtest/actions.py). None writes none.
     actionsFile: Optional[Path] = None
@@ -101,7 +103,8 @@ def manifestOf(cfg):
     # forecastEvery is recorded for every run, realised-only included: it is how often a
     # test day pulls a new AEMO forecast (and, under --train-source forecast, each
     # training day too), and the dashboard refuses a result set that does not state it.
-    skip = {"foldFilter", "allowSolve", "outDir", "resultsDir", "workers", "timeLimit"}
+    skip = {"foldFilter", "allowSolve", "outDir", "resultsDir", "workers", "timeLimit",
+            "policyTag"}
     # Result sets from before training could read forecasts carry no such key.
     if cfg.trainSource == "realised":
         skip.add("trainSource")
@@ -471,7 +474,8 @@ def publishFinal(cfg, fold):
                     continue
                 published.append(policies.publish(
                     checkpoint, cfg.region, algo, trainMode, seed,
-                    root=cfg.policyRoot, command="rolling", fold=fold.index,
+                    root=cfg.policyRoot, tag=cfg.policyTag, command="rolling",
+                    fold=fold.index,
                     trainWindow=[fold.trainStart.isoformat(), fold.trainEnd.isoformat()],
                     testWindow=[fold.testStart.isoformat(), fold.testEnd.isoformat()],
                     capDate=cfg.capDate.isoformat(),
