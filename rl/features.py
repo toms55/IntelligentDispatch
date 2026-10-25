@@ -19,7 +19,10 @@ class PriceScaler:
     """A fixed price to observation transform, pinned to one market price cap.
 
     asinh is odd about zero, so the transform needs no sign handling. It is roughly
-    linear below the knee and roughly logarithmic above it. The cap maps to exactly 1.0.
+    linear below the knee and roughly logarithmic above it. The cap maps to `scale`.
+
+    `knee` sets the shape of the curve and `scale` sets the gain. See config.price_scale
+    for why the gain is not 1.0.
 
     Build one scaler per run and keep it for the life of the experiment. The divisor must
     not change between training and evaluation. If it changes, the same observation value
@@ -27,17 +30,21 @@ class PriceScaler:
     the scaler beside the checkpoint and rl/evaluate.py loads it back.
     """
 
-    def __init__(self, cap, floor=market_price_floor, knee=config.price_knee):
+    def __init__(self, cap, floor=market_price_floor, knee=config.price_knee,
+                 scale=config.price_scale):
         if cap <= 0:
             raise ValueError(f"cap must be positive, got {cap}")
         if knee <= 0:
             raise ValueError(f"knee must be positive, got {knee}")
         if floor >= 0:
             raise ValueError(f"floor must be negative, got {floor}")
+        if scale <= 0:
+            raise ValueError(f"scale must be positive, got {scale}")
         self.cap = float(cap)
         self.floor = float(floor)
         self.knee = float(knee)
-        self._divisor = math.asinh(self.cap / self.knee)
+        self.scale = float(scale)
+        self._divisor = math.asinh(self.cap / self.knee) / self.scale
 
     def __call__(self, price):
         clipped = min(max(price, self.floor), self.cap)
@@ -50,11 +57,12 @@ class PriceScaler:
 
     @property
     def high(self):
-        """The normalised market price cap. Exactly 1.0 by construction."""
-        return 1.0
+        """The normalised market price cap. Exactly `scale` by construction."""
+        return self.scale
 
     def asDict(self):
-        return {"cap": self.cap, "floor": self.floor, "knee": self.knee}
+        return {"cap": self.cap, "floor": self.floor, "knee": self.knee,
+                "scale": self.scale}
 
     def __eq__(self, other):
         if not isinstance(other, PriceScaler):
@@ -62,10 +70,11 @@ class PriceScaler:
         return self.asDict() == other.asDict()
 
     def __repr__(self):
-        return f"PriceScaler(cap={self.cap!r}, floor={self.floor!r}, knee={self.knee!r})"
+        return (f"PriceScaler(cap={self.cap!r}, floor={self.floor!r}, "
+                f"knee={self.knee!r}, scale={self.scale!r})")
 
 
-def scalerFor(timestamps, knee=config.price_knee):
+def scalerFor(timestamps, knee=config.price_knee, scale=config.price_scale):
     """The scaler for a run, pinned to the cap in force at the last timestamp.
 
     The last timestamp, not the first: the caps only rise, so the final cap is also the
@@ -73,7 +82,7 @@ def scalerFor(timestamps, knee=config.price_knee):
     """
     if len(timestamps) == 0:
         raise ValueError("cannot pin a price scaler to an empty window")
-    return PriceScaler(marketPriceCap(timestamps[-1]), knee=knee)
+    return PriceScaler(marketPriceCap(timestamps[-1]), knee=knee, scale=scale)
 
 
 def priceFeatures(prices, start, horizonEnd, scaler):

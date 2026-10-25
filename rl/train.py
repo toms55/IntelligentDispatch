@@ -22,6 +22,10 @@ def loadScaler(directory):
     Raise rather than fall back. Rebuilding the scaler from the evaluation prices would
     pin a different market price cap, and the agent would then read an observation that
     means something other than what it learned.
+
+    A file with no `scale` was written before config.price_scale existed, and the cap
+    mapped to 1.0 then. Read it back as 1.0 rather than as today's default, so an agent
+    published under the old transform keeps reading the prices it learned.
     """
     path = Path(directory) / scalerFile
     if not path.exists():
@@ -29,22 +33,29 @@ def loadScaler(directory):
             f"no {scalerFile} at {path}: the checkpoint predates the dated price cap, "
             f"so the transform it trained under is unknown. Retrain it."
         )
-    return PriceScaler(**json.loads(path.read_text()))
+    stored = json.loads(path.read_text())
+    stored.setdefault("scale", 1.0)
+    return PriceScaler(**stored)
 
 
 def resumeFrom(algoName, warmFrom, env, scaler, seed):
     """Pick up the previous fold's checkpoint instead of starting from fresh weights.
 
     The scaler check is the one that matters. The transform is pinned to a market price
-    cap, so a parent trained under a different cap means every observation value denotes
-    a different price and the chain is meaningless.
+    cap, a knee and a gain, so a parent trained under any other one means every
+    observation value denotes a different price and the chain is meaningless.
     """
     warmFrom = Path(warmFrom)
     previous = loadScaler(warmFrom)
     if previous != scaler:
+        differences = ", ".join(
+            f"{name} {was!r} against {now!r}"
+            for (name, was), now in zip(previous.asDict().items(), scaler.asDict().values())
+            if was != now
+        )
         raise ValueError(
-            f"cannot warm start from {warmFrom}: it trained under a price cap of "
-            f"{previous.cap:.0f}, this run uses {scaler.cap:.0f}"
+            f"cannot warm start from {warmFrom}: it trained under a different price "
+            f"transform ({differences})"
         )
     # load() restores the optimiser state as well as the weights, and already raises
     # naming both spaces if the observation layout moved.

@@ -84,7 +84,9 @@ Rules:
 2. Every command that trains an agent publishes its final agent there before it exits.
    `cli train` publishes each seed. `cli rolling` publishes the last fold of the run.
 3. Always copy `scaler.json` with the weights. The transform is pinned to a market
-   price cap. Weights read under a different cap mean something else.
+   price cap, a knee and a gain. Weights read under a different one mean something
+   else. A `scaler.json` with no `scale` predates `config.price_scale`, and
+   `rl.train.loadScaler` reads it back as 1.0, so an older agent keeps its meaning.
 4. The directory name is the dashboard label. Do not add a second naming scheme.
 5. Working state stays out. The rolling backtest keeps one checkpoint per fold under
    `--out` (`runs/rolling`), because it warm starts the next fold from the last one.
@@ -239,6 +241,12 @@ cover.
     an episode-relative fraction matches it only while an episode is a whole 04:00
     trading day, and the current forecast screen starts its episode at the run time, so
     it read 1.0 at every hour of the day.
+    `PriceScaler` turns a price into a slot value. `knee` sets the shape of the asinh
+    curve and `scale` sets the gain, so the market price cap lands on `scale` rather
+    than on 1.0. The gain exists because the cap is $23,200 and a normal trading day
+    is $50 to $150: at a gain of 1.0 a whole day spans 0.05 of the range while the SoC
+    slot spans 0 to 1, and the agent then reads SoC far louder than price. See
+    `config.price_scale`.
   - `env.py` — `BessEnv`, three actions, masking plus clipping at the SoC boundary.
     Takes a price `Series` rather than a date range, which is what keeps tests off the
     network. `forecasts=` swaps what the agent sees without touching what it is paid.

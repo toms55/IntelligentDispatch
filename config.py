@@ -30,6 +30,18 @@ observation_size = 1 + price_feature_count + 1  # soc, prices, time left
 # window before you quote any result.
 price_knee = 300.0
 
+# The observation value the market price cap maps to. The transform divides by
+# asinh(cap / knee), so a scale of 1.0 spends the whole output range on prices that
+# almost never trade: at a cap of 23200 a normal day of $46 to $124 spans 0.05, while
+# the SoC slot spans 0 to 1. The agent then reads SoC far louder than price. The scale
+# is a plain gain on the price slots and changes nothing about their relative spacing,
+# so it only rebalances the two channels. A spike at the cap now reads 5.0.
+#
+# A scaler written before this constant existed carries no scale, and rl.train.loadScaler
+# reads it back as 1.0, so every agent published under the old transform keeps its
+# meaning. A new agent must be trained to use this one.
+price_scale = 5.0
+
 
 # --- Reward ------------------------------------------------------------------
 reward_scale = 20.0

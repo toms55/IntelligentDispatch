@@ -111,6 +111,13 @@ class TestColdStart:
         _, path = runTrain(prices, battery, tmp_path)
         assert train.loadScaler(path.parent) == PriceScaler(CAP_2025)
 
+    def test_a_scaler_without_a_scale_reads_back_as_one(self, tmp_path):
+        """Every agent published before config.price_scale trained under a cap that
+        mapped to 1.0. Reading it back at today's default would silently restate every
+        price it learned."""
+        (tmp_path / "scaler.json").write_text('{"cap": 23200.0}')
+        assert train.loadScaler(tmp_path) == PriceScaler(23200.0, scale=1.0)
+
 
 class TestWarmStart:
     # A run with a parent loads that checkpoint instead of building a new agent.

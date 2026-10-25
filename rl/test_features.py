@@ -19,9 +19,9 @@ class TestPriceScaler:
     def test_zero_maps_to_zero(self, scaler):
         assert scaler(0.0) == 0.0
 
-    def test_the_cap_lands_on_one(self, scaler):
-        assert scaler(scaler.cap) == pytest.approx(1.0)
-        assert scaler.high == 1.0
+    def test_the_cap_lands_on_the_scale(self, scaler):
+        assert scaler(scaler.cap) == pytest.approx(scaler.scale)
+        assert scaler.high == scaler.scale
 
     def test_is_increasing(self, scaler):
         values = [scaler(price) for price in range(-1000, 1000, 25)]
@@ -52,7 +52,7 @@ class TestPriceScaler:
 
     def test_the_floor_sets_the_lower_bound(self, scaler):
         assert scaler.low == scaler(market_price_floor)
-        assert -1.0 < scaler.low < 0.0
+        assert -scaler.high < scaler.low < 0.0
 
     def test_a_different_cap_is_a_different_transform(self):
         """Why rl/train.py saves the scaler. Two caps disagree on the same price, so an
@@ -66,13 +66,26 @@ class TestPriceScaler:
     def test_round_trips_through_a_dict(self, scaler):
         assert PriceScaler(**scaler.asDict()) == scaler
 
+    def test_the_scale_is_a_plain_gain_on_the_price_slots(self):
+        """It rebalances price against SoC and changes nothing about the shape of the
+        curve, so every price keeps its position relative to every other price."""
+        plain = PriceScaler(17500.0, scale=1.0)
+        gained = PriceScaler(17500.0, scale=5.0)
+        for price in (-900.0, 0.0, 50.0, 124.0, 5000.0):
+            assert gained(price) == pytest.approx(5.0 * plain(price))
+
+    def test_a_different_scale_is_a_different_transform(self):
+        assert PriceScaler(17500.0, scale=1.0) != PriceScaler(17500.0, scale=5.0)
+
     @pytest.mark.parametrize("kwargs", [
         {"cap": 0.0},
         {"cap": -1.0},
         {"cap": 17500.0, "knee": 0.0},
         {"cap": 17500.0, "floor": 10.0},
+        {"cap": 17500.0, "scale": 0.0},
+        {"cap": 17500.0, "scale": -5.0},
     ])
-    def test_refuses_a_nonsense_scale(self, kwargs):
+    def test_refuses_a_nonsense_transform(self, kwargs):
         with pytest.raises(ValueError):
             PriceScaler(**{"cap": 17500.0, **kwargs})
 
@@ -92,6 +105,11 @@ class TestScalerFor:
         window = [datetime(2025, 1, 1, 4)]
         assert features.scalerFor(window).knee == config.price_knee
         assert features.scalerFor(window, knee=50.0).knee == 50.0
+
+    def test_takes_the_scale_from_config(self):
+        window = [datetime(2025, 1, 1, 4)]
+        assert features.scalerFor(window).scale == config.price_scale
+        assert features.scalerFor(window, scale=1.0).scale == 1.0
 
     def test_an_empty_window_is_refused(self):
         with pytest.raises(ValueError, match="empty window"):
