@@ -176,6 +176,23 @@ Rules:
    through `SSH_ASKPASS`, and a machine with no working askpass program pushes with
    empty credentials. Hugging Face answers that anonymous push with "You have read
    access but not the required permissions", which names the wrong cause.
+9. The Space carries one seed per region, the one `config.best_seed` names, and every
+   other seed stays on this machine. The thesis reports the spread over seeds, so
+   `trainedPolicies/` holds all of them and the published results hold all of them.
+   The Space shows one, because five dispatch runs that differ only by seed is not a
+   thing a reader can read. `scripts/bestSeeds.sh` is the only reader of that map, and
+   both the publish script and the fingerprint go through it. Stage 2 filters the result
+   rows and the actions export to that seed, and stage 3 stages that seed's agent, so
+   the two screens of the Space name the same model.
+10. The staged runs are the ones `--results` names, once per run, and the first is the
+   one the Space opens. Stage 2 writes `ENV DASHBOARD_RESULTS` into the staged
+   Dockerfile, so a Space variable of that name switches to another staged run with no
+   republish. The screen draws one run at a time, so staging several only buys that
+   switch.
+11. An actions export written by `python -m backtest.actions` holds seed 0 only. Stage 2
+   refuses to stage a seed the export does not hold, because the calendar would draw and
+   every day view would be empty. Either name a seed the export holds, or re-run the
+   backtest, which logs every seed as each fold finishes.
 
 ### One dispatch chart, drawn once
 
@@ -270,6 +287,9 @@ cover.
   oracle cache over the whole span, then the 52 folds.
 - **`scripts/pushMain.sh`** — one push for both remotes: main to GitHub, then the same
   code to the Space through `scripts/publishSpace.sh`.
+- **`scripts/bestSeeds.sh`** — `config.best_seed` as `REGION SEED` lines. It parses the
+  one line with sed rather than starting an interpreter, because the pre-push hook reads
+  it on every push.
 - **`scripts/hooks/prePush`** — the same job on a plain `git push` that updates main.
   `scripts/installHooks.sh` installs it, and `scripts/spaceFingerprint.sh` tells it
   whether anything the Space serves has changed.

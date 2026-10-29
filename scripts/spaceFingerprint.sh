@@ -20,10 +20,13 @@
 # Keep the two in step.
 set -euo pipefail
 
-RESULTS=${RESULTS:-results/backtestResults/rolling2023_profit}
+# The runs the upload stages, in the same order and with the same default as
+# publishSpace.sh. $RUNS overrides it, space separated.
+read -r -a RUNS <<< "${RUNS:-results/backtestResults/rolling2023_profit_fc5m}"
 ACTIONS=${ACTIONS:-results/actions}
-MODELS=${MODELS:-models/rolling2023_profit_fc4h}
-SEED=${SEED:-0}
+POLICIES=${POLICIES:-trainedPolicies}
+ALGO=${ALGO:-maskableppo}
+TRAIN_MODE=${TRAIN_MODE:-warm}
 
 # The record of the last publish. It sits in the git directory, because it is state of
 # this one clone and not content of the repository. `--git-common-dir` keeps one record
@@ -44,12 +47,20 @@ describe() {
   for item in config.py utils data degradation rl backtest visualise deploy; do
     git rev-parse "HEAD:$item"
   done
-  # Stage 2 stages the run's CSV and its actions export, one each per region, and
-  # stage 3 one seed of the weights.
-  run=$(basename "$RESULTS")
-  find "$(dirname "$RESULTS")" "$ACTIONS" -maxdepth 1 -type f -name "${run}_*.csv" \
-    2>/dev/null | grep -E "/${run}_[A-Z]+[0-9]\.csv$" | sort | describe || true
-  if [[ -d "$MODELS" ]]; then
-    find "$MODELS" -type f -path "*seed$SEED*" | sort | describe
-  fi
+  # Stage 2 stages each named run's CSV and its actions export, one per region, and
+  # stage 3 the best seed's weights. The sources are the whole files, not the filtered
+  # rows, so a change to any seed of a staged run moves this. That is the safe
+  # direction: it republishes a little too often, never too rarely.
+  for results in "${RUNS[@]}"; do
+    run=$(basename "$results")
+    find "$(dirname "$results")" "$ACTIONS" -maxdepth 1 -type f -name "${run}_*.csv" \
+      2>/dev/null | grep -E "/${run}_[A-Z]+[0-9]\.csv$" | sort | describe || true
+  done
+  # Which agent each region stages comes from `config.best_seed`, whose tree hash is
+  # already above, so only the weights themselves are described here. The other seeds
+  # stay out: republishing one must not look like a change to the Space.
+  while read -r region seed; do
+    directory="$POLICIES/$region/$ALGO-$TRAIN_MODE-s$seed"
+    [[ -d "$directory" ]] && find "$directory" -type f | sort | describe
+  done < <(bash "$(dirname "$0")/bestSeeds.sh")
 } | sha256sum | cut -d' ' -f1

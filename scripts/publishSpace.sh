@@ -12,10 +12,23 @@
 # The upload holds four things and nothing else:
 #
 #   1. the packages the two screens import
-#   2. one run from `results/backtestResults/`: the day rows the backtest screen replays,
-#      and the run's actions exports, which hold the dispatch it draws
+#   2. the runs named by --results: the day rows the backtest screen replays, and their
+#      actions exports, which hold the dispatch it draws
 #   3. `trainedPolicies/`: one published agent per region, for the forecast screen
 #   4. the Dockerfile, the requirements and the Space card
+#
+# Both 2 and 3 carry one seed per region, the one `config.best_seed` names. Every seed
+# stays here, because the thesis reports the spread over seeds. The Space shows the one,
+# so a reader sees one dispatch per region rather than five that differ only by seed.
+#
+# Name a run once per run to stage several:
+#
+#     bash scripts/publishSpace.sh --results results/backtestResults/rolling2023_profit \
+#                                  --results results/backtestResults/rolling2023_profit_fc5m
+#
+# The screen draws one run at a time, so the first one named is the one the Space opens.
+# $DASHBOARD_RESULTS switches to another staged run in the Space settings, with no
+# republish.
 #
 # The training code is in the upload because the forecast screen runs an agent. The
 # oracle, the archive readers and the oracle cache are not, because no screen solves.
@@ -24,14 +37,19 @@ set -euo pipefail
 # The Space this repository publishes. Override it with --space, or with $DASHBOARD_SPACE
 # for a test Space. Every caller reads it from here, so the name is in one place.
 SPACE=${DASHBOARD_SPACE:-toms55/IntelligentDispatch}
-RESULTS=results/backtestResults/rolling2023_profit
+# The runs to stage, in order. The first is the one the Space opens. --results replaces
+# this default on its first use and appends on every use after it.
+RUNS=(results/backtestResults/rolling2023_profit_fc5m)
+runsGiven=no
 # The run's actions exports stay in results/actions/, which git tracks; see
 # backtest/publish.py.
 ACTIONS=results/actions
-MODELS=models/rolling2023_profit_fc4h
+# The agents come from the published layout, not from a training output directory, so the
+# Space runs the same bytes this machine's dashboard runs. `config.best_seed` picks which
+# one per region.
+POLICIES=trainedPolicies
 ALGO=maskableppo
 TRAIN_MODE=warm
-SEED=0
 REGION=NSW1
 STAGE=runs/space
 PUSH=no
@@ -42,11 +60,11 @@ PYTHON=${PYTHON:-"uv run python"}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --space)      SPACE="$2"; shift 2 ;;
-    --results)    RESULTS="$2"; shift 2 ;;
-    --models)     MODELS="$2"; shift 2 ;;
+    --results)    if [[ "$runsGiven" == no ]]; then RUNS=("$2"); runsGiven=yes;
+                  else RUNS+=("$2"); fi; shift 2 ;;
+    --policies)   POLICIES="$2"; shift 2 ;;
     --algo)       ALGO="$2"; shift 2 ;;
     --train-mode) TRAIN_MODE="$2"; shift 2 ;;
-    --seed)       SEED="$2"; shift 2 ;;
     --region)     REGION="$2"; shift 2 ;;
     --stage)      STAGE="$2"; shift 2 ;;
     --push)       PUSH=yes; shift ;;
@@ -148,6 +166,14 @@ checkToken() {
   esac
 }
 
+# The seed per region, from `config.best_seed`. Read once, because stage 2 and stage 3
+# must stage the same seed: a result row the forecast screen cannot reproduce with the
+# agent beside it would be two different models under one name.
+declare -A BEST_SEED=()
+while read -r region seed; do
+  BEST_SEED["$region"]=$seed
+done < <(bash "$(dirname "$0")/bestSeeds.sh")
+
 if [[ "$PUSH" == yes && -n "$SPACE" ]]; then
   say "0/5 token"
   readToken
@@ -175,51 +201,114 @@ printf '*.zip filter=lfs diff=lfs merge=lfs -text\n' > "$STAGE/.gitattributes"
 printf '*.gz filter=lfs diff=lfs merge=lfs -text\n' >> "$STAGE/.gitattributes"
 
 # ------------------------------------------------------------- 2. the results
-say "2/5 results from $RESULTS"
-# The same layout every clone has, so the app finds the run without being told. A run
-# is one CSV per region, <run>_<region>.csv, and so is its actions export.
-run=$(basename "$RESULTS")
-published=$(dirname "$RESULTS")
-mkdir -p "$STAGE/$published" "$STAGE/results/actions"
-found=0
-for path in "$published"/"$run"_*.csv; do
-  [[ -e "$path" ]] || continue
-  # Only this run, not a longer name that starts with it (rolling2023_profit_fc4h_...).
-  region=$(basename "$path" .csv); region=${region#"$run"_}
-  [[ "$region" == *_* ]] && continue
-  cp "$path" "$STAGE/$published/"
-  # The export holds the dispatch the day view draws, the forecast the agent acted on
-  # and the refresh tile's check. gzip cuts each region from tens of MB to a few, and
-  # pandas reads it the same way.
-  if [[ -e "$ACTIONS/$run"_"$region.csv" ]]; then
-    gzip -c "$ACTIONS/$run"_"$region.csv" > "$STAGE/results/actions/$run"_"$region.csv.gz"
-  fi
-  found=$((found + 1))
+say "2/5 results from ${#RUNS[@]} run(s), one seed per region"
+# The same layout every clone has, so the app finds a run without being told. A run is
+# one CSV per region, <run>_<region>.csv, and so is its actions export.
+#
+# Only the rows of `config.best_seed[region]` go up. Nothing on either screen pools
+# seeds: every figure comes from `data.modelRows` for one dropdown label, so dropping
+# the other seeds removes entries from the dropdown and changes no number in the ones
+# that stay. It also keeps the actions exports small enough to stage several runs.
+mkdir -p "$STAGE/results/actions"
+
+# Keep the header, then the rows whose `seed` column equals $2. The column is found by
+# name, because the two kinds of CSV order their columns differently. Both are plain
+# CSV with no quoted field, and a quote would break a split on commas, so one appearing
+# stops the publish rather than writing a file with rows silently dropped.
+seedRows() {
+  awk -F, -v want="$2" '
+    /"/ { bad = "quoted field, which this filter cannot split"; exit 1 }
+    NR == 1 {
+      for (i = 1; i <= NF; i++) if ($i == "seed") column = i
+      if (!column) { bad = "no seed column"; exit 1 }
+      print; next
+    }
+    $column == want { kept++; print }
+    END {
+      if (!bad && !kept) bad = "no seed " want " rows"
+      if (bad) { print bad " in " FILENAME > "/dev/stderr"; exit 1 }
+    }
+  ' "$1"
+}
+
+staged=0
+for RESULTS in "${RUNS[@]}"; do
+  run=$(basename "$RESULTS")
+  published=$(dirname "$RESULTS")
+  mkdir -p "$STAGE/$published"
+  found=0
+  for path in "$published"/"$run"_*.csv; do
+    [[ -e "$path" ]] || continue
+    # Only this run, not a longer name that starts with it (rolling2023_profit_fc4h_...).
+    region=$(basename "$path" .csv); region=${region#"$run"_}
+    [[ "$region" == *_* ]] && continue
+    seed=${BEST_SEED[$region]:-}
+    if [[ -z "$seed" ]]; then
+      echo "  skip $region: config.best_seed names no seed for it"
+      continue
+    fi
+    seedRows "$path" "$seed" > "$STAGE/$published/$run"_"$region.csv"
+    # The export holds the dispatch the day view draws, the forecast the agent acted on
+    # and the refresh tile's check. gzip cuts each region from tens of MB to a few, and
+    # pandas reads it the same way.
+    #
+    # An export written by `python -m backtest.actions` holds seed 0 only, because it
+    # comes from the fold trajectories and those record one seed. Asking it for another
+    # seed stops the publish here. The day view must not fall back to seed 0 under
+    # another seed's name, and a Space whose calendar draws but whose days are all
+    # empty is worse than one that was never pushed.
+    actionsCsv="$ACTIONS/$run"_"$region.csv"
+    if [[ -e "$actionsCsv" ]]; then
+      if ! seedRows "$actionsCsv" "$seed" 2>/dev/null \
+           | gzip -c > "$STAGE/results/actions/$run"_"$region.csv.gz"; then
+        echo "$actionsCsv holds no seed $seed, so the day view of $region would be empty." >&2
+        echo "Its seeds: $(awk -F, 'NR==1{for(i=1;i<=NF;i++) if($i=="seed") c=i; next} {print $c}' \
+                            "$actionsCsv" | sort -u | tr '\n' ' ')" >&2
+        echo "Either set config.best_seed[$region] to a seed the export holds, or" >&2
+        echo "re-run the backtest, which logs every seed as each fold finishes." >&2
+        exit 1
+      fi
+    fi
+    found=$((found + 1))
+  done
+  [[ $found -gt 0 ]] || { echo "no published run at $RESULTS" >&2; exit 1; }
+  echo "  $run: $found regions"
+  staged=$((staged + 1))
 done
-[[ $found -gt 0 ]] || { echo "no published run at $RESULTS" >&2; exit 1; }
-echo "$found regions, $(du -sh "$STAGE/results" | cut -f1)"
+# The screen draws one run, and `data.findResults` refuses to choose between several, so
+# the first run named is pinned into the image. A Space variable of the same name picks
+# another staged run without a republish.
+DEFAULT_RUN=${RUNS[0]}
+printf '\nENV DASHBOARD_RESULTS=%s\n' "$DEFAULT_RUN" >> "$STAGE/Dockerfile"
+echo "$staged run(s), $(du -sh "$STAGE/results" | cut -f1), opening on $(basename "$DEFAULT_RUN")"
 
 # -------------------------------------------------------------- 3. the agents
-# One agent per region, all of one seed, so every region in the dropdown can run the
-# forecast screen. `rl/policies.py` is the only code that writes this layout, so the
-# publishing goes through it rather than through cp.
-say "3/5 agents from $MODELS, seed $SEED"
-$PYTHON - "$MODELS" "$STAGE/trainedPolicies" "$ALGO" "$TRAIN_MODE" "$SEED" <<'PYTHON'
+# One agent per region, the seed `config.best_seed` names, so every region in the
+# dropdown can run the forecast screen. This machine keeps every seed under $POLICIES
+# for the thesis, and the Space gets the one, matching the rows stage 2 staged.
+# `rl/policies.py` is the only code that writes this layout, so the publishing goes
+# through it rather than through cp.
+say "3/5 agents from $POLICIES, the best seed per region"
+$PYTHON - "$POLICIES" "$STAGE/trainedPolicies" "$ALGO" "$TRAIN_MODE" <<'PYTHON'
 import sys
 from pathlib import Path
 
+import config
 from rl import policies
 
-source, root, algo, trainMode, seed = sys.argv[1:6]
-source = Path(source)
-for region in sorted(child.name for child in source.iterdir() if child.is_dir()):
-    checkpoint = source / region / f"seed{seed}"
-    if not (checkpoint / policies.agentFile).exists():
-        print(f"  skip {region}: no seed {seed}")
-        continue
-    directory = policies.publish(checkpoint, region, algo, trainMode, seed, root=root,
-                                 run=source.name, publishedBy="scripts/publishSpace.sh")
-    print(f"  {region}: {directory.name}")
+source, root, algo, trainMode = sys.argv[1:5]
+for region, seed in sorted(config.best_seed.items()):
+    label = policies.label(algo, trainMode, seed)
+    directory = policies.available(region, source).get(label)
+    if directory is None:
+        raise SystemExit(
+            f"{source}/{region} holds no {label}, so the forecast screen would offer "
+            f"{region} a seed the backtest rows do not show. Publish it with "
+            f"`python -m cli publish`, or correct config.best_seed."
+        )
+    published = policies.publish(directory, region, algo, trainMode, seed, root=root,
+                                 publishedBy="scripts/publishSpace.sh")
+    print(f"  {region}: {published.name}")
 PYTHON
 
 # --------------------------------------------------------------- 4. the check
@@ -228,7 +317,7 @@ say "4/5 smoke test with the solver and archive packages blocked"
 # path reaches one of them, the Space fails on its first request rather than here, so
 # the check runs now, with those names blocked. It runs an agent over a made up price
 # path rather than the AEMO one, so the check needs no network.
-DASHBOARD_RESULTS="$RESULTS" \
+DASHBOARD_RESULTS="$DEFAULT_RUN" \
 DASHBOARD_POLICIES=trainedPolicies \
 DASHBOARD_REGION="$REGION" \
   $PYTHON - "$STAGE" <<'PYTHON'
@@ -297,7 +386,7 @@ fi
   git lfs install --local >/dev/null
   git add -A
   git -c user.email=publish@localhost -c user.name=publish commit -q \
-    -m "dashboard: $(basename "$RESULTS"), agents from $(basename "$MODELS") seed $SEED"
+    -m "dashboard: $(basename "$DEFAULT_RUN") of ${#RUNS[@]} run(s), best seed per region"
   git remote add space "https://huggingface.co/spaces/$SPACE"
   if [[ "$PUSH" == yes ]]; then
     echo "pushing to https://huggingface.co/spaces/$SPACE"
