@@ -53,8 +53,11 @@ describe() {
   # direction: it republishes a little too often, never too rarely.
   for results in "${RUNS[@]}"; do
     run=$(basename "$results")
-    find "$(dirname "$results")" "$ACTIONS" -maxdepth 1 -type f -name "${run}_*.csv" \
-      2>/dev/null | grep -E "/${run}_[A-Z]+[0-9]\.csv$" | sort | describe || true
+    # The run's CSV, and its export as Parquet. The live CSV a backtest appends to sits
+    # beside the export, and is not staged.
+    { find "$(dirname "$results")" -maxdepth 1 -type f -name "${run}_*.csv"
+      find "$ACTIONS" -maxdepth 1 -type f -name "${run}_*.parquet"
+    } 2>/dev/null | grep -E "/${run}_[A-Z]+[0-9]\.(csv|parquet)$" | sort | describe || true
   done
   # Which agent each region stages comes from `config.best_seed`, whose tree hash is
   # already above, so only the weights themselves are described here. The other seeds

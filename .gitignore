@@ -13,11 +13,11 @@ runs/
 # --- the published agents: binary weights, moved between machines with rsync ---
 trainedPolicies/
 
-# --- experiment outputs: only the published runs and their actions exports, one CSV
-# --- each per run per region ---
+# --- experiment outputs: only the published runs (one CSV) and their actions exports
+# --- (one Parquet) per run per region. The live actions CSV a backtest appends to stays out ---
 results/**
 !results/actions/
-!results/actions/*.csv
+!results/actions/*.parquet
 !results/backtestResults/
 !results/backtestResults/*.csv
 

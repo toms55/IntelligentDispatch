@@ -2,11 +2,12 @@
 
 The folds job writes each region's merged rows to results/<run>_<region>/all/<region>/,
 one CSV per fold, and git ignores everything under results/ but the actions exports and
-the published runs. This writes each region as one CSV, laid out as the actions
+the published runs. This writes each region as one file, laid out as the actions
 exports are:
 
     results/backtestResults/<run>_<region>.csv   every fold's day rows, + forecastEvery
-    results/actions/<run>_<region>.csv           every decision, already there
+    results/actions/<run>_<region>.parquet       every decision, from the live CSV the
+                                                 backtest appended to as it ran
 
 The run's name drops the region, so the five regional jobs of one experiment share it.
 `forecastEvery` is the one manifest value the dashboard reads, so it travels as a
@@ -17,15 +18,15 @@ dispatch from the actions export, so the fold trajectories are not published eit
 
 The folds job calls this once it has merged the seeds. A region is published only
 if the dashboard can then load it, so a run it cannot draw is refused here rather than
-on the screen. Publishing replaces the region's CSV whole, and commits nothing: `git add
-results/backtestResults` is still the reader's.
+on the screen. Publishing replaces the region's files whole, and commits nothing: `git
+add results/backtestResults results/actions` is still the reader's.
 """
 import argparse
 import json
 from pathlib import Path
 
 from backtest import records
-from backtest.actions import exportName
+from backtest.actions import exportName, liveFile, readLive, writeExport
 from visualise.dashboard import data
 
 
@@ -65,6 +66,11 @@ def publish(runDir, root=data.backtestRoot, name=None):
         temporary = target.with_suffix(".csv.tmp")
         days.to_csv(temporary, index=False)
         temporary.replace(target)
+        # The backtest's live CSV, as the tracked Parquet the dashboard reads. A run
+        # exported by `python -m backtest.actions` has no live CSV and is already one.
+        live = liveFile(runDir, region)
+        if live.exists():
+            writeExport(readLive(live), data.actionsPath(run, region))
         try:
             data.loadRun(region, run)
         except Exception:

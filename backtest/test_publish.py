@@ -59,6 +59,19 @@ class TestPublish:
         assert data.actionsFile(root / "rolling", REGION).parent == results / "actions"
         assert [path.name for path in root.iterdir()] == [f"rolling_{REGION}.csv"]
 
+    # The CSV the backtest appended to as it ran becomes the Parquet the dashboard reads,
+    # every row kept, and the CSV stays as the backtest left it.
+    def test_the_live_csv_becomes_the_tracked_export(self, results, root):
+        writeActions(results, "rolling", seeds=(0, 1), sources=("forecast", "realised"),
+                     live=True)
+        live = results / "actions" / f"rolling_{REGION}.csv"
+        publish.publish(finishedRun(results, "rolling", sources=("forecast",)), root)
+        path = data.actionsFile(root / "rolling", REGION)
+        assert path == results / "actions" / f"rolling_{REGION}.parquet"
+        got = pd.read_parquet(path)
+        assert len(got) == len(pd.read_csv(live)) == 2 * 2 * 288
+        assert set(got.seed) == {0, 1} and live.exists()
+
     # A run the dashboard cannot draw is refused, and leaves nothing behind.
     def test_a_run_the_dashboard_cannot_load_is_refused(self, results, root):
         with pytest.raises(FileNotFoundError, match="actions export"):

@@ -195,15 +195,16 @@ mv "$STAGE/deploy/space.md" "$STAGE/README.md"
 printf '__pycache__/\ndata_cache/\n' > "$STAGE/.gitignore"
 # A Space refuses a binary file that git tracks directly, so the two binary kinds in
 # the upload go through LFS. This file has to exist before the first `git add`, or the
-# filter never runs. The agent weights are `.zip`, the gzipped actions exports `.gz`.
+# filter never runs. The agent weights are `.zip`, the actions exports `.parquet`.
 # Everything else in the upload is text.
 printf '*.zip filter=lfs diff=lfs merge=lfs -text\n' > "$STAGE/.gitattributes"
-printf '*.gz filter=lfs diff=lfs merge=lfs -text\n' >> "$STAGE/.gitattributes"
+printf '*.parquet filter=lfs diff=lfs merge=lfs -text\n' >> "$STAGE/.gitattributes"
 
 # ------------------------------------------------------------- 2. the results
 say "2/5 results from ${#RUNS[@]} run(s), one seed per region"
 # The same layout every clone has, so the app finds a run without being told. A run is
-# one CSV per region, <run>_<region>.csv, and so is its actions export.
+# one CSV per region, <run>_<region>.csv, and its actions export one Parquet,
+# <run>_<region>.parquet.
 #
 # Only the rows of `config.best_seed[region]` go up. Nothing on either screen pools
 # seeds: every figure comes from `data.modelRows` for one dropdown label, so dropping
@@ -212,9 +213,9 @@ say "2/5 results from ${#RUNS[@]} run(s), one seed per region"
 mkdir -p "$STAGE/results/actions"
 
 # Keep the header, then the rows whose `seed` column equals $2. The column is found by
-# name, because the two kinds of CSV order their columns differently. Both are plain
-# CSV with no quoted field, and a quote would break a split on commas, so one appearing
-# stops the publish rather than writing a file with rows silently dropped.
+# name. The CSV is plain, with no quoted field, and a quote would break a split on
+# commas, so one appearing stops the publish rather than writing a file with rows
+# silently dropped.
 seedRows() {
   awk -F, -v want="$2" '
     /"/ { bad = "quoted field, which this filter cannot split"; exit 1 }
@@ -249,25 +250,30 @@ for RESULTS in "${RUNS[@]}"; do
     fi
     seedRows "$path" "$seed" > "$STAGE/$published/$run"_"$region.csv"
     # The export holds the dispatch the day view draws, the forecast the agent acted on
-    # and the refresh tile's check. gzip cuts each region from tens of MB to a few, and
-    # pandas reads it the same way.
+    # and the refresh tile's check. It is Parquet, a few MB a seed.
     #
     # An export written by `python -m backtest.actions` holds seed 0 only, because it
     # comes from the fold trajectories and those record one seed. Asking it for another
     # seed stops the publish here. The day view must not fall back to seed 0 under
     # another seed's name, and a Space whose calendar draws but whose days are all
     # empty is worse than one that was never pushed.
-    actionsCsv="$ACTIONS/$run"_"$region.csv"
-    if [[ -e "$actionsCsv" ]]; then
-      if ! seedRows "$actionsCsv" "$seed" 2>/dev/null \
-           | gzip -c > "$STAGE/results/actions/$run"_"$region.csv.gz"; then
-        echo "$actionsCsv holds no seed $seed, so the day view of $region would be empty." >&2
-        echo "Its seeds: $(awk -F, 'NR==1{for(i=1;i<=NF;i++) if($i=="seed") c=i; next} {print $c}' \
-                            "$actionsCsv" | sort -u | tr '\n' ' ')" >&2
-        echo "Either set config.best_seed[$region] to a seed the export holds, or" >&2
-        echo "re-run the backtest, which logs every seed as each fold finishes." >&2
-        exit 1
-      fi
+    actions="$ACTIONS/$run"_"$region.parquet"
+    if [[ -e "$actions" ]]; then
+      $PYTHON - "$actions" "$seed" "$STAGE/results/actions/$run"_"$region.parquet" <<'PYTHON'
+import sys
+
+import pandas as pd
+
+source, seed, out = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+frame = pd.read_parquet(source)
+kept = frame[frame.seed == seed]
+if kept.empty:
+    sys.exit(f"{source} holds no seed {seed}, so the day view would be empty.\n"
+             f"Its seeds: {sorted(frame.seed.unique().tolist())}\n"
+             "Either set config.best_seed to a seed the export holds, or re-run the\n"
+             "backtest, which logs every seed as each fold finishes.")
+kept.to_parquet(out, index=False, compression="zstd", compression_level=9)
+PYTHON
     fi
     found=$((found + 1))
   done

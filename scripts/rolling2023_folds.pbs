@@ -23,7 +23,8 @@
 # processes on one directory would drop each other's rows. The last step merges them.
 # Each seed appends its decisions, both price sources, to the region's one actions CSV,
 # results/actions/<run>_<region>.csv, as each fold finishes (backtest/actions.py), so the
-# CSV grows while the job runs and no export step follows.
+# CSV grows while the job runs. The publish step at the end writes it out as the tracked
+# export, results/actions/<run>_<region>.parquet.
 #
 # A run name is used once: a job whose actions CSV or results/backtestResults/
 # <run>_<region>.csv already exists stops before training. Redo under a new RESULTS. A job killed partway
