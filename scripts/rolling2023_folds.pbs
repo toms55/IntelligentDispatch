@@ -46,6 +46,7 @@ PY=.venv/bin/python
 SEEDS=${SEEDS:-"0 1 2 3 4"}
 REGION=${REGION:-NSW1}   # pass -v REGION=SA1 etc.
 TRAIN_MODES=${TRAIN_MODES:-warm}   # warm, cold, or "warm cold"
+ALGO=${ALGO:-maskableppo}   # maskableppo, dqn or a2c (rl/algos.py)
 # Not runs/rolling2023: those names belonged to the oracle-baselined reward.
 OUT=${OUT:-runs/rolling2023_profit}
 RESULTS=${RESULTS:-results/rolling2023_profit}
@@ -54,7 +55,7 @@ REFRESH=${REFRESH:-240}   # forecast refresh in minutes; 5 is every interval
 TRAIN_SOURCE=${TRAIN_SOURCE:-realised}   # realised or forecast; settlement is realised
 # Seed logs go here. Set it when OUT holds another run's checkpoints, or its logs are lost.
 LOGS=${LOGS:-$OUT}
-# Published as maskableppo-warm-<tag>-s<seed>, beside agents already in trainedPolicies/.
+# Published as <algo>-warm-<tag>-s<seed>, beside agents already in trainedPolicies/.
 POLICY_TAG=${POLICY_TAG:-}
 # Empty keeps config.initial_soc. 0.5 rescores agents from before the episode started empty.
 INITIAL_SOC=${INITIAL_SOC:-}
@@ -79,7 +80,7 @@ fi
 pids=()
 for seed in $SEEDS; do
   $PY -u -m cli rolling --split "all=2023-01-01T04:00..2026-10-01T04:00" --region "$REGION" \
-    --train-weeks 52 --test-weeks 1 --step-weeks 1 --algo maskableppo --train-modes $TRAIN_MODES \
+    --train-weeks 52 --test-weeks 1 --step-weeks 1 --algo "$ALGO" --train-modes $TRAIN_MODES \
     --cap-date 2026-10-01T04:00 --baseline-oracle discrete --no-calendar \
     --gap 0.02 --time-limit 1800 --price-source "$PRICE_SOURCE" --forecast-refresh "$REFRESH" \
     --train-source "$TRAIN_SOURCE" \
