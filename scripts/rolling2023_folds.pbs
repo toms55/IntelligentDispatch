@@ -55,6 +55,8 @@ TRAIN_SOURCE=${TRAIN_SOURCE:-realised}   # realised or forecast; settlement is r
 LOGS=${LOGS:-$OUT}
 # Published as maskableppo-warm-<tag>-s<seed>, beside agents already in trainedPolicies/.
 POLICY_TAG=${POLICY_TAG:-}
+# Empty keeps config.initial_soc. 0.5 rescores agents from before the episode started empty.
+INITIAL_SOC=${INITIAL_SOC:-}
 mkdir -p "$OUT" "$LOGS"
 
 # Checked once here, not by each seed: a seed starting late would otherwise find the CSV
@@ -82,6 +84,7 @@ for seed in $SEEDS; do
     --train-source "$TRAIN_SOURCE" \
     --seeds "$seed" --out "$OUT" --results "$RESULTS/seed$seed" --resume \
     ${POLICY_TAG:+--policy-tag "$POLICY_TAG"} \
+    ${INITIAL_SOC:+--initial-soc "$INITIAL_SOC"} \
     > "$LOGS/seed$seed.log" 2>&1 &
   pids+=($!)
 done
