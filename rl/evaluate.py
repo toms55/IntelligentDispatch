@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
+import config
 from rl import algos
 from rl.env import BessEnv
 from rl.train import loadScaler
@@ -56,7 +57,7 @@ def evaluatePolicy(agent, env, algoName=None, masking=None, bounds=None):
 
 def evaluateSeeds(checkpoints, prices, model, baselines=None, algoName="maskableppo",
                   calendar=True, horizon=None, rewardScale=None, forecasts=None,
-                  bounds=None):
+                  bounds=None, initialSoc=config.initial_soc):
     """One evaluation per seed, over the same windows. Returns {seed: records}.
 
     Each env uses the price transform its own checkpoint trained under, read from
@@ -73,7 +74,7 @@ def evaluateSeeds(checkpoints, prices, model, baselines=None, algoName="maskable
     for seed, path in checkpoints.items():
         env = BessEnv(prices, model, baseline=baselines, calendar=calendar,
                       forecasts=forecasts, scaler=loadScaler(Path(path).parent),
-                      **extra)
+                      initialSoc=initialSoc, **extra)
         agent = algos.load(algoName, str(path), env=None)
         results[seed] = evaluatePolicy(agent, env, algoName=algoName, bounds=bounds)
     return results

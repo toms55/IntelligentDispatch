@@ -291,7 +291,7 @@ def _runTrain(args):
                 args.algo, prices, model, seed=seed,
                 timesteps=args.timesteps, calendar=not args.no_calendar,
                 horizon=args.horizon, rewardScale=args.reward_scale, outDir=args.out,
-                scaler=scaler,
+                scaler=scaler, initialSoc=args.initial_soc,
             )
         print(f"wrote          {path}.zip")
         # One fit from fresh weights is a cold agent, which is the train mode the
@@ -369,6 +369,7 @@ def _runEval(args):
         checkpoints, prices, model, baselines=baselines, algoName=args.algo,
         calendar=not args.no_calendar, horizon=args.horizon,
         rewardScale=args.reward_scale, forecasts=forecasts, bounds=bounds,
+        initialSoc=args.initial_soc,
     )
     summary = evaluate.acrossSeeds(results)
     _reportEval(summary, results, args)

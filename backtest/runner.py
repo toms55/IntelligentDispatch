@@ -307,6 +307,7 @@ def _ensureTrained(cfg, fold, trainMode, algo, seed, parent, trainPrices, scaler
         calendar=cfg.calendar, horizon=cfg.horizon, rewardScale=cfg.rewardScale,
         outDir=directory.parent, scaler=scaler, warmFrom=warmFrom,
         forecasts=None if trainForecasts is None else trainForecasts(),
+        initialSoc=cfg.initialSoc,
     )
     return directory
 
@@ -410,6 +411,7 @@ def runRolling(cfg, onProgress=None):
                         testPrices, plan.model, baselines=testBaselines,
                         algoName=algo, calendar=cfg.calendar, horizon=cfg.horizon,
                         rewardScale=cfg.rewardScale, forecasts=forecasts, bounds=bounds,
+                        initialSoc=cfg.initialSoc,
                     )
                     rows += _resultRows(cfg, plan, fold, algo, trainMode, source, results,
                                         position, gaps)
