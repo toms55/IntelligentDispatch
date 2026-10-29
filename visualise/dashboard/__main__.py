@@ -218,8 +218,9 @@ def _liveControls(regions, region):
             # :00, :05, :10 boundary; `setLiveState` ignores ticks inside one slot.
             dcc.Interval(id="forecast-clock", interval=live.clockTickMs),
             # The state of charge a real battery holds is not in this repository, so the
-            # reader sets the one the episode starts from. The button is the only input
-            # that reads the box, so a half-typed number never reaches the agent.
+            # reader sets the one the episode starts from. The button and Enter in the
+            # box are the only inputs that read the box, so a half-typed number never
+            # reaches the agent.
             html.Div([
                 html.Label("Start SoC", style=labelStyle),
                 html.Div([
@@ -448,8 +449,9 @@ def register(app, loader, policyRoot=live.defaultCheckpoints):
                   Input("pick-live-model", "value"),
                   Input("forecast-run", "n_clicks"),
                   Input("forecast-clock", "n_intervals"),
+                  Input("soc-text", "n_submit"),
                   State("soc-text", "value"), State("live-state", "data"))
-    def setLiveState(screen, region, model, clicks, ticks=None,
+    def setLiveState(screen, region, model, clicks, ticks=None, submits=None,
                      socText=defaultSocPercent, previous=None):
         # The clock refetches only when a new 5-minute slot has opened, so the agent
         # reruns on each AEMO dispatch interval and not on every tick.
@@ -461,16 +463,16 @@ def register(app, loader, policyRoot=live.defaultCheckpoints):
         style = socStyle if soc is not None else badSocStyle
         note = None if soc is not None else socHelp
         if soc is None:
-            # The button is the reader asking for this number, so a bad one fetches
-            # nothing and the box says what it wants. A region change or a clock tick
-            # asked for something else, so each runs on the last good number.
-            if trigger == "forecast-run":
+            # The button and Enter are the reader asking for this number, so a bad one
+            # fetches nothing and the box says what it wants. A region change or a clock
+            # tick asked for something else, so each runs on the last good number.
+            if trigger in ("forecast-run", "soc-text"):
                 return no_update, no_update, no_update, style, note
             soc = (previous or {}).get("soc", defaultSoc)
         names = liveModels(region, policyRoot)
         model = model if model in names else (names[0] if names else None)
         return ({"screen": screen, "region": region, "model": model, "clicks": clicks,
-                 "slot": slot, "soc": soc},
+                 "submits": submits, "slot": slot, "soc": soc},
                 [{"label": name, "value": name} for name in names], model, style, note)
 
     # The forecast is fetched over the network, so it is drawn when the screen is

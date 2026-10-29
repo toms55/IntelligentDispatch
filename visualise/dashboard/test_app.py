@@ -339,8 +339,19 @@ class TestStartSoc:
         monkeypatch.setattr(app, "_trigger", lambda: "forecast-run")
         built = app.build(REGION, run, publish(tmp_path))
         state, _, _, style, note = _callback(built, "live-state")(
-            "live", REGION, None, 1, None, "80")
+            "live", REGION, None, 1, socText="80")
         assert state["soc"] == pytest.approx(0.8)
+        assert note is None and style == app.socStyle
+
+    # Enter in the box is the same request as the button, and it moves the state even
+    # on a number already there, so the board refetches either way.
+    def test_enter_in_the_box_sends_it_too(self, monkeypatch, run, tmp_path):
+        monkeypatch.setattr(app, "_trigger", lambda: "soc-text")
+        built = app.build(REGION, run, publish(tmp_path))
+        held = {"soc": 0.8, "slot": "none", "submits": 1}
+        state, _, _, style, note = _callback(built, "live-state")(
+            "live", REGION, None, 0, None, 2, "80", held)
+        assert state["soc"] == pytest.approx(0.8) and state["submits"] == 2
         assert note is None and style == app.socStyle
 
     # A bad box goes red and says what it wants, and the board is left alone: no
@@ -349,7 +360,7 @@ class TestStartSoc:
         monkeypatch.setattr(app, "_trigger", lambda: "forecast-run")
         built = app.build(REGION, run, publish(tmp_path))
         state, options, value, style, note = _callback(built, "live-state")(
-            "live", REGION, None, 1, None, "120")
+            "live", REGION, None, 1, socText="120")
         assert note == app.socHelp
         assert style["border"].endswith(figures.lossPole)
         assert (state, options, value) == (no_update, no_update, no_update)
@@ -361,7 +372,7 @@ class TestStartSoc:
         built = app.build(REGION, run, publish(tmp_path))
         held = {"soc": 0.3, "slot": "none"}
         state, _, _, style, note = _callback(built, "live-state")(
-            "live", REGION, None, 0, 1, "abc", held)
+            "live", REGION, None, 0, 1, socText="abc", previous=held)
         assert state["soc"] == 0.3
         assert note == app.socHelp and style == app.badSocStyle
 
