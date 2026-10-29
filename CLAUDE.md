@@ -317,6 +317,13 @@ cover.
   The current forecast screen refetches and reruns the agent on every NEM dispatch
   interval, at minutes ending in 0 or 5 (`live.refreshSlot`), as a live BESS would
   submit a new action each interval.
+  Either screen hands its numbers over as a CSV. The backtest button downloads the
+  published rows of the region on screen, over the days the two date boxes name. The
+  boxes open on the whole run (`runSpan`), and a date outside it downloads nothing and
+  turns red, as a bad start state of charge does (`downloadRange`). A test day is an
+  04:00 trading day start, so the range matches on the calendar date. The forecast
+  button hands over the intervals already drawn, held in a store by `redrawForecast`,
+  so the file and the chart cannot disagree.
 
 - **`deploy/`** — the hosted dashboard: the Dockerfile, the runtime requirements, the
   WSGI entry point and the Space card. `scripts/publishSpace.sh` stages and pushes it.

@@ -2,10 +2,14 @@
 
 No server: the layout is built once and the callbacks are called as plain functions.
 """
+import io
+from datetime import timedelta
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from dash import no_update
+from dash.exceptions import PreventUpdate
 
 from visualise.dashboard import __main__ as app
 from rl import policies
@@ -238,6 +242,76 @@ class TestRedraw:
         assert board.layout.annotations
 
 
+class TestDownload:
+    # The boxes open on the whole backtest, so the button alone takes all of it.
+    def test_the_boxes_open_on_the_whole_run(self, run):
+        built = app.build(REGION, run)
+        days = data.loadRun(REGION, run).days
+        assert _callback(built, "from-date")(REGION) == (
+            app.showDay(days.testDay.min()), app.showDay(days.testDay.max()))
+
+    # The file holds the days the boxes name and no others, so a reader who narrows
+    # the range gets the rows they asked for.
+    def test_it_downloads_the_days_named(self, run):
+        built = app.build(REGION, run)
+        day = data.loadRun(REGION, run).days.testDay.min() + timedelta(days=1)
+        sent, fromStyle, toStyle, note = _callback(built, "download-days")(
+            1, app.showDay(day), app.showDay(day), {"region": REGION})
+        rows = pd.read_csv(io.StringIO(sent["content"]))
+        assert set(pd.to_datetime(rows.testDay)) == {day}
+        assert note is None and fromStyle == toStyle == app.dayStyle
+        assert sent["filename"] == f"rolling_{REGION}_{day.date()}_{day.date()}.csv"
+
+    # A date outside the backtest downloads nothing and the box says what it wants,
+    # which is what a bad start state of charge does to the forecast board.
+    def test_a_date_outside_the_run_downloads_nothing(self, run):
+        built = app.build(REGION, run)
+        days = data.loadRun(REGION, run).days
+        after = days.testDay.max() + timedelta(days=1)
+        sent, fromStyle, toStyle, note = _callback(built, "download-days")(
+            1, app.showDay(days.testDay.min()), app.showDay(after), {"region": REGION})
+        assert sent is no_update and toStyle == app.badDayStyle
+        assert fromStyle == app.dayStyle
+        assert note == (f"Type a date from {app.showDay(days.testDay.min())} to "
+                        f"{app.showDay(days.testDay.max())}.")
+
+    # Both boxes hold a date in the run and the range still cannot be read, so both
+    # are marked rather than one of them at random.
+    def test_a_backwards_range_marks_both_boxes(self, run):
+        days = data.loadRun(REGION, run).days
+        span = app.runSpan(days)
+        start, _, fromStyle, toStyle, note = app.downloadRange(
+            app.showDay(days.testDay.max()), app.showDay(days.testDay.min()), span)
+        assert start is None and fromStyle == toStyle == app.badDayStyle
+        assert note == "The first date is after the second."
+
+
+class TestForecastDownload:
+    # The button hands over the fetch the chart was drawn from, so the file and the
+    # chart cannot disagree.
+    def test_it_sends_the_frame_on_the_board(self, run):
+        built = app.build(REGION, run)
+        held = {"csv": "settlementdate,price\n", "name": "forecast.csv"}
+        sent = _callback(built, "download-forecast")(1, held)
+        assert sent["content"] == held["csv"] and sent["filename"] == "forecast.csv"
+
+    # A failed fetch leaves nothing to hand over, so the button downloads nothing
+    # rather than an empty file.
+    def test_an_empty_board_sends_nothing(self, run):
+        built = app.build(REGION, run)
+        assert app.forecastExport(REGION, LIVE_MODEL, pd.DataFrame()) is None
+        with pytest.raises(PreventUpdate):
+            _callback(built, "download-forecast")(1, None)
+
+    # The name carries the region, the model and the interval the path starts on.
+    def test_the_name_states_what_it_holds(self):
+        frame = pd.DataFrame({"settlementdate": [pd.Timestamp("2026-10-29 14:05")],
+                              "price": [100.0]})
+        export = app.forecastExport(REGION, LIVE_MODEL, frame)
+        assert export["name"] == f"forecast_{REGION}_{LIVE_MODEL}_20261029T1405.csv"
+        assert "100.0" in export["csv"]
+
+
 class TestForecastScreen:
     # The screen runs the agent itself, so it offers what trainedPolicies/ holds, not
     # what the backtest scored. The backtest label carries a price source; this does not.
@@ -270,14 +344,14 @@ class TestForecastScreen:
     # The box over the board names the interval the forecast starts on.
     def test_the_box_names_the_start_of_the_forecast(self, monkeypatch, tmp_path):
         monkeypatch.setattr(live, "forecastPath", lambda region: path([10.0, 300.0]))
-        figure, box, _ = app.forecastBoard(REGION, None, tmp_path)
+        figure, box, *_ = app.forecastBoard(REGION, None, tmp_path)
         assert figure.data[0].name == "AEMO forecast"
         assert box[1].children == "01/01/2025 10:05"
 
     # The prices are AEMO's, so a model with no agent still gets its price path.
     def test_an_unpublished_model_still_draws_the_prices(self, monkeypatch, tmp_path):
         monkeypatch.setattr(live, "forecastPath", lambda region: path([10.0, 300.0]))
-        figure, box, _ = app.forecastBoard(REGION, MODEL, tmp_path)
+        figure, box, *_ = app.forecastBoard(REGION, MODEL, tmp_path)
         assert figure.data[0].name == "AEMO forecast"
         assert not [s for s in figure.layout.shapes if s.type == "rect"]
         assert "not published" in figure.layout.annotations[0].text
@@ -287,7 +361,7 @@ class TestForecastScreen:
     def test_the_board_returns_the_cards(self, monkeypatch, sawtooth, standIn,
                                         tmp_path):
         monkeypatch.setattr(live, "forecastPath", lambda region: sawtooth)
-        _, _, tiles = app.forecastBoard(REGION, LIVE_MODEL, tmp_path)
+        _, _, tiles, _ = app.forecastBoard(REGION, LIVE_MODEL, tmp_path)
         assert [tile["label"] for tile in tiles] == ["Expected revenue",
                                                      "Current state of charge"]
         assert tiles[0]["raw"] > 0
@@ -302,7 +376,7 @@ class TestForecastScreen:
             raise ValueError("AEMO has not published this run")
 
         monkeypatch.setattr(live, "forecastPath", refuse)
-        figure, box, tiles = app.forecastBoard(REGION, LIVE_MODEL, tmp_path)
+        figure, box, tiles, _ = app.forecastBoard(REGION, LIVE_MODEL, tmp_path)
         assert "not published" in figure.layout.annotations[0].text
         assert box[1].children == "no run"
         assert tiles[0]["value"] == "no data"
@@ -330,7 +404,7 @@ class TestStartSoc:
         monkeypatch.setattr(live, "suggest",
                             lambda *args, **kwargs: seen.update(kwargs) or
                             suggest(*args, **kwargs))
-        _, _, tiles = app.forecastBoard(REGION, LIVE_MODEL, tmp_path, 0.2)
+        _, _, tiles, _ = app.forecastBoard(REGION, LIVE_MODEL, tmp_path, 0.2)
         assert seen["initialSoc"] == 0.2
         assert tiles[1]["raw"] == 0.2
 

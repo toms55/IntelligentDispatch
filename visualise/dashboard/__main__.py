@@ -8,14 +8,17 @@ results/backtestResults/<run>` when that directory holds more than one run.
 Backtest. Pick a model and a region at the top. Below them a date field, a stepper and
 a calendar button drive one board, which shows either the month or one day's dispatch,
 never both. The stepper moves what the board shows, a month or a day, and the label
-above it names which. Click a day in the month to open it.
+above it names which. Click a day in the month to open it. The two date boxes on the
+right open on the whole backtest, and the button beside them downloads the run's rows
+over those days, for the region on screen.
 
 Current forecast. Pick a model and a region, and the board draws the AEMO price path
 published right now, with the dispatch that model would run over it. This screen runs
 the agent itself, so its model list is what `trainedPolicies/` holds on this machine,
 not what the backtest scored. The start state of charge is a box, in percent, because
 the charge a real battery holds is not in this repository. See
-`visualise/dashboard/live.py` for what the two screens do not share.
+`visualise/dashboard/live.py` for what the two screens do not share. The button beside
+the dropdowns downloads the intervals on the board.
 """
 import argparse
 import calendar as calendarModule
@@ -38,8 +41,17 @@ buttonStyle = {"padding": "7px 14px", "borderRadius": "8px", "cursor": "pointer"
 labelStyle = {"color": figures.mutedInk, "fontSize": "12px", "display": "block",
               "marginBottom": "4px"}
 socStyle = {**buttonStyle, "width": "72px"}
-badSocStyle = {**socStyle, "border": f"1px solid {figures.lossPole}",
-               "color": figures.lossPole}
+dayStyle = {**buttonStyle, "width": "140px"}
+
+
+def _bad(style):
+    """A box the reader has to fix, in the colour the losses are drawn in."""
+    return {**style, "border": f"1px solid {figures.lossPole}",
+            "color": figures.lossPole}
+
+
+badSocStyle = _bad(socStyle)
+badDayStyle = _bad(dayStyle)
 dateFormat = "%d/%m/%Y"
 # The forecast screen asks for the start state of charge in percent, because that is how
 # a battery states its charge. This is its own number, not `config.initial_soc`: that one
@@ -61,6 +73,37 @@ def parseSoc(text):
     except (TypeError, ValueError):
         return None
     return percent / 100 if 0 <= percent <= 100 else None
+
+
+def runSpan(days):
+    """The first and the last test day of a run, which the download opens on."""
+    return str(days.testDay.min().date()), str(days.testDay.max().date())
+
+
+def _inSpan(text, lo, hi):
+    day = parseDay(text)
+    return day if day is not None and lo <= pd.Timestamp(day) <= hi else None
+
+
+def downloadRange(fromText, toText, span):
+    """The typed download range, and how the two boxes report it.
+
+    Returns (start, end, fromStyle, toStyle, note). `start` is None when a box holds
+    anything but a date inside `span`, or when the range runs backwards. The caller
+    then downloads nothing and the box says what it wants, which is what a bad start
+    state of charge does to the forecast board.
+    """
+    lo, hi = pd.Timestamp(span[0]), pd.Timestamp(span[1])
+    start, end = _inSpan(fromText, lo, hi), _inSpan(toText, lo, hi)
+    if start is None or end is None:
+        return (None, None,
+                dayStyle if start is not None else badDayStyle,
+                dayStyle if end is not None else badDayStyle,
+                f"Type a date from {showDay(lo)} to {showDay(hi)}.")
+    if pd.Timestamp(start) > pd.Timestamp(end):
+        return (None, None, badDayStyle, badDayStyle,
+                "The first date is after the second.")
+    return start, end, dayStyle, dayStyle, None
 
 
 def _tile(tile):
@@ -190,7 +233,7 @@ def _controls(regions, region):
                       dcc.Input(id="day-text", type="text", debounce=True,
                                 placeholder=dateFormat.replace("%d", "DD")
                                 .replace("%m", "MM").replace("%Y", "YYYY"),
-                                style={**buttonStyle, "width": "140px"})]),
+                                style=dayStyle)]),
             html.Div([html.Label(id="step-label", style=labelStyle),
                       html.Div([html.Button("<", id="step-prev", n_clicks=0,
                                             style=buttonStyle),
@@ -204,6 +247,24 @@ def _controls(regions, region):
             html.Div(id="board-label",
                      style={"color": figures.secondaryInk, "fontSize": "15px",
                             "alignSelf": "flex-end", "paddingBottom": "7px"}),
+            # The run's own rows, over the days the reader names. The boxes open on the
+            # whole backtest, so the button alone downloads all of it.
+            html.Div([
+                html.Div([
+                    html.Div([html.Label("From", style=labelStyle),
+                              dcc.Input(id="from-date", type="text", debounce=True,
+                                        style=dayStyle)]),
+                    html.Div([html.Label("To", style=labelStyle),
+                              dcc.Input(id="to-date", type="text", debounce=True,
+                                        style=dayStyle)]),
+                    html.Div([html.Label(" ", style=labelStyle),
+                              html.Button("Download CSV", id="download-click",
+                                          n_clicks=0, style=buttonStyle)]),
+                ], style={"display": "flex", "gap": "8px", "alignItems": "flex-end"}),
+                html.Div(id="download-note",
+                         style={"color": figures.lossPole, "fontSize": "12px",
+                                "marginTop": "4px", "maxWidth": "320px"}),
+            ], style={"marginLeft": "auto"}),
         ], style={"display": "flex", "gap": "14px", "alignItems": "flex-end",
                   "flexWrap": "wrap", "marginBottom": "18px"}),
     ])
@@ -245,6 +306,11 @@ def _liveControls(regions, region):
                                    options=[{"label": name, "value": name}
                                             for name in regions],
                                    style={"minWidth": "120px"})]),
+            # The board on screen, interval by interval. It hands over the fetch the
+            # chart was drawn from, so the file and the chart cannot disagree.
+            html.Div([html.Label(" ", style=labelStyle),
+                      html.Button("Download CSV", id="forecast-download", n_clicks=0,
+                                  style=buttonStyle)]),
         ], style={"display": "flex", "gap": "14px", "justifyContent": "flex-end",
                   "alignItems": "flex-end", "marginBottom": "20px", "flexWrap": "wrap"}),
         html.Div([
@@ -267,6 +333,11 @@ def layout(regions, region, day):
                            dcc.Tab(label="Current forecast", value="live")]),
         # Both screens stay mounted and one is hidden, so a tab change costs no rebuild
         # and the day a reader opened is still there when they come back.
+        dcc.Download(id="download-days"),
+        dcc.Download(id="download-forecast"),
+        # The forecast board is a network fetch, so the file it hands over is the one
+        # already drawn rather than a second fetch that could differ from the chart.
+        dcc.Store(id="forecast-csv"),
         html.Div(id="backtest-screen", children=[
             _controls(regions, region),
             html.Div(id="tiles", style={"display": "flex", "gap": "12px",
@@ -311,9 +382,9 @@ def liveModels(region, policyRoot=live.defaultCheckpoints):
 
 
 def forecastBoard(region, model, policyRoot, initialSoc=defaultSoc):
-    """The forecast figure, the box above it and its two cards.
+    """The forecast figure, the box above it, its two cards and the frame it drew.
 
-    Returns (figure, box, tiles).
+    Returns (figure, box, tiles, frame).
 
     The two halves fail apart. The prices are AEMO's and need no agent, so a model
     whose checkpoint is not on this machine still gets its price path, with the reason
@@ -325,7 +396,7 @@ def forecastBoard(region, model, policyRoot, initialSoc=defaultSoc):
         path = live.forecastPath(region)
     except Exception as error:  # noqa: BLE001 - the message is the output
         return (figures.forecastFigure(empty, note=str(error)), _liveBox(None),
-                figures.forecastTiles(empty, initialSoc))
+                figures.forecastTiles(empty, initialSoc), empty)
     note = None
     try:
         frame = live.suggest(path, model, region, root=policyRoot,
@@ -335,7 +406,19 @@ def forecastBoard(region, model, policyRoot, initialSoc=defaultSoc):
     figure = figures.forecastFigure(frame, live.blocks(frame), region=region,
                                     model=model, note=note)
     return (figure, _liveBox(None if frame.empty else frame.settlementdate.iloc[0]),
-            figures.forecastTiles(frame, initialSoc))
+            figures.forecastTiles(frame, initialSoc), frame)
+
+
+def forecastExport(region, model, frame):
+    """The file the forecast screen hands over: the drawn intervals, and its name.
+
+    None when the fetch returned nothing, and the button then downloads nothing.
+    """
+    if frame.empty:
+        return None
+    start = pd.Timestamp(frame.settlementdate.iloc[0]).strftime("%Y%m%dT%H%M")
+    return {"name": f"forecast_{region}_{model or 'prices'}_{start}.csv",
+            "csv": frame.to_csv(index=False)}
 
 
 def _liveBox(start):
@@ -375,6 +458,41 @@ def register(app, loader, policyRoot=live.defaultCheckpoints):
         names = data.models(loader(region).days)
         return ([{"label": name, "value": name} for name in names],
                 current if current in names else (names[0] if names else None))
+
+    # The boxes open on the whole backtest, and on the span of the region shown,
+    # because a run need not hold the same test days in every region.
+    @app.callback(Output("from-date", "value"), Output("to-date", "value"),
+                  Input("pick-region", "value"))
+    def fillDates(region):
+        return tuple(showDay(day) for day in runSpan(loader(region).days))
+
+    # The published rows of the region on screen, over the days the boxes name.
+    @app.callback(Output("download-days", "data"), Output("from-date", "style"),
+                  Output("to-date", "style"), Output("download-note", "children"),
+                  Input("download-click", "n_clicks"),
+                  State("from-date", "value"), State("to-date", "value"),
+                  State("state", "data"), prevent_initial_call=True)
+    def downloadDays(clicks, fromText, toText, state):
+        run = loader(state["region"])
+        start, end, fromStyle, toStyle, note = downloadRange(
+            fromText, toText, runSpan(run.days))
+        if start is None:
+            return no_update, fromStyle, toStyle, note
+        # A test day is the 04:00 start of a trading day, and the boxes hold calendar
+        # dates, so the last day named has to be inside the range it labels.
+        day = run.days.testDay.dt.normalize()
+        rows = run.days[(day >= pd.Timestamp(start)) & (day <= pd.Timestamp(end))]
+        name = f"{run.resultsDir.name}_{run.region}_{start}_{end}.csv"
+        return (dcc.send_data_frame(rows.to_csv, name, index=False),
+                fromStyle, toStyle, note)
+
+    @app.callback(Output("download-forecast", "data"),
+                  Input("forecast-download", "n_clicks"),
+                  State("forecast-csv", "data"), prevent_initial_call=True)
+    def downloadForecast(clicks, held):
+        if not held:
+            raise PreventUpdate
+        return {"content": held["csv"], "filename": held["name"], "type": "text/csv"}
 
     @app.callback(Output("state", "data"), Output("day-text", "value"),
                   Input("board", "clickData"), Input("step-prev", "n_clicks"),
@@ -480,13 +598,16 @@ def register(app, loader, policyRoot=live.defaultCheckpoints):
     @app.callback(Output("forecast-board", "figure"),
                   Output("forecast-start", "children"),
                   Output("forecast-tiles", "children"),
+                  Output("forecast-csv", "data"),
                   Input("live-state", "data"))
     def redrawForecast(state):
         if state["screen"] != "live":
             raise PreventUpdate
-        figure, box, tiles = forecastBoard(state["region"], state["model"], policyRoot,
-                                           state.get("soc", defaultSoc))
-        return figure, box, [_tile(tile) for tile in tiles]
+        figure, box, tiles, frame = forecastBoard(
+            state["region"], state["model"], policyRoot,
+            state.get("soc", defaultSoc))
+        return (figure, box, [_tile(tile) for tile in tiles],
+                forecastExport(state["region"], state["model"], frame))
 
 
 def build(region, resultsDir, policyRoot=live.defaultCheckpoints):
