@@ -78,6 +78,10 @@ def spy(monkeypatch, prices):
         # The real trainOne writes the transform beside the weights, and publishing
         # refuses a checkpoint that holds only one of the two.
         (directory / "scaler.json").write_text('{"cap": 23200.0}')
+        # An off-policy fit leaves its replay buffer beside the weights, which is what
+        # lets the next fold continue the same experience. See rl/train.py.
+        if algo == "dqn":
+            (directory / "replay.pkl").write_bytes(b"")
         return None, directory / "agent"
 
     def fakeEvaluate(checkpoints, testPrices, model, **kwargs):
@@ -86,8 +90,10 @@ def spy(monkeypatch, prices):
         windows = len(testPrices) // 288
         return {seed: [{"window": w, "agentProfit": 1.0, "agentRevenue": 2.0,
                         "agentDegradation": 1.0, "lpProfit": 10.0, "regret": 9.0,
+                        "outOfBounds": 3,
                         "trajectory": [{"price": 50.0, "soc": 0.5, "bought": 0.0,
-                                        "sold": 0.0, "profit": 0.0}] * 288}
+                                        "sold": 0.0, "profit": 0.0,
+                                        "attemptedAction": 1}] * 288}
                        for w in range(windows)]
                 for seed in checkpoints}
 
@@ -223,6 +229,15 @@ class TestOutput:
         assert len(frame) == expected
         assert set(frame.trainMode) == {"warm"} and set(frame.seed) == {0, 1}
 
+    # How often the agent chose to charge a full pack or discharge an empty one. It is a
+    # column rather than a diagnostic, so the count is one read_csv away for every seed
+    # and both price sources. MaskablePPO cannot do it at all, so this is the figure that
+    # prices running DQN without a mask.
+    def test_rows_carry_the_out_of_bounds_count(self, config, spy):
+        runner.runRolling(config)
+        frame = records.readDays(config.resultsDir, REGION)
+        assert (frame.outOfBounds == 3).all()
+
     # The volatility label is joined onto every row, so the calendar and the high/low
     # split need nothing but the CSV.
     def test_rows_carry_the_volatility_label(self, config, spy):
@@ -306,6 +321,39 @@ class TestResume:
         runner.runRolling(config)
         with pytest.raises(ValueError, match="trainWeeks"):
             runner.runRolling(config._replace(trainWeeks=5))
+
+    # The penalty is part of the reward, so two values are two different experiments and
+    # their rows may not share a result set.
+    def test_a_changed_penalty_is_refused(self, config, spy):
+        runner.runRolling(config)
+        with pytest.raises(ValueError, match="invalidPenalty"):
+            runner.runRolling(config._replace(invalidPenalty=0.0))
+
+
+class TestReplayBufferChain:
+    """An off-policy fold continues the previous fold's experience, so the buffer sits
+    beside the weights. It is tens of megabytes, and a run is 143 folds by 5 seeds, so
+    only the live end of each chain is kept."""
+
+    def test_the_parents_buffer_is_pruned(self, config, spy):
+        cfg = config._replace(algos=("dqn",), seeds=(0,))
+        runner.runRolling(cfg)
+        every = folds.enumerateFolds(cfg.start, cfg.end, cfg.trainWeeks)
+        kept = [index for index, fold in enumerate(every)
+                if (runner.checkpointDir(cfg, fold.index, "warm", "dqn", 0)
+                    / "replay.pkl").exists()]
+        # Only the last fold's buffer survives; every checkpoint is still on disk.
+        assert kept == [len(every) - 1]
+        assert all((runner.checkpointDir(cfg, fold.index, "warm", "dqn", 0)
+                    / "agent.zip").exists() for fold in every)
+
+    # Pruning the child instead would leave a crash between the load and the save with
+    # no buffer to resume from.
+    def test_an_on_policy_chain_prunes_nothing(self, config, spy):
+        runner.runRolling(config)
+        first = folds.enumerateFolds(config.start, config.end, config.trainWeeks)[0]
+        directory = runner.checkpointDir(config, first.index, "warm", "maskableppo", 0)
+        assert (directory / "agent.zip").exists()
 
 
 class TestDryRun:

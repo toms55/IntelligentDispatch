@@ -92,7 +92,29 @@ class TestTraining:
         assert BessEnv(series, paper, horizon=24).shuffle is False
 
 
+class TestDqnSettings:
+    # 1e6 transitions of a 60-slot observation is about 480 MB per seed, held twice over
+    # (obs and next obs), and the buffer now travels between folds on disk. The size is
+    # therefore pinned rather than left at the SB3 default.
+    def test_the_replay_buffer_size_is_pinned(self, paper, series):
+        agent = algos.build("dqn", makeEnv(paper, series), seed=0)
+        assert agent.buffer_size == config.replay_buffer_size
+        assert agent.buffer_size < 1000000
+
+    # rl/train.py asks algos whether a buffer travels, rather than testing attributes
+    # of an SB3 object itself.
+    def test_only_an_off_policy_agent_carries_a_buffer(self, paper, series):
+        env = makeEnv(paper, series)
+        assert algos.isOffPolicy(algos.build("dqn", env, seed=0)) is True
+        assert algos.isOffPolicy(algos.build("maskableppo", env, seed=0)) is False
+        assert algos.isOffPolicy(algos.build("a2c", env, seed=0)) is False
+
+
 class TestMasking:
+    # Training needs no test that the mask reaches learn(): MaskablePPO.collect_rollouts
+    # raises when `is_masking_supported(env)` is false (ppo_mask.py:216), so a mask the
+    # Monitor wrapper stopped forwarding fails the fit rather than silently training
+    # plain PPO. These two tests cover prediction, which has no such guard.
     def test_the_mask_reaches_maskable_ppo(self, paper, series):
         env = makeEnv(paper, series, initialSoc=1.0)
         agent = algos.build("maskableppo", env, seed=0)
