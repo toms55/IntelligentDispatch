@@ -41,9 +41,10 @@ def publishRun(root, rows, name="rolling", region=REGION, every=None):
     return run
 
 
-def writeActions(root, name, seeds=(0,), every=48, sources=("forecast",)):
-    """An actions export of a run named `name`, as `backtest.actions` writes it:
-    root/actions/<name>_<region>.csv."""
+def writeActions(root, name, seeds=(0,), every=48, sources=("forecast",), live=False):
+    """An actions export of a run named `name`, as `backtest.publish` writes it:
+    root/actions/<name>_<region>.parquet. `live` writes the CSV a running backtest
+    appends to instead, root/actions/<name>_<region>.csv."""
     rows = []
     for source in sources:
         for seed in seeds:
@@ -58,9 +59,12 @@ def writeActions(root, name, seeds=(0,), every=48, sources=("forecast",)):
                     "realisedPrice": 50.0 + step, "region": REGION, "fold": 0,
                     "seed": seed, "algo": "maskableppo", "trainMode": "warm",
                     "priceSource": source})
-    (root / "actions").mkdir(exist_ok=True)
-    pd.DataFrame(rows, columns=list(actions.columns)).to_csv(
-        root / "actions" / f"{name}_{REGION}.csv", index=False)
+    frame = pd.DataFrame(rows, columns=list(actions.columns))
+    if live:
+        actions.appendRows(root / "actions" / f"{name}_{REGION}.csv", frame)
+    else:
+        frame["forecastRunTime"] = pd.to_datetime(frame.forecastRunTime)
+        actions.writeExport(frame, root / "actions" / f"{name}_{REGION}.parquet")
 
 
 @pytest.fixture
@@ -195,7 +199,7 @@ class TestVerifyRefresh:
 
     def test_a_missing_export_is_refused(self, tmp_path):
         run = self.make(tmp_path, 48)
-        (tmp_path / "actions" / f"rolling_{REGION}.csv").unlink()
+        (tmp_path / "actions" / f"rolling_{REGION}.parquet").unlink()
         with pytest.raises(FileNotFoundError, match="actions export"):
             data.loadRun(REGION, run)
 
@@ -221,7 +225,7 @@ class TestDispatchPath:
     def path(self, tmp_path, **overrides):
         """One day of decisions: charge, then idle."""
         writeActions(tmp_path, "rolling", seeds=(0,), sources=("forecast", "realised"))
-        rows = data._readActions(str(tmp_path / "actions" / f"rolling_{REGION}.csv"), 0)
+        rows = data._readActions(str(tmp_path / "actions" / f"rolling_{REGION}.parquet"), 0)
         return rows.assign(**overrides)
 
     # The action is the one the agent took, the same reading the forecast screen takes
@@ -263,7 +267,7 @@ class TestForecastPath:
         writeActions(tmp_path, "rolling_fc4h")
         writeActions(tmp_path, "rolling_fc5m")
         got = data.actionsFile(tmp_path / "backtestResults" / "rolling_fc4h", REGION)
-        assert got.name == f"rolling_fc4h_{REGION}.csv"
+        assert got.name == f"rolling_fc4h_{REGION}.parquet"
         assert data.actionsFile(tmp_path / "backtestResults" / "other", REGION) is None
 
     def test_one_day_of_one_seed(self, tmp_path):

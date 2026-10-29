@@ -102,20 +102,25 @@ rsync -a trainedPolicies/NSW1/ dashboard-host:~/IntelligentDispatch/trainedPolic
 ### A dashboard backtest lives in `results/backtestResults/`
 
 `results/` is working output and git ignores it, apart from the published runs and
-their actions exports. Those are tracked, so every clone can draw them. Each is one CSV
+their actions exports. Those are tracked, so every clone can draw them. Each is one file
 per run per region, named the same way:
 
 ```
 results/backtestResults/<run>_<region>.csv   one row per seed, price source and test
                                              day, every fold, plus forecastEvery
-results/actions/<run>_<region>.csv           one row per agent decision, every seed and
+results/actions/<run>_<region>.parquet       one row per agent decision, every seed and
                                              price source; the day view draws it
 ```
 
+The actions export is Parquet because GitHub refuses a file over 100 MB, and every seed
+under both price sources is about 270 MB of CSV per region (30 to 40 MB as Parquet).
+The CSV beside it, `results/actions/<run>_<region>.csv`, is the live file a backtest
+appends to as it runs. Git ignores it and the dashboard never reads it.
+
 Rules:
 
-1. `backtest/publish.py` is the only code that writes `results/backtestResults/`. Never
-   copy a run in by hand.
+1. `backtest/publish.py` is the only code that writes `results/backtestResults/` and
+   turns the live actions CSV into the Parquet export. Never copy a run in by hand.
 2. The folds job publishes each region once it has merged the seeds. `<run>` is the
    results directory's name without the region, so the five regional jobs of one
    experiment share one name.
@@ -302,7 +307,7 @@ cover.
   `trainedPolicies/`. `--results` names a run as `results/backtestResults/<run>`, the
   path of its CSVs without the region. With no `--results`, `data.findResults` reads
   the one run under `results/backtestResults/`. Two runs there raise and name both.
-  A day view reads the run's actions export, `results/actions/<run>_<region>.csv`
+  A day view reads the run's actions export, `results/actions/<run>_<region>.parquet`
   (see `data.actionsFile`): its rows are the dispatch the chart draws, for either
   price source, and its `forecastRunTime` column is the only source of the forecast
   line, so pointing `--results` at another run changes both along with every other
@@ -415,7 +420,9 @@ cover.
   used once: a fresh start refuses a name whose actions CSV or
   `results/backtestResults/<run>_<region>.csv` exists, and `--resume` (`RESUME=1` in the
   folds job) continues one without appending a fold twice. `python -m backtest.actions`
-  is only for runs from before this.
+  is only for runs from before this. The CSV is working state: `backtest.publish`
+  writes it out as `results/actions/<run>_<region>.parquet`, which is what git tracks
+  and the dashboard reads.
 - `nemosis` downloads AEMO archive files into `data_cache/` on first use, so the first
   call for a date range is slow and network-bound while later calls are local. The
   directory is gitignored and safe to delete.
