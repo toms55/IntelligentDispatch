@@ -2,33 +2,33 @@
 
 ## Overview
 
-One diagram for the whole method. Realised prices make the problem. The oracle and the
-agent solve the same problem. The difference between them is the result.
+The method in one figure. Each stage is described in full below.
 
 ```mermaid
 flowchart TB
-    AEMO[AEMO dispatch prices via nemosis]
-    CLEAN[Clean 5-min RRP, one region]
-    FOLDS[Rolling folds, train then test, 04:00 boundaries]
+    D[Collect historical market prices]
+    P[Clean the price series and align it to trading days]
+    S[Split into rolling train and test periods]
+    M[Define the battery dispatch problem: three actions, one trading day, degradation cost]
 
-    DP[Discrete oracle: optimisation/dp.py]
-    ENV[BessEnv: 3 actions, Schade degradation]
-    AGENT[DQN and MaskablePPO, equal step budget, 5 seeds]
+    B[Build the benchmark: perfect-foresight optimum under the same constraints]
+    T[Train two agents: DQN and PPO]
 
-    SCORE[Score each test day twice: realised prices, then AEMO forecast]
-    OUT[Profit, regret, captured fraction, out-of-bounds rate]
+    E[Evaluate on held-out days, twice: with realised prices, then with the forecast available at the time]
+    C[Compare each agent against the benchmark]
+    R[Report profit, shortfall against the benchmark, and infeasible-action rate]
 
-    AEMO --> CLEAN --> FOLDS
-    FOLDS --> DP
-    FOLDS --> ENV --> AGENT
-    DP --> SCORE
-    AGENT --> SCORE
-    SCORE --> OUT
+    D --> P --> S --> M
+    M --> B
+    M --> T
+    B --> E
+    T --> E
+    E --> C --> R
 ```
 
-The oracle and the environment are the same problem stated twice. Same three actions,
-same top-up rule at the SoC boundary, same episode, same degradation. That is what makes
-the oracle a bound.
+The benchmark and the agents face the same problem. Same actions, same horizon, same
+costs. This is what makes the benchmark an upper bound, so the gap to it measures the
+policy and nothing else.
 
 ## Detail
 
