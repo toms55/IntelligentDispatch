@@ -1,9 +1,41 @@
 # Methodology
 
-Three diagrams. The first shows the whole pipeline. The second shows one environment
-step. The third shows how the agent is scored.
+## Overview
 
-## Pipeline
+One diagram for the whole method. Realised prices make the problem. The oracle and the
+agent solve the same problem. The difference between them is the result.
+
+```mermaid
+flowchart TB
+    AEMO[AEMO dispatch prices via nemosis]
+    CLEAN[Clean 5-min RRP, one region]
+    FOLDS[Rolling folds, train then test, 04:00 boundaries]
+
+    DP[Discrete oracle: optimisation/dp.py]
+    ENV[BessEnv: 3 actions, Schade degradation]
+    AGENT[DQN and MaskablePPO, equal step budget, 5 seeds]
+
+    SCORE[Score each test day twice: realised prices, then AEMO forecast]
+    OUT[Profit, regret, captured fraction, out-of-bounds rate]
+
+    AEMO --> CLEAN --> FOLDS
+    FOLDS --> DP
+    FOLDS --> ENV --> AGENT
+    DP --> SCORE
+    AGENT --> SCORE
+    SCORE --> OUT
+```
+
+The oracle and the environment are the same problem stated twice. Same three actions,
+same top-up rule at the SoC boundary, same episode, same degradation. That is what makes
+the oracle a bound.
+
+## Detail
+
+Three more diagrams. The first shows the whole pipeline. The second shows one
+environment step. The third shows how the agent is scored.
+
+### Pipeline
 
 Data enters at the top. Every window is solved twice: once by the oracle, once by the
 agent.
@@ -62,7 +94,7 @@ The oracle runs in two modes. The continuous mode is cheap and gives the per-int
 reward baseline. The discrete mode uses the same three actions as the agent, so it is
 the only fair bound. See `config.py`.
 
-## One environment step
+### One environment step
 
 The environment and `solve(discretePower=True)` state the same problem. Same actions,
 same top-up rule, same degradation terms.
@@ -100,7 +132,7 @@ flowchart TB
 The observation holds the SoC, 12 five-minute prices, 46 half-hour bucket means and the
 intervals remaining. `rl/features.py` is the single definition of this layout.
 
-## Scoring
+### Scoring
 
 Each policy is scored twice on the same window. The prices it sees change. The prices
 it is paid on do not.
