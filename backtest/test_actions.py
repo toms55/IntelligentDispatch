@@ -57,13 +57,25 @@ class TestAttemptedAction:
         # Nothing moved in this trajectory, so every realised action reads idle.
         assert list(got.action) == ["idle", "idle", "idle"]
 
-    def test_an_out_of_bounds_interval_is_an_attempt_that_moved_nothing(self):
-        frame = trajectory(steps=2)
-        frame["attemptedAction"] = [CHARGE, CHARGE]
-        frame.loc[1, "bought"] = 0.005
+    # The env's own flag travels, rather than being re-derived from the energy moved.
+    # At the SoC boundary the two differ: the mask is a tolerance on the headroom, so a
+    # step can be out of bounds and still move an atom of energy, which makes `action`
+    # read "charge". Re-deriving the flag would miss exactly those intervals.
+    def test_the_env_flag_travels_rather_than_the_energy(self):
+        frame = trajectory(steps=3)
+        frame["attemptedAction"] = [CHARGE, CHARGE, CHARGE]
+        frame["outOfBounds"] = [True, True, False]
+        frame.loc[1, "bought"] = 4.8e-12   # flagged, but not exactly zero
+        frame.loc[2, "bought"] = 0.005
         got = actions.actionRows(frame, "NSW1")
-        outOfBounds = (got.attemptedAction != "idle") & (got.action == "idle")
-        assert list(outOfBounds) == [True, False]
+        assert list(got.outOfBounds) == [True, True, False]
+        # The second row is the one a count from the energy alone would lose.
+        assert list(got.action) == ["idle", "charge", "charge"]
+
+    # Trajectories written before the flag carry none, and the export must still read.
+    def test_an_older_trajectory_reports_no_flag(self):
+        got = actions.actionRows(trajectory(steps=2), "NSW1")
+        assert got.outOfBounds.isna().all()
 
     # Trajectories written before this change carry no such column, and the export of an
     # old run must still read.

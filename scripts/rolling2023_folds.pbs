@@ -14,8 +14,8 @@
 #     qsub -v TRAIN_SOURCE=forecast,REFRESH=5,PREFETCH=1,PREFETCH_SPAN=2023-01-01T04:00..2023-12-31T04:00,OUT=...,RESULTS=... \
 #          scripts/rolling2023_folds.pbs      # train on the AEMO forecast as well
 #
-#     qsub -v ALGO=dqn,INITIAL_SOC=0.5,INVALID_PENALTY=1.0 scripts/rolling2023_folds.pbs
-#          # the DQN half of the thesis comparison
+#     qsub -v ALGO=dqn scripts/rolling2023_folds.pbs
+#          # the DQN half of the thesis comparison, at the config defaults
 #
 # TRAIN_MODES=cold fits every fold fresh at the cold budget instead of continuing the
 # previous fold's checkpoint. Give it its own OUT and RESULTS, because a result set
@@ -66,10 +66,17 @@ RESULTS=${RESULTS:-results/rolling2023_profit$SUFFIX}
 PRICE_SOURCE=${PRICE_SOURCE:-both}   # realised, forecast or both
 REFRESH=${REFRESH:-240}   # forecast refresh in minutes; 5 is every interval
 TRAIN_SOURCE=${TRAIN_SOURCE:-realised}   # realised or forecast; settlement is realised
-# Both are recorded in the manifest, so a value that differs from the run being compared
-# against is refused rather than quietly mixed. The oracle cache is keyed on the initial
-# SoC (rl/baseline.py cacheKey), so matching an existing run reuses its cache and solves
-# nothing; a different value re-solves every test day.
+# Both are recorded in the manifest, so the value a run used is always readable. Note
+# what that does and does not buy: requireSameManifest only compares runs that share one
+# result set, and ALGO gives each algorithm its own RESULTS, so nothing refuses two runs
+# that disagree. Comparing DQN against MaskablePPO means reading both manifests and
+# checking they differ in `algos` alone.
+#
+# INITIAL_SOC also decides whether the oracle cache is reachable. rl/baseline.py cacheKey
+# hashes it, so a value matching an existing cache solves nothing and any other value
+# misses every entry. This job passes no --allow-solve, so a miss stops it at the cache
+# audit rather than starting hours of solving on one core per seed. Build the cache first
+# with scripts/rolling2023_oracle.pbs under the same SoC.
 INITIAL_SOC=${INITIAL_SOC:-}
 INVALID_PENALTY=${INVALID_PENALTY:-}
 # Seed logs go here. Set it when OUT holds another run's checkpoints, or its logs are lost.

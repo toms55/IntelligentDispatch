@@ -136,7 +136,7 @@ class TestTrajectories:
              "settlementdate": DAY + pd.Timedelta(minutes=5 * (n + 1)),
              "price": 50.0, "observedPrice": 48.0,
              "soc": 0.5, "bought": 0.0, "sold": 0.0, "profit": 0.0,
-             "forecastRunTime": None, "attemptedAction": 1}
+             "forecastRunTime": None, "attemptedAction": 1, "outOfBounds": False}
             for trainMode in ("warm", "oracle") for n in range(288)
         ]
         path = records.writeTrajectories(tmp_path, REGION, 0, rows)

@@ -39,12 +39,10 @@ from utils import nem_interval
 columns = (
     "forecastRunTime", "intervalTime", "action", "soc",
     "forecastPrice", "realisedPrice", "region", "fold", "seed", "algo", "trainMode",
-    "priceSource", "attemptedAction",
+    "priceSource", "attemptedAction", "outOfBounds",
 )
 
-# What `action` says when nothing moved. An attempt that reads idle here while
-# `attemptedAction` names a direction is an interval the agent spent trying to leave the
-# bounds: see backtest/outofbounds.py.
+# What `action` says when nothing moved.
 IDLE_ACTION = "idle"
 
 priceSources = ("forecast", "realised")
@@ -83,6 +81,11 @@ def actionRows(trajectory, region, every=None):
         attempted = attempted.where(rows.attemptedAction.notna())
     else:
         attempted = pd.Series(None, index=rows.index, dtype=object)
+    # The env's own flag, copied. Never re-derived from `action`: the mask is a tolerance
+    # on the headroom, so an out-of-bounds step can still move an atom of energy and read
+    # as a move here. backtest/outofbounds.py selects on this column.
+    flagged = (rows.outOfBounds if "outOfBounds" in rows
+               else pd.Series(None, index=rows.index, dtype=object))
     if "forecastRunTime" in rows and rows.forecastRunTime[forecast].notna().all():
         # Recorded by the backtest as the run the agent actually read.
         runTime = pd.to_datetime(rows.forecastRunTime)
@@ -105,6 +108,7 @@ def actionRows(trajectory, region, every=None):
         "trainMode": rows.trainMode,
         "priceSource": rows.priceSource,
         "attemptedAction": attempted,
+        "outOfBounds": flagged,
     }, columns=columns)
 
 
@@ -144,10 +148,17 @@ def _requireSameColumns(handle, path):
     header = handle.readline().strip().split(",")
     if header != list(columns):
         missing = [name for name in columns if name not in header]
+        extra = [name for name in header if name not in columns]
+        # Name the real difference. Equality is on the order too, so a header holding
+        # every column in another order has nothing missing and nothing extra, and
+        # reporting only the missing names would say "missing []".
+        reason = (f"it is missing {missing}" if missing else
+                  f"it holds unknown columns {extra}" if extra else
+                  f"its columns are in another order: {header}")
         raise ValueError(
             f"{path} was written under a different layout and cannot be appended to: "
-            f"it is missing {missing}. Re-run under a new name, or export the run again "
-            f"with `python -m backtest.actions`."
+            f"{reason}. Re-run under a new name, or export the run again with "
+            f"`python -m backtest.actions`."
         )
 
 

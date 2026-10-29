@@ -18,7 +18,6 @@ from pathlib import Path
 import pandas as pd
 
 import config
-from backtest.actions import IDLE_ACTION
 from visualise.dashboard import data
 
 modelFields = ["algo", "trainMode", "seed", "priceSource"]
@@ -44,26 +43,32 @@ def counts(days):
 
 
 def intervals(exported):
-    """The rows of an actions export where the agent attempted a move that went nowhere.
+    """The rows of an actions export the environment flagged as out of bounds.
 
-    An attempt that moved energy is a legal move, part step or not: the environment
-    allows a partial top-up where physics forces one, and so does the discrete oracle.
+    Selected on the env's own flag, which `rl/env.py:action_masks` defines and the
+    backtest carries through. Never re-derived from `action`: the mask is a tolerance on
+    the headroom, so a flagged step can still move an atom of energy and read as a move,
+    and a count from the energy would quietly lose those intervals. A partial top-up is
+    not out of bounds at all, because the discrete oracle allows one too.
     """
-    if "attemptedAction" not in exported:
+    if "outOfBounds" not in exported:
         raise ValueError(
-            "this actions export carries no attemptedAction column, so what the agent "
-            "chose was never recorded and an out-of-bounds interval cannot be told "
-            "from an idle one. Re-run the backtest."
+            "this actions export carries no outOfBounds column, so the environment's "
+            "own flag was never recorded. Deriving it from the energy moved would "
+            "disagree with the published day rows at the SoC boundary. Re-run the "
+            "backtest."
         )
-    attempted = exported.attemptedAction.fillna(IDLE_ACTION)
-    return exported[(attempted != IDLE_ACTION) & (exported.action == IDLE_ACTION)]
+    return exported[exported.outOfBounds.fillna(False).astype(bool)]
 
 
 def report(run, region, seed=None, limit=20, root=None):
     """Print the counts, then the intervals. Returns the two frames."""
     runDir = (data.backtestRoot if root is None else Path(root)) / run
     days = data.loadRun(region, runDir).days
-    print(f"{run} {region}: out-of-bounds attempts per model\n")
+    print(f"{run} {region}: out-of-bounds attempts per model")
+    # The horizon is stated, because the published rows do not carry it and the rate
+    # divides by it. A run made under another --horizon needs its manifest read.
+    print(f"rate is per interval, at {config.episode_intervals} intervals a test day\n")
     print(counts(days).to_string(index=False))
 
     path = data.actionsFile(runDir, region)

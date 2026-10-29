@@ -94,10 +94,13 @@ Rules:
    penalising it would make the oracle solve a different problem.
 6. `outOfBounds` is counted in four places and named the same in all of them: per step in
    the env's `info`, per training episode in `monitor.csv`, per test day as a published
-   day-row column for every seed, and per interval in the actions export, where
-   `attemptedAction` names what the agent chose and `action` what moved. An attempt that
-   moved nothing is an attempt at a wall. `python -m backtest.outofbounds <run> <region>`
-   reads both ends.
+   day-row column for every seed, and per interval in the actions export.
+   `python -m backtest.outofbounds <run> <region>` reads both ends.
+   The env's flag travels to all four. Never re-derive it from the energy moved, even
+   though `attemptedAction` and `action` sit side by side in the export and look like
+   they imply it. The mask is a tolerance on the headroom, so an out-of-bounds step can
+   still move about 1e-12 MWh, which makes `action` read as a move. Deriving the flag
+   there made the interval list disagree with the day-row count.
 7. The penalty, the initial SoC and the forecast refresh are flags, and `RollingConfig`
    records all three, so `requireSameManifest` refuses to put two settings in one result
    set. Two runs are comparable when their manifests differ in `algos` alone.

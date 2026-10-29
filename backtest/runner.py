@@ -344,9 +344,10 @@ def _trajectoryRows(cfg, fold, algo, trainMode, seed, source, day, steps, observ
             "forecastRunTime": None if runs is None else runs[step],
             "soc": info["soc"], "bought": info["bought"], "sold": info["sold"],
             "profit": info["profit"],
-            # What the agent chose. The actions export derives its own column from the
-            # energy moved, so an out-of-bounds charge reads there as idle.
+            # What the agent chose, and whether it could be done. The export derives
+            # its `action` column from the energy moved, which is a different thing.
             "attemptedAction": info.get("attemptedAction"),
+            "outOfBounds": info.get("outOfBounds"),
         }
 
 
@@ -361,7 +362,7 @@ def _oracleRows(cfg, fold, day, record, prices):
             "sold": record["sold"][step], "profit": record["profitPerInterval"][step],
             # The oracle solves rather than chooses, and its schedule is feasible by
             # construction, so it attempted nothing it could not do.
-            "attemptedAction": None,
+            "attemptedAction": None, "outOfBounds": False,
         }
 
 

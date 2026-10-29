@@ -41,6 +41,12 @@ def loadReplay(directory, agent):
     Raise rather than continue, as loadScaler does. An empty buffer is exactly the
     failure this exists to remove, and it is invisible in the numbers: the fold still
     trains, it just throws away everything the chain learned before it.
+
+    The size is checked against `config.replay_buffer_size`, which is the only place
+    that states it. Neither of the two values to hand is the configured one: the buffer
+    pickles its own size, and `algos.load` restores `buffer_size` onto the agent from
+    the checkpoint, so both come from the chain's cold fold. Comparing them to each
+    other would compare a number with itself and check nothing.
     """
     if not algos.isOffPolicy(agent):
         return
@@ -50,14 +56,14 @@ def loadReplay(directory, agent):
             f"no {replayFile} at {path}: the checkpoint predates the travelling replay "
             f"buffer, so the experience the chain reached is gone. Start a fresh run."
         )
-    wanted = agent.replay_buffer.buffer_size
     agent.load_replay_buffer(str(path))
     found = agent.replay_buffer.buffer_size
-    if found != wanted:
+    if found != config.replay_buffer_size:
         raise ValueError(
-            f"{path} holds a buffer of {found} transitions, this run is configured for "
-            f"{wanted}: the size is pickled into the buffer, so continuing would use "
-            f"the old one. Start a fresh run."
+            f"{path} holds a buffer of {found} transitions, and this run is configured "
+            f"for {config.replay_buffer_size}. The chain was started under the other "
+            f"size and cannot adopt this one, because the size is fixed when the buffer "
+            f"is built. Start a fresh run, or put the old size back in config.py."
         )
 
 

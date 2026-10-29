@@ -22,14 +22,15 @@ def dayRows(counts):
 
 
 def actionRows(attempts):
-    """One actions-export row per entry of `attempts`: (attemptedAction, action)."""
+    """One actions-export row per entry: (attemptedAction, action, outOfBounds)."""
     return pd.DataFrame([
         {"intervalTime": pd.Timestamp(DAY) + pd.Timedelta(minutes=5 * step),
-         "attemptedAction": attempted, "action": moved, "soc": 0.5,
+         "attemptedAction": attempted, "action": moved, "outOfBounds": flagged,
+         "soc": 0.5,
          "realisedPrice": 50.0 + step, "forecastPrice": None, "forecastRunTime": None,
          "region": REGION, "fold": 0, "seed": 0, "algo": "dqn", "trainMode": "warm",
          "priceSource": "realised"}
-        for step, (attempted, moved) in enumerate(attempts)
+        for step, (attempted, moved, flagged) in enumerate(attempts)
     ])
 
 
@@ -64,20 +65,27 @@ class TestCounts:
 
 
 class TestIntervals:
-    # An attempt that moved nothing is an attempt at a wall. An attempt that moved
-    # something, even a part step, is a legal move.
-    def test_it_finds_the_attempts_that_moved_nothing(self):
-        frame = actionRows([("charge", "idle"), ("charge", "charge"),
-                            ("idle", "idle"), ("discharge", "idle")])
+    # The env's flag selects the rows, not the energy moved: `rl/env.py:action_masks` is
+    # the only definition of out of bounds, and this reader must not invent a second one.
+    def test_it_finds_the_flagged_intervals(self):
+        frame = actionRows([("charge", "idle", True), ("charge", "charge", False),
+                            ("idle", "idle", False), ("discharge", "idle", True)])
         got = outofbounds.intervals(frame)
         assert list(got.attemptedAction) == ["charge", "discharge"]
         assert list(got.realisedPrice) == [50.0, 53.0]
 
+    # The case a count from the energy alone would lose. At the SoC boundary the mask is
+    # a tolerance on the headroom, so a flagged step can still move an atom of energy and
+    # read as a move.
+    def test_a_flagged_interval_that_moved_an_atom_is_still_found(self):
+        frame = actionRows([("charge", "charge", True)])
+        assert len(outofbounds.intervals(frame)) == 1
+
     def test_a_clean_run_finds_nothing(self):
-        frame = actionRows([("idle", "idle"), ("charge", "charge")])
+        frame = actionRows([("idle", "idle", False), ("charge", "charge", False)])
         assert outofbounds.intervals(frame).empty
 
     def test_an_export_without_the_column_is_refused(self):
-        frame = actionRows([("charge", "idle")]).drop(columns=["attemptedAction"])
-        with pytest.raises(ValueError, match="attemptedAction"):
+        frame = actionRows([("charge", "idle", True)]).drop(columns=["outOfBounds"])
+        with pytest.raises(ValueError, match="outOfBounds"):
             outofbounds.intervals(frame)

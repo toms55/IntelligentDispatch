@@ -30,8 +30,12 @@ trajectoryColumns = (
     # The AEMO run the agent read for this decision; None where it read realised prices.
     "forecastRunTime",
     # What the agent chose, which is not always what moved: charging a full pack moves
-    # nothing. The actions export turns the pair into an out-of-bounds interval.
+    # nothing. The export carries both, so a reader can see the attempt and the move.
     "attemptedAction",
+    # The env's own out-of-bounds flag. Carried rather than re-derived from the energy,
+    # because rl/env.py:action_masks is the only definition and it is a tolerance on the
+    # headroom: a flagged step can still move an atom and so look like a move.
+    "outOfBounds",
 )
 
 # What makes a row's work already done, for resume. One unit covers a whole test window.

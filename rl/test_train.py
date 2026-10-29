@@ -15,6 +15,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+import config
 from degradation.schade import SchadeDegradation
 from rl import algos, train
 from rl.features import PriceScaler
@@ -59,7 +60,12 @@ class FakeBuffer:
 
 class FakeOffPolicyAgent(FakeAgent):
     """An agent with DQN's exploration schedule, which resets on every learn() call,
-    and its replay buffer, which save() leaves behind."""
+    and its replay buffer, which save() leaves behind.
+
+    `load_replay_buffer` replaces the buffer wholesale, size included, because SB3's
+    does: the size is pickled into the buffer. A fake that kept its own size would let
+    rl/train.py compare a value against itself and look like it was checking something.
+    """
 
     def __init__(self, bufferSize=10):
         super().__init__()
@@ -190,6 +196,7 @@ class TestReplayBuffer:
 
     def test_a_warm_start_carries_the_parents_buffer(self, prices, battery, tmp_path,
                                                      monkeypatch):
+        monkeypatch.setattr(config, "replay_buffer_size", 10)
         parent = parentCheckpoint(tmp_path, buffer=FakeBuffer(size=10, filled=7))
         agent = FakeOffPolicyAgent()
         monkeypatch.setattr(algos, "load", lambda name, path, env=None: agent)
@@ -208,16 +215,30 @@ class TestReplayBuffer:
             runTrain(prices, battery, tmp_path / "out", warmFrom=parent)
         assert train.replayFile in str(raised.value)
 
-    # The size is pickled into the buffer, so an old one would override the configured
-    # value without a word.
-    def test_refuses_a_buffer_of_another_size(self, prices, battery, tmp_path,
-                                              monkeypatch):
+    # The size is pickled into the buffer, and SB3 also restores it onto the agent from
+    # the checkpoint, so neither of those two values is the configured one. The check has
+    # to be against config.replay_buffer_size or it compares a number with itself.
+    #
+    # The agent here carries the parent's size, as a loaded DQN does. That is exactly the
+    # case a check against `agent.replay_buffer.buffer_size` cannot catch.
+    def test_refuses_a_buffer_that_is_not_the_configured_size(self, prices, battery,
+                                                              tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "replay_buffer_size", 57600)
         parent = parentCheckpoint(tmp_path, buffer=FakeBuffer(size=99))
-        agent = FakeOffPolicyAgent(bufferSize=10)
+        agent = FakeOffPolicyAgent(bufferSize=99)
         monkeypatch.setattr(algos, "load", lambda name, path, env=None: agent)
         with pytest.raises(ValueError) as raised:
             runTrain(prices, battery, tmp_path / "out", warmFrom=parent)
-        assert "99" in str(raised.value) and "10" in str(raised.value)
+        assert "99" in str(raised.value) and "57600" in str(raised.value)
+
+    def test_accepts_a_buffer_of_the_configured_size(self, prices, battery, tmp_path,
+                                                     monkeypatch):
+        monkeypatch.setattr(config, "replay_buffer_size", 64)
+        parent = parentCheckpoint(tmp_path, buffer=FakeBuffer(size=64, filled=5))
+        agent = FakeOffPolicyAgent(bufferSize=64)
+        monkeypatch.setattr(algos, "load", lambda name, path, env=None: agent)
+        runTrain(prices, battery, tmp_path / "out", warmFrom=parent)
+        assert agent.replay_buffer.pos == 5
 
     # An on-policy parent never wrote one, so nothing should be looked for.
     def test_an_on_policy_warm_start_wants_no_buffer(self, prices, battery, tmp_path,
@@ -264,6 +285,7 @@ class TestHoldExploration:
     # The hold is applied on the warm path, so a resumed DQN does not re-randomise.
     def test_a_warm_start_applies_the_hold(self, prices, battery, tmp_path, monkeypatch):
         # An off-policy parent always leaves its buffer, and the warm start reads it.
+        monkeypatch.setattr(config, "replay_buffer_size", 10)
         parent = parentCheckpoint(tmp_path, buffer=FakeBuffer())
         agent = FakeOffPolicyAgent()
         monkeypatch.setattr(algos, "load", lambda name, path, env=None: agent)
