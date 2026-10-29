@@ -21,7 +21,8 @@ def row(fold=0, trainMode="warm", seed=0, priceSource="realised", day=DAY, profi
         "fold": fold, "algo": "maskableppo", "trainMode": trainMode, "seed": seed,
         "priceSource": priceSource, "testDay": day,
         "agentProfit": profit, "agentRevenue": 2.0, "agentDegradation": 0.5,
-        "oracleDualBound": 4.0, "oracleGap": 0.01, "spikeIntensity": 3.25, "highVol": True,
+        "oracleDualBound": 4.0, "oracleGap": 0.01, "outOfBounds": 0,
+        "spikeIntensity": 3.25, "highVol": True,
         "timesteps": 30000, "warmFrom": "runs/rolling/NSW1/fold00/warm",
         "writtenAt": "2026-10-19T12:00:00",
     }
@@ -135,7 +136,7 @@ class TestTrajectories:
              "settlementdate": DAY + pd.Timedelta(minutes=5 * (n + 1)),
              "price": 50.0, "observedPrice": 48.0,
              "soc": 0.5, "bought": 0.0, "sold": 0.0, "profit": 0.0,
-             "forecastRunTime": None}
+             "forecastRunTime": None, "attemptedAction": 1}
             for trainMode in ("warm", "oracle") for n in range(288)
         ]
         path = records.writeTrajectories(tmp_path, REGION, 0, rows)

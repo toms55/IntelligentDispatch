@@ -10,10 +10,55 @@ from rl.env import BessEnv
 from rl.features import PriceScaler, scalerFor
 from rl.policies import scalerFile
 
+# The replay buffer, beside the weights. Working state: it never reaches
+# trainedPolicies/, and backtest/runner.py keeps only the live end of each chain.
+replayFile = "replay.pkl"
+
 
 def saveScaler(directory, scaler):
     """Write the price transform beside the checkpoint."""
     (Path(directory) / scalerFile).write_text(json.dumps(scaler.asDict()))
+
+
+def saveReplay(directory, agent):
+    """Write an off-policy agent's replay buffer beside its weights.
+
+    `agent.save()` excludes the buffer (SB3 lists it in `_excluded_save_params`), so
+    without this a warm-started DQN keeps its weights and its optimiser but relearns
+    from an empty buffer on every fold. MaskablePPO is on-policy and loses nothing, so
+    the two algorithms would not mean the same thing by "warm".
+
+    Working state, not part of a published agent: `policies.publish` copies an allowlist
+    of the weights and the scaler, so this never travels.
+    """
+    if algos.isOffPolicy(agent):
+        agent.save_replay_buffer(str(Path(directory) / replayFile))
+
+
+def loadReplay(directory, agent):
+    """Read the parent fold's replay buffer back into `agent`.
+
+    Raise rather than continue, as loadScaler does. An empty buffer is exactly the
+    failure this exists to remove, and it is invisible in the numbers: the fold still
+    trains, it just throws away everything the chain learned before it.
+    """
+    if not algos.isOffPolicy(agent):
+        return
+    path = Path(directory) / replayFile
+    if not path.exists():
+        raise FileNotFoundError(
+            f"no {replayFile} at {path}: the checkpoint predates the travelling replay "
+            f"buffer, so the experience the chain reached is gone. Start a fresh run."
+        )
+    wanted = agent.replay_buffer.buffer_size
+    agent.load_replay_buffer(str(path))
+    found = agent.replay_buffer.buffer_size
+    if found != wanted:
+        raise ValueError(
+            f"{path} holds a buffer of {found} transitions, this run is configured for "
+            f"{wanted}: the size is pickled into the buffer, so continuing would use "
+            f"the old one. Start a fresh run."
+        )
 
 
 def loadScaler(directory):
@@ -51,13 +96,15 @@ def resumeFrom(algoName, warmFrom, env, scaler, seed):
     agent = algos.load(algoName, str(warmFrom / "agent"), env=env)
     agent.set_random_seed(seed)
     algos.holdExploration(agent)
+    loadReplay(warmFrom, agent)
     return agent
 
 
 def trainOne(algoName, prices, model, seed=0,
              timesteps=100000, calendar=True, horizon=config.episode_intervals,
              rewardScale=config.reward_scale, outDir="runs", scaler=None,
-             warmFrom=None, forecasts=None, **overrides):
+             warmFrom=None, forecasts=None,
+             invalidPenalty=config.invalid_action_penalty, **overrides):
     """Train `algoName` on `prices` and write a checkpoint. Returns (agent, path).
 
     `warmFrom` is a previous checkpoint directory to continue from, which is how a
@@ -79,8 +126,13 @@ def trainOne(algoName, prices, model, seed=0,
     env = Monitor(
         BessEnv(prices, model, calendar=calendar, horizon=horizon,
                 rewardScale=rewardScale, shuffle=True, scaler=scaler,
-                forecasts=forecasts),
+                forecasts=forecasts, invalidPenalty=invalidPenalty),
         filename=str(directory / "monitor.csv"),
+        # One column per episode saying how often the agent chose to charge a full pack
+        # or discharge an empty one, so a run shows whether the penalty bites while it
+        # trains. Monitor copies this key out of the final step's info, so BessEnv sets
+        # it flat on every truncation.
+        info_keywords=("outOfBoundsTotal",),
     )
     agent = (algos.build(algoName, env, seed=seed, **overrides) if warmFrom is None
              else resumeFrom(algoName, warmFrom, env, scaler, seed))
@@ -88,6 +140,7 @@ def trainOne(algoName, prices, model, seed=0,
 
     path = directory / "agent"
     agent.save(str(path))
+    saveReplay(directory, agent)
     return agent, path
 
 

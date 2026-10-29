@@ -38,6 +38,10 @@ def rolloutWindow(agent, env, windowIndex, masking=False, bound=None):
         "agentProfit": totals["profit"],
         "agentRevenue": totals["revenue"],
         "agentDegradation": totals["degradation"],
+        # How often the agent chose to charge a full pack or discharge an empty one.
+        # Zero for a masked algorithm by construction, so it is also the check that
+        # masking was in force.
+        "outOfBounds": totals["outOfBounds"],
         "lpProfit": lpProfit,
         "regret": lpProfit - totals["profit"],
         "trajectory": trajectory,
@@ -45,8 +49,19 @@ def rolloutWindow(agent, env, windowIndex, masking=False, bound=None):
 
 
 def evaluatePolicy(agent, env, algoName=None, masking=None, bounds=None):
+    """Say which algorithm this is, or say whether it reads the mask. Not neither.
+
+    Defaulting to unmasked would score a MaskablePPO agent as though it were a different
+    one, and nothing in the numbers would show it: the run would simply report a worse
+    agent. The out-of-bounds count in each record is what reveals the mistake afterwards.
+    """
+    if algoName is None and masking is None:
+        raise ValueError(
+            "evaluatePolicy needs algoName or masking: whether predict reads the action "
+            "mask is part of what the agent is, and guessing it mis-scores the agent"
+        )
     if masking is None:
-        masking = algos.supportsMasking(algoName) if algoName else False
+        masking = algos.supportsMasking(algoName)
     return [
         rolloutWindow(agent, env, index, masking=masking,
                       bound=None if bounds is None else bounds[index])
@@ -54,21 +69,27 @@ def evaluatePolicy(agent, env, algoName=None, masking=None, bounds=None):
     ]
 
 
-def evaluateSeeds(checkpoints, prices, model, baselines=None, algoName="maskableppo",
+def evaluateSeeds(checkpoints, prices, model, algoName, baselines=None,
                   calendar=True, horizon=None, rewardScale=None, forecasts=None,
-                  bounds=None):
+                  bounds=None, invalidPenalty=None):
     """One evaluation per seed, over the same windows. Returns {seed: records}.
 
     Each env uses the price transform its own checkpoint trained under, read from
     scaler.json. Never the transform the evaluation window would pin: the market price
     cap moves between years, and a different divisor changes what every observation
     means.
+
+    `algoName` is required rather than defaulted. It picks the class to load and whether
+    `predict` reads the action mask, and a wrong default would score one algorithm as
+    though it were another.
     """
     extra = {}
     if horizon is not None:
         extra["horizon"] = horizon
     if rewardScale is not None:
         extra["rewardScale"] = rewardScale
+    if invalidPenalty is not None:
+        extra["invalidPenalty"] = invalidPenalty
     results = {}
     for seed, path in checkpoints.items():
         env = BessEnv(prices, model, baseline=baselines, calendar=calendar,

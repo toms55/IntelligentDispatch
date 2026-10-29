@@ -65,6 +65,47 @@ uv run pytest
 These are rules, not defaults. Break one and the training machine and the dashboard
 machine stop agreeing.
 
+### Two algorithms, one problem
+
+The thesis compares DQN against MaskablePPO, so a number is only worth quoting if both
+agents faced the same problem and the same budget. `rl/env.py` is the one environment,
+`rl/train.py:trainOne` the one training path and `backtest/runner.py` the one fold
+driver. Nothing branches on the algorithm except the registry in `rl/algos.py` and the
+one line in `rl/evaluate.py` that decides whether `predict` reads the action mask.
+
+Rules:
+
+1. Every hyperparameter is pinned in `rl/algos.py`, with a comment, including values
+   that equal the SB3 default. The thesis quotes that one file. Nothing is tuned on a
+   test window.
+2. Budgets are equal in environment steps, not in gradient updates. `_dqn` states both
+   counts, because the two differ by about 60% at the same step budget.
+3. MaskablePPO reads the mask and DQN does not. That is a property of the algorithm, not
+   a change to the problem, and the out-of-bounds rate measures what it costs.
+4. The out-of-bounds penalty (`config.invalid_action_penalty`) enters the reward and
+   nothing else. Profit, revenue, degradation, regret and the captured fraction stay raw
+   dollars, so the discrete oracle keeps bounding the agent: the oracle's schedule is
+   feasible, so the term is zero along it, and `rl/test_env.py` proves the bound does not
+   move. Both algorithms train under the same reward function, and a masked one can never
+   incur the term.
+5. Out of bounds means `not action_masks()[action]`, and `rl/env.py:action_masks` is the
+   only definition. Never write a second test for it, and never penalise a partial
+   top-up: `solve(discretePower=True)` allows a part step where physics forces one, so
+   penalising it would make the oracle solve a different problem.
+6. `outOfBounds` is counted in four places and named the same in all of them: per step in
+   the env's `info`, per training episode in `monitor.csv`, per test day as a published
+   day-row column for every seed, and per interval in the actions export, where
+   `attemptedAction` names what the agent chose and `action` what moved. An attempt that
+   moved nothing is an attempt at a wall. `python -m backtest.outofbounds <run> <region>`
+   reads both ends.
+7. The penalty, the initial SoC and the forecast refresh are flags, and `RollingConfig`
+   records all three, so `requireSameManifest` refuses to put two settings in one result
+   set. Two runs are comparable when their manifests differ in `algos` alone.
+8. A DQN chain carries its replay buffer between folds (`rl/train.py:saveReplay`). SB3's
+   `save()` excludes it, so without this a warm fold would keep its weights and relearn
+   from empty experience, and "warm" would mean two different things. Only the live end
+   of each chain stays on disk, and the buffer never reaches `trainedPolicies/`.
+
 ### A trained agent lives in `trainedPolicies/`
 
 Training runs on one machine and the dashboard runs on another, so the agents have to
@@ -250,7 +291,9 @@ cover.
 
 - **`backtest/`** — the rolling-origin backtest: `runner.py` runs the folds,
   `records.py` writes them, `actions.py` exports the dispatch, and `publish.py` writes a
-  finished run into `results/backtestResults/`. See the convention above.
+  finished run into `results/backtestResults/`. `outofbounds.py` reads how often an
+  unmasked agent chose a move it could not make, and which intervals it chose it in.
+  See the convention above.
 
 - **`config.py`** — experiment design pinned in one place: episode horizon, SoC reset,
   seeds, splits, the observation layout constants, and the two oracle roles. Module

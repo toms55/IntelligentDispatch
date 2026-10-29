@@ -290,7 +290,8 @@ def _runTrain(args):
             _, path = trainOne(
                 args.algo, prices, model, seed=seed,
                 timesteps=args.timesteps, calendar=not args.no_calendar,
-                horizon=args.horizon, rewardScale=args.reward_scale, outDir=args.out,
+                horizon=args.horizon, rewardScale=args.reward_scale,
+                invalidPenalty=args.invalid_penalty, outDir=args.out,
                 scaler=scaler,
             )
         print(f"wrote          {path}.zip")
@@ -344,8 +345,12 @@ def _runEval(args):
 
         env = BessEnv(prices, model, baseline=baselines,
                       calendar=not args.no_calendar, horizon=args.horizon,
-                      rewardScale=args.reward_scale, forecasts=forecasts)
+                      rewardScale=args.reward_scale, forecasts=forecasts,
+                      invalidPenalty=args.invalid_penalty)
         policy = ThresholdPolicy(args.quantiles[0], args.quantiles[1])
+        # The control is always masked, whatever --algo says, because --algo names no
+        # agent here: the threshold policy reads the mask and idles instead of choosing
+        # a move it cannot make. So it never pays the out-of-bounds penalty either.
         results = {0: evaluate.evaluatePolicy(policy, env, masking=True, bounds=bounds)}
         args.seeds = [0]
         args.algo = f"threshold {args.quantiles[0]}/{args.quantiles[1]}"
@@ -369,6 +374,7 @@ def _runEval(args):
         checkpoints, prices, model, baselines=baselines, algoName=args.algo,
         calendar=not args.no_calendar, horizon=args.horizon,
         rewardScale=args.reward_scale, forecasts=forecasts, bounds=bounds,
+        invalidPenalty=args.invalid_penalty,
     )
     summary = evaluate.acrossSeeds(results)
     _reportEval(summary, results, args)
@@ -437,6 +443,7 @@ def _rolling(args):
         trainSource=args.train_source,
         forecastEvery=_refreshIntervals(args, args.horizon),
         horizon=args.horizon, rewardScale=args.reward_scale,
+        invalidPenalty=args.invalid_penalty,
         initialSoc=args.initial_soc, calendar=not args.no_calendar,
         discretePower=args.baseline_oracle == "discrete",
         gap=args.gap, timeLimit=args.time_limit, workers=args.workers,
@@ -655,6 +662,12 @@ def main(argv=None):
         parser.add_argument("--reward-scale", type=float, default=config.reward_scale,
                             metavar="X",
                             help=f"fixed divisor on the reward (default: {config.reward_scale})")
+        parser.add_argument("--invalid-penalty", type=float,
+                            default=config.invalid_action_penalty, metavar="X",
+                            help=f"reward lost for choosing to charge a full pack or "
+                                 f"discharge an empty one, in reward units. MaskablePPO "
+                                 f"cannot choose either, so it never pays this "
+                                 f"(default: {config.invalid_action_penalty})")
         parser.add_argument("--out", default="runs", metavar="DIR",
                             help="where checkpoints live (default: runs)")
         parser.add_argument("--policies", default=str(policies.defaultRoot),

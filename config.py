@@ -34,6 +34,28 @@ price_knee = 300.0
 # --- Reward ------------------------------------------------------------------
 reward_scale = 20.0
 
+# What the agent loses for choosing to charge a full pack or to discharge an empty one,
+# in reward units. MaskablePPO cannot choose either, because the mask removes the action,
+# so this term is identically zero for it and only DQN and A2C can ever incur it. Both
+# algorithms still train under the same reward function.
+#
+# It enters the reward and nothing else. Profit, revenue, degradation, regret and the
+# captured fraction stay raw dollars, which is what keeps the discrete oracle a valid
+# bound: the oracle's schedule is feasible, so the term is zero along it.
+#
+# The size, against what one interval is worth. The battery moves 0.060 MW for one
+# twelfth of an hour, so one interval at rated throughput turns over 5 kWh, which at
+# $300/MWh is $1.50, or a reward of 0.075 once reward_scale divides it. So 1.0 costs
+# about thirteen such intervals, or roughly a day's oracle profit for this battery. That
+# is deliberately far above the interval the action wastes.
+#
+# NOT TUNED. Sweep it on the validation window, never on a test window, and watch for the
+# failure mode of too large a value: the agent stops filling the pack, trades a narrower
+# SoC band and earns less. `python -m backtest.outofbounds` reads the attempt counts that
+# measure it. RollingConfig records the value, so requireSameManifest refuses to put two
+# penalties in one result set, and every run published before this carried no penalty.
+invalid_action_penalty = 1.0
+
 
 # --- Experiment design -------------------------------------------------------
 # Five Minute Settlement commenced in the NEM on this trading day, under NER 3.15.1A.
@@ -67,6 +89,14 @@ forecast_refresh_intervals = 48
 
 # rl/algos.py asserts its registry matches this tuple.
 algorithms = ("maskableppo", "dqn", "a2c")
+
+# DQN's replay buffer, in whole episodes. The only SB3 default that rl/algos.py overrides
+# for DQN, and it is overridden because the buffer now travels between folds on disk
+# (rl/train.py). SB3 defaults to 1000000 transitions, and the buffer holds the
+# observation twice over, so at 60 float32 slots that default is about 480 MB in memory
+# per seed and the same again on disk every fold. 200 episodes is 57600 transitions, about
+# two warm folds of experience and about 28 MB.
+replay_buffer_size = 200 * episode_intervals
 
 
 # --- Oracle --------------------------------------------------------------------

@@ -134,6 +134,39 @@ class TestMasking:
             assert int(action) != DISCHARGE
 
 
+class AlwaysCharges:
+    """A policy that charges every interval, masked or not. It fills the pack and then
+    keeps asking, which is the behaviour an unmasked agent can have and a masked one
+    cannot."""
+
+    def predict(self, obs, deterministic=True, action_masks=None):
+        if action_masks is not None and not action_masks[CHARGE]:
+            return IDLE, None
+        return CHARGE, None
+
+
+class TestOutOfBoundsCount:
+    # The count reaches the per-window record, which is what the backtest writes as a
+    # day-row column for every seed.
+    def test_a_window_reports_its_attempts(self, paper, series):
+        env = makeEnv(paper, series)
+        records = evaluate.evaluatePolicy(AlwaysCharges(), env, masking=False)
+        assert all(record["outOfBounds"] > 0 for record in records)
+
+    # Reading the mask makes the count zero, and that is why MaskablePPO's column is
+    # zero by construction rather than by luck.
+    def test_reading_the_mask_drives_it_to_zero(self, paper, series):
+        env = makeEnv(paper, series)
+        records = evaluate.evaluatePolicy(AlwaysCharges(), env, masking=True)
+        assert all(record["outOfBounds"] == 0 for record in records)
+
+    # Scoring a masked agent unmasked reports a worse agent and raises nothing, so the
+    # caller must say which it is.
+    def test_an_unstated_mask_is_refused(self, paper, series):
+        with pytest.raises(ValueError, match="algoName or masking"):
+            evaluate.evaluatePolicy(AlwaysCharges(), makeEnv(paper, series))
+
+
 class TestEvaluation:
     def test_reports_regret_against_the_oracle(self, paper, series, tmp_path):
         lpProfit = [[0.01] * 24, [0.02] * 24, [0.03] * 24]

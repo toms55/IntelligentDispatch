@@ -263,7 +263,8 @@ class TestHoldExploration:
 
     # The hold is applied on the warm path, so a resumed DQN does not re-randomise.
     def test_a_warm_start_applies_the_hold(self, prices, battery, tmp_path, monkeypatch):
-        parent = parentCheckpoint(tmp_path)
+        # An off-policy parent always leaves its buffer, and the warm start reads it.
+        parent = parentCheckpoint(tmp_path, buffer=FakeBuffer())
         agent = FakeOffPolicyAgent()
         monkeypatch.setattr(algos, "load", lambda name, path, env=None: agent)
         runTrain(prices, battery, tmp_path / "out", warmFrom=parent)

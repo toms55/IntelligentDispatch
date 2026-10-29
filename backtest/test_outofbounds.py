@@ -4,6 +4,7 @@ from datetime import datetime
 import pandas as pd
 import pytest
 
+import config
 from backtest import outofbounds
 
 DAY = datetime(2024, 1, 1, 4)
@@ -14,7 +15,7 @@ def dayRows(counts):
     """One published day row per entry of `counts`, keyed by (algo, seed)."""
     return pd.DataFrame([
         {"fold": 0, "algo": algo, "trainMode": "warm", "seed": seed,
-         "priceSource": "realised", "testDay": pd.Timestamp(DAY), "intervals": 288,
+         "priceSource": "realised", "testDay": pd.Timestamp(DAY),
          "agentProfit": 1.0, "outOfBounds": count}
         for (algo, seed), count in counts.items()
     ])
@@ -41,10 +42,12 @@ class TestCounts:
         assert got.set_index(["algo", "seed"]).outOfBounds.to_dict() == {
             ("dqn", 0): 5, ("dqn", 1): 2, ("maskableppo", 0): 0}
 
-    # The rate is what compares two runs of different length.
+    # The rate is what compares two runs of different length: attempts over the
+    # intervals scored, which is one episode per test day.
     def test_it_reports_a_rate_per_interval(self):
         got = outofbounds.counts(dayRows({("dqn", 0): 72}))
-        assert got.rate.iloc[0] == pytest.approx(0.25)
+        assert got.intervals.iloc[0] == config.episode_intervals
+        assert got.rate.iloc[0] == pytest.approx(72 / config.episode_intervals)
 
     # A masked algorithm cannot choose an out-of-bounds action at all, so zero is the
     # expected answer and must not look like a missing one.

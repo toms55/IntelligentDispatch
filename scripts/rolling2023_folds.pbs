@@ -14,9 +14,19 @@
 #     qsub -v TRAIN_SOURCE=forecast,REFRESH=5,PREFETCH=1,PREFETCH_SPAN=2023-01-01T04:00..2023-12-31T04:00,OUT=...,RESULTS=... \
 #          scripts/rolling2023_folds.pbs      # train on the AEMO forecast as well
 #
+#     qsub -v ALGO=dqn,INITIAL_SOC=0.5,INVALID_PENALTY=1.0 scripts/rolling2023_folds.pbs
+#          # the DQN half of the thesis comparison
+#
 # TRAIN_MODES=cold fits every fold fresh at the cold budget instead of continuing the
 # previous fold's checkpoint. Give it its own OUT and RESULTS, because a result set
 # records its train modes.
+#
+# ALGO picks the agent. Everything else about the run is shared, because one environment,
+# one training path and one fold driver serve every algorithm. DQN reads no action mask,
+# so it can choose to charge a full pack; INVALID_PENALTY is what it loses for trying,
+# and `python -m backtest.outofbounds <run> <region>` counts the attempts and names the
+# intervals. A DQN chain also carries its replay buffer from fold to fold, and only the
+# live end of each chain is kept on disk.
 #
 # Each seed's chain is independent, so each seed runs in its own process. They write to
 # separate result directories, because the runner rewrites a fold CSV whole and two
@@ -45,12 +55,23 @@ PY=.venv/bin/python
 SEEDS=${SEEDS:-"0 1 2 3 4"}
 REGION=${REGION:-NSW1}   # pass -v REGION=SA1 etc.
 TRAIN_MODES=${TRAIN_MODES:-warm}   # warm, cold, or "warm cold"
-# Not runs/rolling2023: those names belonged to the oracle-baselined reward.
-OUT=${OUT:-runs/rolling2023_profit}
-RESULTS=${RESULTS:-results/rolling2023_profit}
+ALGO=${ALGO:-maskableppo}   # maskableppo, dqn or a2c
+# Not runs/rolling2023: those names belonged to the oracle-baselined reward. The
+# algorithm is in the default name, because a run name is used once and two algorithms
+# must not collide.
+SUFFIX=""
+[ "$ALGO" = maskableppo ] || SUFFIX="_$ALGO"
+OUT=${OUT:-runs/rolling2023_profit$SUFFIX}
+RESULTS=${RESULTS:-results/rolling2023_profit$SUFFIX}
 PRICE_SOURCE=${PRICE_SOURCE:-both}   # realised, forecast or both
 REFRESH=${REFRESH:-240}   # forecast refresh in minutes; 5 is every interval
 TRAIN_SOURCE=${TRAIN_SOURCE:-realised}   # realised or forecast; settlement is realised
+# Both are recorded in the manifest, so a value that differs from the run being compared
+# against is refused rather than quietly mixed. The oracle cache is keyed on the initial
+# SoC (rl/baseline.py cacheKey), so matching an existing run reuses its cache and solves
+# nothing; a different value re-solves every test day.
+INITIAL_SOC=${INITIAL_SOC:-}
+INVALID_PENALTY=${INVALID_PENALTY:-}
 # Seed logs go here. Set it when OUT holds another run's checkpoints, or its logs are lost.
 LOGS=${LOGS:-$OUT}
 mkdir -p "$OUT" "$LOGS"
@@ -74,10 +95,12 @@ fi
 pids=()
 for seed in $SEEDS; do
   $PY -u -m cli rolling --split "all=2023-01-01T04:00..2026-10-01T04:00" --region "$REGION" \
-    --train-weeks 52 --test-weeks 1 --step-weeks 1 --algo maskableppo --train-modes $TRAIN_MODES \
+    --train-weeks 52 --test-weeks 1 --step-weeks 1 --algo "$ALGO" --train-modes $TRAIN_MODES \
     --cap-date 2026-10-01T04:00 --baseline-oracle discrete --no-calendar \
     --gap 0.02 --time-limit 1800 --price-source "$PRICE_SOURCE" --forecast-refresh "$REFRESH" \
     --train-source "$TRAIN_SOURCE" \
+    ${INITIAL_SOC:+--initial-soc "$INITIAL_SOC"} \
+    ${INVALID_PENALTY:+--invalid-penalty "$INVALID_PENALTY"} \
     --seeds "$seed" --out "$OUT" --results "$RESULTS/seed$seed" --resume \
     > "$LOGS/seed$seed.log" 2>&1 &
   pids+=($!)

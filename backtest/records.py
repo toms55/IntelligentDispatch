@@ -17,6 +17,9 @@ import pandas as pd
 dayColumns = (
     "fold", "algo", "trainMode", "seed", "priceSource", "testDay",
     "agentProfit", "agentRevenue", "agentDegradation", "oracleDualBound", "oracleGap",
+    # How often the agent chose to charge a full pack or discharge an empty one. A
+    # masked algorithm cannot, so this is zero for MaskablePPO by construction.
+    "outOfBounds",
     "spikeIntensity", "highVol", "timesteps", "warmFrom", "writtenAt",
 )
 
@@ -26,12 +29,16 @@ trajectoryColumns = (
     "soc", "bought", "sold", "profit",
     # The AEMO run the agent read for this decision; None where it read realised prices.
     "forecastRunTime",
+    # What the agent chose, which is not always what moved: charging a full pack moves
+    # nothing. The actions export turns the pair into an out-of-bounds interval.
+    "attemptedAction",
 )
 
 # What makes a row's work already done, for resume. One unit covers a whole test window.
 unitColumns = ("fold", "algo", "trainMode", "seed", "priceSource")
 
 _dayTypes = {"fold": "int64", "seed": "int64", "timesteps": "int64",
+             "outOfBounds": "int64",
              "highVol": "bool", "agentProfit": "float64", "agentRevenue": "float64",
              "agentDegradation": "float64", "oracleDualBound": "float64",
              "oracleGap": "float64",

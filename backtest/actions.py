@@ -33,13 +33,19 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from rl.env import CHARGE, DISCHARGE
 from utils import nem_interval
 
 columns = (
     "forecastRunTime", "intervalTime", "action", "soc",
     "forecastPrice", "realisedPrice", "region", "fold", "seed", "algo", "trainMode",
-    "priceSource",
+    "priceSource", "attemptedAction",
 )
+
+# What `action` says when nothing moved. An attempt that reads idle here while
+# `attemptedAction` names a direction is an interval the agent spent trying to leave the
+# bounds: see backtest/outofbounds.py.
+IDLE_ACTION = "idle"
 
 priceSources = ("forecast", "realised")
 
@@ -65,7 +71,18 @@ def actionRows(trajectory, region, every=None):
             f"paid, so they are not realised; the first is fold {first.fold}, seed "
             f"{first.seed}, {first.settlementdate}: saw {first.observedPrice}, paid "
             f"{first.price}")
-    action = np.select([rows.bought > 0, rows.sold > 0], ["charge", "discharge"], "idle")
+    action = np.select([rows.bought > 0, rows.sold > 0], ["charge", "discharge"],
+                       IDLE_ACTION)
+    # What the agent chose, which is not always what moved: charging a full pack moves
+    # nothing and so reads as idle above. A trajectory from before the backtest recorded
+    # the choice carries no such column, and its rows say nothing rather than guessing.
+    if "attemptedAction" in rows:
+        attempted = pd.Series(np.select(
+            [rows.attemptedAction == CHARGE, rows.attemptedAction == DISCHARGE],
+            ["charge", "discharge"], IDLE_ACTION), index=rows.index)
+        attempted = attempted.where(rows.attemptedAction.notna())
+    else:
+        attempted = pd.Series(None, index=rows.index, dtype=object)
     if "forecastRunTime" in rows and rows.forecastRunTime[forecast].notna().all():
         # Recorded by the backtest as the run the agent actually read.
         runTime = pd.to_datetime(rows.forecastRunTime)
@@ -87,6 +104,7 @@ def actionRows(trajectory, region, every=None):
         "algo": rows.algo,
         "trainMode": rows.trainMode,
         "priceSource": rows.priceSource,
+        "attemptedAction": attempted,
     }, columns=columns)
 
 
@@ -110,6 +128,29 @@ def liveFile(resultsDir, region):
     return runDir.parent / "actions" / exportName(runDir, region)
 
 
+def _requireSameColumns(handle, path):
+    """Refuse to append to a CSV whose header is not this layout.
+
+    A --resume run against a file written before a column was added would otherwise put
+    a wider block under a narrower header, and every row of it would parse into the
+    wrong fields. The header is only written once, by whichever fold arrives first.
+
+    Reads through the caller's own locked handle, and never opens the file again. A
+    POSIX record lock is dropped as soon as the process closes any descriptor for the
+    file, whichever descriptor took the lock, so a second open() here would release the
+    lock and let two seeds interleave one fold's rows.
+    """
+    handle.seek(0)
+    header = handle.readline().strip().split(",")
+    if header != list(columns):
+        missing = [name for name in columns if name not in header]
+        raise ValueError(
+            f"{path} was written under a different layout and cannot be appended to: "
+            f"it is missing {missing}. Re-run under a new name, or export the run again "
+            f"with `python -m backtest.actions`."
+        )
+
+
 def appendRows(path, frame):
     """Append one fold's rows to the CSV at `path`, the header first if it is new.
 
@@ -120,10 +161,16 @@ def appendRows(path, frame):
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", newline="") as handle:
+    # "a+" rather than "a": the header check reads through this same handle, because a
+    # second open() would drop the lock. Appending still writes at the end whatever the
+    # read left the file position at, which is what O_APPEND guarantees.
+    with open(path, "a+", newline="") as handle:
         fcntl.lockf(handle, fcntl.LOCK_EX)
         try:
-            frame.to_csv(handle, header=os.fstat(handle.fileno()).st_size == 0,
+            fresh = os.fstat(handle.fileno()).st_size == 0
+            if not fresh:
+                _requireSameColumns(handle, path)
+            frame.to_csv(handle, header=fresh,
                          index=False, columns=list(columns))
             handle.flush()
             os.fsync(handle.fileno())
