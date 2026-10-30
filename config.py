@@ -10,6 +10,15 @@ episode_intervals = 288
 initial_soc = 0.0
 gamma = 1.0
 
+# The most equivalent full cycles an episode may spend, standing in for a cycle warranty.
+# One EFC is the nominal usable capacity removed cell-side, so a partial discharge counts
+# proportionally. `None` is no budget at all, which is every result published so far.
+cycle_budget = None
+# How tightly the oracle's cycle budget is solved. The budget is priced rather than
+# capped, so the answer is a sandwich: the relative width between the feasible schedule
+# and the bound. See `optimisation.dp.solve`.
+cycle_dual_gap = 1e-4
+
 
 # --- Observation -------------------------------------------------------------
 # How far ahead the agent reads, which is NOT the episode length. AEMO publishes no RRP

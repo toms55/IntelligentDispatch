@@ -20,7 +20,7 @@ def chunkWindows(length, horizon=config.episode_intervals):
 
 
 def cacheKey(region, start, horizon, calendar, discretePower, model, initialSoc,
-             gap=None):
+             gap=None, cycles=None, terminalPrice=0.0):
     parts = [
         region,
         start.isoformat(),
@@ -36,6 +36,10 @@ def cacheKey(region, start, horizon, calendar, discretePower, model, initialSoc,
         # part the key would serve an older MILP record, whose dual bound can sit above
         # the true optimum.
         f"solver={'dp' if discretePower else 'milp'}",
+        # A budgeted window is a different problem, so a budget-free record must not be
+        # served for it, nor the other way round.
+        f"cycles={cycles!r}",
+        f"terminal={terminalPrice!r}",
     ]
     digest = hashlib.sha1("|".join(parts).encode()).hexdigest()[:16]
     return f"{region}_{start.date()}_{start.strftime('%H%M')}_{digest}.json"
@@ -45,12 +49,14 @@ def solveWindow(prices, timestamps, region, horizon=config.episode_intervals,
                 calendar=True, discretePower=True, model=None,
                 initialSoc=config.initial_soc, dtHours=nem_interval_hours,
                 timeLimit=config.oracle_time_limit, gap=config.oracle_gap,
-                threads=None, cacheDir=None):
+                threads=None, cacheDir=None, cycles=config.cycle_budget,
+                terminalPrice=0.0):
     """One window's oracle solution, from cache when it is there."""
     model = model or _defaultModel()
     directory = Path(cacheDir) if cacheDir else cacheRoot
     path = directory / cacheKey(region, timestamps[0], horizon, calendar,
-                                discretePower, model, initialSoc, gap)
+                                discretePower, model, initialSoc, gap, cycles,
+                                terminalPrice)
     if path.exists():
         return json.loads(path.read_text())
 
@@ -58,12 +64,22 @@ def solveWindow(prices, timestamps, region, horizon=config.episode_intervals,
         # Exact, and milliseconds rather than minutes. timeLimit, gap and threads do not
         # apply: there is no search to cut short, so no fallback either.
         schedule = dp.solve(list(prices), model, initialSoc=initialSoc,
-                            dtHours=dtHours, calendar=calendar)
+                            dtHours=dtHours, calendar=calendar, cycles=cycles,
+                            terminalPrice=terminalPrice)
         fallback = None
     else:
         common = dict(initialSoc=initialSoc, dtHours=dtHours, calendar=calendar,
-                      timeLimit=timeLimit, gap=gap, threads=threads)
+                      timeLimit=timeLimit, gap=gap, threads=threads, cycles=cycles,
+                      terminalPrice=terminalPrice)
         schedule, fallback = _solveWithFallback(list(prices), model, False, common)
+    # The oracle is the bound the agent is scored against, so an over-budget oracle
+    # would quietly excuse an over-budget agent. Refuse it before it reaches the cache,
+    # because a cached record is served for good.
+    if cycles is not None and schedule.cyclesUsed > cycles + 1e-9:
+        raise AssertionError(
+            f"the oracle spent {schedule.cyclesUsed:.6f} cycles against a budget of "
+            f"{cycles}, on the window starting {timestamps[0]}"
+        )
     record = {
         "start": timestamps[0].isoformat(),
         "profitPerInterval": list(schedule.profitPerInterval),
@@ -78,6 +94,9 @@ def solveWindow(prices, timestamps, region, horizon=config.episode_intervals,
         "degradationCost": schedule.degradationCost,
         "status": schedule.status,
         "mipGap": schedule.mipGap,
+        "cyclesUsed": schedule.cyclesUsed,
+        "cyclePrice": schedule.cyclePrice,
+        "terminalValue": schedule.terminalValue,
         "fallback": fallback,
     }
     directory.mkdir(parents=True, exist_ok=True)
@@ -162,7 +181,8 @@ def buildBaseline(prices, region=config.default_region,
                   horizon=config.episode_intervals, calendar=True, discretePower=True,
                   model=None, initialSoc=config.initial_soc,
                   timeLimit=config.oracle_time_limit, gap=config.oracle_gap,
-                  workers=1, cacheDir=None, onDone=None):
+                  workers=1, cacheDir=None, onDone=None, cycles=config.cycle_budget,
+                  terminalPrice=0.0):
     """Solve every window of `prices` and return the records in window order."""
     model = model or _defaultModel()
     starts = chunkWindows(len(prices), horizon)
@@ -176,7 +196,8 @@ def buildBaseline(prices, region=config.default_region,
     common = dict(region=region, horizon=horizon, calendar=calendar,
                   discretePower=discretePower, model=model, initialSoc=initialSoc,
                   timeLimit=timeLimit, gap=gap, cacheDir=cacheDir,
-                  threads=1 if workers > 1 else None)
+                  threads=1 if workers > 1 else None, cycles=cycles,
+                  terminalPrice=terminalPrice)
 
     if workers <= 1:
         records = []

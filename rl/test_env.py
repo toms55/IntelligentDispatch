@@ -8,6 +8,7 @@ import pytest
 
 import config
 from degradation.schade import SchadeDegradation
+from optimisation import dp
 from optimisation.lp import solve
 from rl import features
 from rl.env import CHARGE, DISCHARGE, IDLE, BessEnv
@@ -473,3 +474,222 @@ class TestForecastRefresh:
             b, rb, *_ = stacked.step(action)
             np.testing.assert_allclose(a, b)
             assert ra == pytest.approx(rb)
+
+
+class TestCycleBudget:
+    """`cycleBudget` caps the equivalent full cycles one episode may spend.
+
+    One EFC is the nominal usable capacity removed cell-side. The cap is enforced by the
+    clip in `_applyAction`, in the same `min` as the SoC floor, so it binds under every
+    algorithm and not only the one that reads the mask.
+    """
+
+    def spent(self, paper, infos):
+        """The EFC a rollout spent, read off `sold` rather than the env's bookkeeping."""
+        return sum(info["sold"] for info in infos) / paper.dischargeEfficiency / paper.MWh
+
+    def test_an_absent_budget_is_the_old_environment(self, paper):
+        free = makeEnv(paper, initialSoc=MID_SOC, cycleBudget=None)
+        free.reset(seed=0)
+        infos = rollout(free, [DISCHARGE] * len(MIXED_PRICES))
+        assert self.spent(paper, infos) == pytest.approx(MID_SOC, abs=1e-12)
+        assert free._cyclesLeft() == 1.0
+
+    def test_reset_restores_the_budget(self, paper):
+        env = makeEnv(paper, initialSoc=MID_SOC, cycleBudget=0.25)
+        env.reset(seed=0)
+        rollout(env, [DISCHARGE] * len(MIXED_PRICES))
+        assert env._cyclesLeft() == pytest.approx(0.0, abs=1e-12)
+        env.reset(seed=0)
+        assert env._cyclesLeft() == pytest.approx(1.0, abs=1e-12)
+        assert env.spentMWh == 0.0
+
+    def test_a_discharge_spends_cell_side_energy(self, paper):
+        """Meter-side would understate the spend by nu_D, which is a 5% error."""
+        env = makeEnv(paper, initialSoc=MID_SOC, cycleBudget=1.0)
+        env.reset(seed=0)
+        _, _, _, _, info = env.step(DISCHARGE)
+        assert env.spentMWh == pytest.approx(info["sold"] / paper.dischargeEfficiency,
+                                             abs=1e-15)
+        assert info["cycles"] == pytest.approx(env.spentMWh / paper.MWh, abs=1e-15)
+
+    def test_a_charge_and_an_idle_spend_nothing(self, paper):
+        env = makeEnv(paper, initialSoc=MID_SOC, cycleBudget=1.0)
+        env.reset(seed=0)
+        rollout(env, [CHARGE, IDLE, CHARGE, IDLE])
+        assert env.spentMWh == 0.0
+        assert env._cyclesLeft() == pytest.approx(1.0, abs=1e-12)
+
+    def test_discharge_is_masked_once_the_budget_is_spent(self, paper):
+        env = makeEnv(paper, initialSoc=1.0, cycleBudget=0.25)
+        env.reset(seed=0)
+        while env.action_masks()[DISCHARGE]:
+            env.step(DISCHARGE)
+        assert env.spentMWh == pytest.approx(0.25 * paper.MWh, abs=1e-12)
+        assert env.stored > 0.0  # masked by the budget, not by an empty pack
+        assert env.action_masks()[IDLE]
+
+    def test_a_discharge_is_clipped_to_the_remaining_budget(self, paper):
+        """The same partial top-up rule the SoC boundary already has."""
+        env = makeEnv(paper, initialSoc=1.0, cycleBudget=0.08)
+        env.reset(seed=0)
+        total = 0.0
+        for _ in range(4):
+            _, _, _, _, info = env.step(DISCHARGE)
+            total += info["sold"] / paper.dischargeEfficiency
+        assert total == pytest.approx(0.08 * paper.MWh, abs=1e-12)
+
+    def test_the_tighter_of_the_two_clips_wins(self, paper):
+        """Both clips apply at once, so a pack with less energy than budget is limited by
+        the pack, and a pack with less budget than energy by the budget."""
+        byPack = makeEnv(paper, initialSoc=0.05, cycleBudget=1.0)
+        byPack.reset(seed=0)
+        _, _, _, _, info = byPack.step(DISCHARGE)
+        assert info["sold"] == pytest.approx(0.05 * paper.MWh * paper.dischargeEfficiency,
+                                             abs=1e-12)
+
+        byBudget = makeEnv(paper, initialSoc=1.0, cycleBudget=0.05)
+        byBudget.reset(seed=0)
+        _, _, _, _, info = byBudget.step(DISCHARGE)
+        assert info["sold"] == pytest.approx(0.05 * paper.MWh * paper.dischargeEfficiency,
+                                             abs=1e-12)
+
+    def test_a_zero_budget_never_discharges(self, paper):
+        env = makeEnv(paper, initialSoc=1.0, cycleBudget=0.0)
+        env.reset(seed=0)
+        infos = rollout(env, [DISCHARGE] * len(MIXED_PRICES))
+        assert self.spent(paper, infos) == 0.0
+        assert not env.action_masks()[DISCHARGE]
+        assert env._cyclesLeft() == 0.0
+
+    def test_the_budget_is_never_overspent_over_a_long_rollout(self, paper):
+        """A masked random walk over a full weekly episode, which is where the budget is
+        meant to bind. Nothing the agent can do may exceed it."""
+        values = list(np.random.default_rng(0).normal(80, 200, 2016))
+        env = makeEnv(paper, values, horizon=2016, initialSoc=MID_SOC, cycleBudget=7.0)
+        rng = np.random.default_rng(1)
+        for _ in range(3):
+            env.reset(seed=0)
+            info = {}
+            for _ in range(2016):
+                allowed = np.flatnonzero(env.action_masks())
+                _, _, _, _, info = env.step(int(rng.choice(allowed)))
+            assert info["episode_totals"]["cycles"] <= 7.0 + 1e-12
+
+    def test_the_budget_does_not_reset_at_a_day_boundary_inside_the_episode(self, paper):
+        """The budget is the episode's, so day 2 inherits what day 1 left."""
+        values = [100.0] * 576
+        env = makeEnv(paper, values, horizon=576, initialSoc=1.0, cycleBudget=0.25)
+        env.reset(seed=0)
+        rollout(env, [DISCHARGE] * 300)
+        assert env.spentMWh == pytest.approx(0.25 * paper.MWh, abs=1e-12)
+        assert not env.action_masks()[DISCHARGE]
+        rollout(env, [DISCHARGE] * 276)
+        assert env.spentMWh == pytest.approx(0.25 * paper.MWh, abs=1e-12)
+
+    def test_the_budget_slot_falls_as_the_budget_is_spent(self, paper):
+        env = makeEnv(paper, initialSoc=1.0, cycleBudget=0.5)
+        obs, _ = env.reset(seed=0)
+        assert obs[features.cycleIndex] == pytest.approx(1.0, abs=1e-6)
+        seen = [obs[features.cycleIndex]]
+        for _ in range(4):
+            obs, _, _, _, _ = env.step(DISCHARGE)
+            seen.append(obs[features.cycleIndex])
+        assert all(b <= a + 1e-9 for a, b in zip(seen, seen[1:]))
+        assert seen[-1] < seen[0]
+
+
+class TestMatchesTheBudgetedOracle:
+    """The gate. The environment and `dp.solve` must still be one problem with a budget
+    and a terminal value in force, or the oracle stops bounding the agent."""
+
+    @pytest.mark.parametrize("calendar", [False, True])
+    @pytest.mark.parametrize("cycles,terminalPrice", [(0.05, 0.0), (0.5, 0.0),
+                                                      (None, 100.0), (0.05, 100.0)])
+    def test_a_budgeted_schedule_replays_identically(self, paper, calendar, cycles,
+                                                     terminalPrice):
+        schedule = dp.solve(MIXED_PRICES, paper, initialSoc=config.initial_soc,
+                            calendar=calendar, cycles=cycles,
+                            terminalPrice=terminalPrice)
+        env = makeEnv(paper, calendar=calendar, cycleBudget=cycles,
+                      terminalPrice=terminalPrice)
+        env.reset(seed=0)
+        infos = rollout(env, actionsFrom(schedule))
+        for got, want in zip([info["soc"] for info in infos], schedule.soc):
+            assert got == pytest.approx(want, abs=1e-9)
+        assert infos[-1]["episode_totals"]["profit"] == pytest.approx(
+            schedule.profit, abs=1e-9)
+        assert infos[-1]["episode_totals"]["cycles"] == pytest.approx(
+            schedule.cyclesUsed, abs=1e-9)
+        assert infos[-1]["episode_totals"]["terminalValue"] == pytest.approx(
+            schedule.terminalValue, abs=1e-9)
+
+    def test_no_policy_beats_the_budgeted_bound(self, paper):
+        schedule = dp.solve(MIXED_PRICES, paper, initialSoc=config.initial_soc,
+                            calendar=False, cycles=0.05)
+        env = makeEnv(paper, cycleBudget=0.05)
+        rng = np.random.default_rng(0)
+        for _ in range(20):
+            env.reset(seed=0)
+            info = {}
+            for _ in range(len(MIXED_PRICES)):
+                allowed = np.flatnonzero(env.action_masks())
+                _, _, _, _, info = env.step(int(rng.choice(allowed)))
+            assert info["episode_totals"]["profit"] <= schedule.dualBound + 1e-9
+
+    @pytest.mark.parametrize("stored", [0.0, 0.1, 0.5, 1.0])
+    @pytest.mark.parametrize("spent", [0.0, 0.25, 0.5])
+    def test_the_discharge_mask_agrees_with_the_move(self, paper, stored, spent):
+        """Over a (stored, spent) grid: a masked discharge moves nothing, and an unmasked
+        one moves something. If these part company the agent can waste a step it was told
+        was available."""
+        env = makeEnv(paper, initialSoc=stored, cycleBudget=0.5)
+        env.reset(seed=0)
+        env.spentMWh = spent * paper.MWh
+        allowed = env.action_masks()[DISCHARGE]
+        _, _, _, _, info = env.step(DISCHARGE)
+        assert (info["sold"] > env.tolerance) == bool(allowed)
+
+
+class TestTerminalValue:
+    def test_a_zero_price_is_the_old_environment(self, paper):
+        old = makeEnv(paper, initialSoc=MID_SOC, terminalPrice=0.0)
+        old.reset(seed=0)
+        infos = rollout(old, [IDLE] * len(MIXED_PRICES))
+        assert infos[-1]["episode_totals"]["terminalValue"] == 0.0
+
+    def test_it_is_paid_once_on_the_closing_step(self, paper):
+        env = makeEnv(paper, initialSoc=MID_SOC, terminalPrice=100.0)
+        env.reset(seed=0)
+        infos = rollout(env, [IDLE] * len(MIXED_PRICES))
+        assert [info["terminalValue"] for info in infos[:-1]] == [0.0] * (len(infos) - 1)
+        assert infos[-1]["terminalValue"] == pytest.approx(
+            paper.terminalValue(MID_SOC * paper.MWh, 100.0), abs=1e-12)
+
+    def test_it_enters_the_reward_of_the_closing_step(self, paper):
+        env = makeEnv(paper, initialSoc=MID_SOC, terminalPrice=100.0)
+        env.reset(seed=0)
+        reward = 0.0
+        for action in [IDLE] * len(MIXED_PRICES):
+            _, reward, _, _, info = env.step(action)
+        assert reward == pytest.approx(info["profit"] + info["terminalValue"], abs=1e-12)
+
+
+class TestTradingDayLookahead:
+    def test_the_lookahead_never_crosses_the_trading_day(self, paper):
+        """AEMO publishes no RRP past the end of the trading day, so a weekly episode
+        still reads one day ahead. Two envs whose day-2 prices differ wildly must give
+        identical observations throughout day 1."""
+        day = config.observation_intervals
+        first = [50.0 + i % 7 for i in range(day)]
+        quiet = BessEnv(priceSeries(first + [0.0] * day), paper, horizon=2 * day,
+                        calendar=False, rewardScale=1.0)
+        wild = BessEnv(priceSeries(first + [9000.0] * day), paper, horizon=2 * day,
+                       calendar=False, rewardScale=1.0)
+        a, _ = quiet.reset(seed=0)
+        b, _ = wild.reset(seed=0)
+        for _ in range(day):
+            assert a == pytest.approx(b, abs=0.0)
+            a, _, _, _, _ = quiet.step(IDLE)
+            b, _, _, _, _ = wild.step(IDLE)
+        assert a != pytest.approx(b, abs=0.0)

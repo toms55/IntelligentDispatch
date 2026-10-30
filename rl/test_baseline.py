@@ -50,6 +50,7 @@ def fakeSolve(monkeypatch):
                 degradationPerInterval=[1.0 / n] * n,
                 profitPerInterval=[2.0 / n] * n,
                 status="Optimal", mipGap=0.001, dualBound=2.01,
+                cyclePrice=0.0, cyclesUsed=0.25,
             )
         return solve
 
@@ -81,7 +82,7 @@ class TestCacheKey:
     def _key(self, paper, **overrides):
         settings = dict(region="SA1", start=pd.Timestamp("2024-01-10"), horizon=288,
                         calendar=True, discretePower=True, model=paper,
-                        initialSoc=0.5, gap=0.005)
+                        initialSoc=0.5, gap=0.005, cycles=7.0, terminalPrice=50.0)
         settings.update(overrides)
         return baseline.cacheKey(**settings)
 
@@ -95,6 +96,9 @@ class TestCacheKey:
         ("discretePower", False),
         ("initialSoc", 0.4),
         ("gap", 0.02),
+        ("cycles", 3.5),
+        ("cycles", None),
+        ("terminalPrice", 0.0),
     ])
     def test_changes_when_an_input_that_matters_changes(self, paper, field, value):
         assert self._key(paper) != self._key(paper, **{field: value})
@@ -313,3 +317,48 @@ class TestBuildBaseline:
         baseline.buildBaseline(series, horizon=12, model=paper, cacheDir=tmp_path,
                               onDone=lambda done, total, record: seen.append((done, total)))
         assert seen == [(1, 3), (2, 3), (3, 3)]
+
+
+class TestCycleBudget:
+    """A budgeted window is a different problem, and an over-budget oracle is refused."""
+
+    def test_the_budget_reaches_the_discrete_oracle(self, paper, series, fakeSolve,
+                                                    tmp_path):
+        baseline.solveWindow(list(series), list(series.index), "SA1", horizon=12,
+                             model=paper, cacheDir=tmp_path, cycles=7.0,
+                             terminalPrice=50.0)
+        assert fakeSolve[0]["cycles"] == 7.0
+        assert fakeSolve[0]["terminalPrice"] == 50.0
+
+    def test_the_record_carries_what_the_oracle_spent(self, paper, series, fakeSolve,
+                                                      tmp_path):
+        record = baseline.solveWindow(list(series), list(series.index), "SA1",
+                                      horizon=12, model=paper, cacheDir=tmp_path,
+                                      cycles=7.0)
+        assert record["cyclesUsed"] == 0.25
+        assert "cyclePrice" in record and "terminalValue" in record
+
+    def test_a_budget_free_record_is_not_served_for_a_budgeted_window(
+            self, paper, series, fakeSolve, tmp_path):
+        common = dict(horizon=12, model=paper, cacheDir=tmp_path)
+        baseline.solveWindow(list(series), list(series.index), "SA1", cycles=None,
+                             **common)
+        baseline.solveWindow(list(series), list(series.index), "SA1", cycles=7.0,
+                             **common)
+        assert len(fakeSolve) == 2
+        assert len(list(tmp_path.glob("*.json"))) == 2
+
+    def test_an_over_budget_oracle_is_refused(self, paper, series, fakeSolve, tmp_path):
+        """Nothing cached and nothing returned. A cached record is served for good, so a
+        wrong bound has to be stopped before it is written."""
+        with pytest.raises(AssertionError, match="against a budget of 0.1"):
+            baseline.solveWindow(list(series), list(series.index), "SA1", horizon=12,
+                                 model=paper, cacheDir=tmp_path, cycles=0.1)
+        assert list(tmp_path.glob("*.json")) == []
+
+    def test_a_window_at_the_budget_is_accepted(self, paper, series, fakeSolve,
+                                                tmp_path):
+        record = baseline.solveWindow(list(series), list(series.index), "SA1",
+                                      horizon=12, model=paper, cacheDir=tmp_path,
+                                      cycles=0.25)
+        assert record["cyclesUsed"] == 0.25

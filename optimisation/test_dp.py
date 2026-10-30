@@ -309,12 +309,15 @@ class TestStateSpace:
         space = dp.stateSpace(paper, config.initial_soc, nem_interval_hours, 24)
         assert space.energy[0] == pytest.approx(config.initial_soc * paper.MWh, abs=1e-15)
 
-    def test_stays_small_over_a_full_episode(self, paper):
-        """Guards the reason the DP is cheap. A change to the MW-to-MWh ratio that
-        multiplies this would make the DP slow without failing anything else."""
-        space = dp.stateSpace(paper, config.initial_soc, nem_interval_hours,
-                              config.episode_intervals)
-        assert len(space.energy) < 8000
+    def test_saturates_over_a_long_episode(self, paper):
+        """Guards the reason the DP is cheap, and the reason a week costs no more than a
+        day. The reachable energies stop growing well before a weekly horizon, so the
+        state count is the same at 1008 intervals and at 2016."""
+        counts = [len(dp.stateSpace(paper, config.initial_soc, nem_interval_hours, h)
+                      .energy) for h in (288, 1008, 2016)]
+        assert counts[1] == counts[2]
+        assert counts[0] < counts[1]
+        assert counts[2] < 8000
 
     def test_grows_about_linearly(self, paper):
         """Two intervals of growth, not an exponential tree."""
@@ -371,6 +374,12 @@ class TestValueFunction:
                                        calendar=False)
         assert value[len(MIXED_PRICES)] == pytest.approx(0.0, abs=0.0)
 
+    def test_the_last_layer_holds_the_terminal_value(self, paper):
+        value, _, space = dp.valueFunction(MIXED_PRICES, paper, config.initial_soc,
+                                           calendar=False, terminalPrice=100.0)
+        expected = [paper.terminalValue(e, 100.0) for e in space.energy]
+        assert value[len(MIXED_PRICES)] == pytest.approx(expected, abs=1e-12)
+
     def test_the_first_layer_at_the_start_state_is_the_profit(self, paper):
         value, _, _ = dp.valueFunction(MIXED_PRICES, paper, config.initial_soc,
                                        calendar=False)
@@ -378,17 +387,22 @@ class TestValueFunction:
                          calendar=False)
         assert value[0][0] == pytest.approx(exact.profit, abs=1e-12)
 
-    def test_every_reachable_state_holds_its_own_optimum(self, paper):
+    @pytest.mark.parametrize("cyclePrice", [0.0, 10.0, 60.0])
+    def test_every_reachable_state_holds_its_own_optimum(self, paper, cyclePrice):
         """The free extra: the oracle at every state, not only along one path. Checked
-        against a DP restarted from that state."""
+        against a DP restarted from that state. The rent changes which action wins but
+        not that the value is the optimum of the problem it states, so this holds at any
+        price."""
         prices = MIXED_PRICES
         value, _, space = dp.valueFunction(prices, paper, config.initial_soc,
-                                           calendar=False)
+                                           calendar=False, cyclePrice=cyclePrice)
         t = 4
         for i in sorted(space.reachable[t])[:6]:
             soc = space.energy[i] / paper.MWh
-            restarted = dp.solve(prices[t:], paper, initialSoc=soc, calendar=False)
-            assert value[t][i] == pytest.approx(restarted.profit, abs=1e-9)
+            restarted, _, tail = dp.valueFunction(prices[t:], paper, soc, calendar=False,
+                                                  cyclePrice=cyclePrice)
+            assert value[t][i] == pytest.approx(restarted[0][0], abs=1e-9)
+            assert tail.energy[0] == pytest.approx(space.energy[i], abs=1e-15)
 
 
 # --- the Schedule it returns -------------------------------------------------
@@ -505,3 +519,318 @@ class TestBaselineUsesTheDp:
         discrete = baseline.cacheKey("SA1", start, 288, False, True, paper, 0.5, 0.02)
         continuous = baseline.cacheKey("SA1", start, 288, False, False, paper, 0.5, 0.02)
         assert discrete != continuous
+
+
+# --- the cycle budget --------------------------------------------------------
+
+
+def efcOf(schedule, model):
+    """The equivalent full cycles a schedule spends: cell-side energy removed over the
+    nominal usable capacity. Read off `sold`, independent of what the solver reported."""
+    return sum(schedule.sold) / model.dischargeEfficiency / model.MWh
+
+
+def rollUsage(prices, model, actions, initialSoc=config.initial_soc,
+              dtHours=nem_interval_hours):
+    """The EFC an action sequence spends, walked independently of the DP's own bookkeeping."""
+    stored = initialSoc * model.MWh
+    used = 0.0
+    for _, action in zip(prices, actions):
+        new, _, sold = dp.move(stored, action, model, dtHours)
+        used += sold / model.dischargeEfficiency
+        stored = new
+    return used / model.MWh
+
+
+def bruteForce(prices, model, cycles, initialSoc=config.initial_soc, calendar=False,
+               dtHours=nem_interval_hours):
+    """The best profit over every action sequence that obeys the budget. Exponential, so
+    only for horizons of about 8."""
+    import itertools
+
+    budget = None if cycles is None else cycles * model.MWh
+    best = None
+    for actions in itertools.product((CHARGE, IDLE, DISCHARGE), repeat=len(prices)):
+        stored, used, total = initialSoc * model.MWh, 0.0, 0.0
+        for price, action in zip(prices, actions):
+            new, bought, sold = dp.move(stored, action, model, dtHours)
+            used += sold / model.dischargeEfficiency
+            if budget is not None and used > budget + 1e-12:
+                break
+            qCd, qCal, both = model.step(stored / model.MWh, new / model.MWh, dtHours)
+            total += price * (sold - bought) - (both if calendar else model.cost(qCd))
+            stored = new
+        else:
+            best = total if best is None else max(best, total)
+    return best
+
+
+def exactBudgeted(prices, model, cycles, initialSoc=config.initial_soc, calendar=False,
+                  dtHours=nem_interval_hours):
+    """An exact DP over the joint (energy, energy removed) state, as the second reference.
+
+    This is what `dp.solve(cycles=...)` deliberately does not do: the usage dimension does
+    not saturate, so the state count grows without bound and a weekly horizon is out of
+    reach. At 24 to 48 intervals it is milliseconds, and it is the only reference that
+    exercises a discharge clipped by the remaining budget rather than by the SoC floor.
+    """
+    budget = cycles * model.MWh
+    start = initialSoc * model.MWh
+    # Keyed on the rounded (energy, usage) pair so two paths to one physical state merge,
+    # but the state itself travels as the exact floats the walk reached. Reconstructing
+    # energy from its key instead leaks rounding error into the energy and the reference
+    # then creeps above the true optimum.
+    states = {(dp._StateSpace._key(start), 0): (0.0, start, 0.0)}
+    for price in prices:
+        nxt = {}
+        for key, (total, stored, used) in states.items():
+            for action in (CHARGE, IDLE, DISCHARGE):
+                new, bought, sold = dp.move(stored, action, model, dtHours)
+                headroom = max(0.0, budget - used)
+                removed = sold / model.dischargeEfficiency
+                if removed > headroom:
+                    sold = headroom * model.dischargeEfficiency
+                    removed = headroom
+                    new = stored - removed
+                qCd, qCal, both = model.step(stored / model.MWh, new / model.MWh, dtHours)
+                gained = price * (sold - bought) - (both if calendar else model.cost(qCd))
+                nextUsed = used + removed
+                nextKey = (dp._StateSpace._key(new), dp._StateSpace._key(nextUsed))
+                if nextKey not in nxt or nxt[nextKey][0] < total + gained:
+                    nxt[nextKey] = (total + gained, new, nextUsed)
+        states = nxt
+    return max(total for total, _, _ in states.values())
+
+
+class TestCycleBudget:
+    """`solve(cycles=...)` caps the equivalent full cycles a week of dispatch may spend.
+
+    The cap is not a state dimension. It is priced: every MWh removed cell-side pays an
+    extra `cyclePrice`, and the price is bisected until usage lands on the budget. So the
+    answer arrives as a sandwich rather than a single number, and these tests pin both
+    ends of it.
+    """
+
+    def test_an_unbinding_budget_changes_nothing(self, paper):
+        free = dp.solve(MIXED_PRICES, paper, initialSoc=config.initial_soc,
+                          calendar=False)
+        capped = dp.solve(MIXED_PRICES, paper, initialSoc=config.initial_soc,
+                          calendar=False, cycles=100.0)
+        assert capped.profit == pytest.approx(free.profit, abs=1e-12)
+        assert capped.soc == pytest.approx(free.soc, abs=1e-12)
+        assert capped.sold == pytest.approx(free.sold, abs=1e-12)
+        assert capped.mipGap == 0.0
+        assert capped.dualBound == pytest.approx(capped.profit, abs=1e-12)
+
+    def test_an_unbinding_budget_does_not_search(self, paper):
+        """No bisection runs when the free optimum already fits, so nothing is priced."""
+        capped = dp.solve(MIXED_PRICES, paper, initialSoc=config.initial_soc,
+                          calendar=False, cycles=100.0)
+        assert capped.cyclePrice == 0.0
+
+    def test_a_zero_budget_never_discharges(self, paper):
+        capped = dp.solve(MIXED_PRICES, paper, initialSoc=config.initial_soc,
+                          calendar=False, cycles=0.0)
+        assert capped.sold == pytest.approx([0.0] * len(MIXED_PRICES), abs=1e-12)
+        assert capped.cyclesUsed == pytest.approx(0.0, abs=1e-12)
+
+    def test_a_full_discharge_is_exactly_one_cycle(self, paper):
+        """The definition: one EFC is the nominal usable capacity removed cell-side."""
+        stored, removed = paper.MWh, 0.0
+        while stored > 0:
+            new, _, sold = dp.move(stored, DISCHARGE, paper, nem_interval_hours)
+            removed += sold / paper.dischargeEfficiency
+            stored = new
+        assert removed / paper.MWh == pytest.approx(1.0, abs=1e-12)
+
+    def test_a_partial_discharge_counts_proportionally(self, paper):
+        stored, removed = 0.5 * paper.MWh, 0.0
+        while stored > 0:
+            new, _, sold = dp.move(stored, DISCHARGE, paper, nem_interval_hours)
+            removed += sold / paper.dischargeEfficiency
+            stored = new
+        assert removed / paper.MWh == pytest.approx(0.5, abs=1e-12)
+
+    def test_the_budget_is_cell_side_not_meter_side(self, paper):
+        """A full pack emptied at one cycle sells nu_D times the capacity, not the
+        capacity. Getting this the wrong way round is a 5% error in the budget."""
+        capped = dp.solve([500.0] * 40, paper, initialSoc=1.0, calendar=False, cycles=1.0)
+        assert sum(capped.sold) == pytest.approx(paper.MWh * paper.dischargeEfficiency,
+                                                 abs=1e-9)
+        assert capped.cyclesUsed == pytest.approx(1.0, abs=1e-9)
+
+    @pytest.mark.parametrize("cycles", [0.25, 0.5, 1.0, 2.0])
+    def test_the_reported_schedule_respects_the_budget(self, paper, cycles):
+        capped = dp.solve(MIXED_PRICES, paper, initialSoc=config.initial_soc,
+                          calendar=False, cycles=cycles)
+        assert efcOf(capped, paper) <= cycles + 1e-9
+        assert rollUsage(MIXED_PRICES, paper, actionsFrom(capped)) <= cycles + 1e-9
+
+    def test_cycles_used_is_what_the_schedule_spent(self, paper):
+        capped = dp.solve(MIXED_PRICES, paper, initialSoc=config.initial_soc,
+                          calendar=False, cycles=0.5)
+        assert capped.cyclesUsed == pytest.approx(efcOf(capped, paper), abs=1e-12)
+
+    def test_profit_is_non_increasing_as_the_budget_tightens(self, paper):
+        ladder = [4.0, 2.0, 1.0, 0.5, 0.25, 0.0]
+        profits = [dp.solve(MIXED_PRICES, paper, initialSoc=config.initial_soc,
+                          calendar=False, cycles=c).profit
+                   for c in ladder]
+        assert all(b <= a + 1e-9 for a, b in zip(profits, profits[1:]))
+
+    def test_usage_is_non_increasing_in_the_cycle_price(self, paper):
+        """What makes the bisection valid. Rent only ever discourages discharging, so
+        usage falls as the price rises, and a predicate search on it is sound."""
+        space = dp.stateSpace(paper, config.initial_soc, nem_interval_hours,
+                              len(MIXED_PRICES))
+        used = []
+        for price in (0.0, 25.0, 50.0, 100.0, 200.0, 400.0, 1000.0):
+            _, action, _ = dp.valueFunction(np.asarray(MIXED_PRICES, dtype=float), paper,
+                                            config.initial_soc, nem_interval_hours,
+                                            calendar=False, cyclePrice=price, space=space)
+            index, total = 0, 0.0
+            for step in range(len(MIXED_PRICES)):
+                chosen = int(action[step][index])
+                total += float(space.cellSide[chosen][index])
+                index = int(space.successor[chosen][index])
+            used.append(total)
+        assert all(b <= a + 1e-12 for a, b in zip(used, used[1:]))
+        assert used[0] > used[-1]
+        assert used[-1] == pytest.approx(0.0, abs=1e-12)
+
+    @pytest.mark.parametrize("prices", [MIXED_PRICES[:8], NEGATIVE_PRICES, FALLING_PRICES])
+    @pytest.mark.parametrize("cycles", [0.25, 0.5, 1.0])
+    def test_the_sandwich_holds_around_the_brute_force_optimum(self, paper, prices, cycles):
+        """profit is achievable, dualBound is a ceiling, and the truth is between them."""
+        capped = dp.solve(prices, paper, initialSoc=config.initial_soc,
+                          calendar=False, cycles=cycles)
+        best = bruteForce(prices, paper, cycles)
+        assert capped.profit <= best + 1e-12
+        assert best <= capped.dualBound + 1e-12
+
+    @pytest.mark.parametrize("cycles", [0.25, 0.5, 1.0])
+    def test_it_is_exact_wherever_the_gap_closes(self, paper, cycles):
+        capped = dp.solve(MIXED_PRICES[:8], paper, initialSoc=config.initial_soc,
+                          calendar=False, cycles=cycles)
+        if capped.mipGap == 0.0:
+            assert capped.profit == pytest.approx(
+                bruteForce(MIXED_PRICES[:8], paper, cycles), abs=1e-12)
+
+    @pytest.mark.parametrize("length", [24, 48])
+    def test_the_sandwich_holds_around_the_exact_joint_dp(self, paper, length):
+        prices = (MIXED_PRICES * 4)[:length]
+        capped = dp.solve(prices, paper, initialSoc=config.initial_soc,
+                          calendar=False, cycles=1.0)
+        exact = exactBudgeted(prices, paper, 1.0)
+        assert capped.profit <= exact + 1e-9
+        assert exact <= capped.dualBound + 1e-9
+
+    def test_the_two_exact_references_agree(self, paper):
+        """Brute force cannot express a discharge clipped by the budget, so it can only
+        sit at or below the joint DP. If it ever sat above, one of them is wrong."""
+        prices = MIXED_PRICES[:8]
+        assert bruteForce(prices, paper, 0.5) <= exactBudgeted(prices, paper, 0.5) + 1e-12
+
+    @pytest.mark.parametrize("length", [8, 12])
+    @pytest.mark.parametrize("cycles", [0.05, 0.5])
+    def test_it_matches_the_milp_cycle_row(self, paper, length, cycles):
+        """The MILP states the budget as one exact row, so it is the second opinion on
+        what the priced search is allowed to return. Tolerances are the solver's own:
+        HiGHS satisfies the row to its feasibility tolerance, not exactly."""
+        prices = MIXED_PRICES[:length]
+        milp = solve(prices, paper, initialSoc=config.initial_soc, calendar=False,
+                     discretePower=True, cycles=cycles)
+        capped = dp.solve(prices, paper, initialSoc=config.initial_soc,
+                          calendar=False, cycles=cycles)
+        assert sum(milp.sold) / paper.dischargeEfficiency <= cycles * paper.MWh + 1e-6
+        assert capped.profit <= milp.profit + 1e-6
+        assert milp.profit <= capped.dualBound + 1e-5
+
+    def test_the_bisection_terminates_on_flat_prices(self, paper):
+        capped = dp.solve(FLAT_PRICES, paper, initialSoc=config.initial_soc,
+                          calendar=False, cycles=1.0)
+        assert capped.mipGap == 0.0
+        assert capped.cyclesUsed == pytest.approx(0.0, abs=1e-12)
+
+    def test_the_state_space_is_shared_across_cycle_prices(self, paper):
+        """The budget adds no state, so one build serves every price the bisection tries."""
+        before = dp.stateSpace(paper, config.initial_soc, nem_interval_hours,
+                               len(MIXED_PRICES))
+        dp.solve(MIXED_PRICES, paper, initialSoc=config.initial_soc,
+                          calendar=False, cycles=0.5)
+        after = dp.stateSpace(paper, config.initial_soc, nem_interval_hours,
+                              len(MIXED_PRICES))
+        assert before is after
+
+    def test_the_cycle_price_reaches_no_reported_number(self, paper):
+        """The rent is a search device. If it leaked into the costs the oracle and the
+        environment would stop being the same problem, and the replay would drift."""
+        capped = dp.solve(MIXED_PRICES, paper, initialSoc=config.initial_soc,
+                          calendar=True, cycles=0.05)
+        assert capped.cyclePrice > 0.0
+        assert capped.degradationCost == pytest.approx(
+            sum(capped.cyclePerInterval) + sum(capped.calendarPerInterval), abs=1e-12)
+        assert capped.profit == pytest.approx(capped.revenue - capped.degradationCost,
+                                              abs=1e-12)
+        assert capped.profit == pytest.approx(
+            rollProfit(MIXED_PRICES, paper, actionsFrom(capped), calendar=True),
+            abs=1e-9)
+
+
+class TestTerminalValue:
+    """Closing stock is worth what selling it would net.
+
+    Without this nothing values energy held at the close, so the last interval's best move
+    is always to sell whatever is left at whatever it pays. On a one-day episode that is a
+    few cents. On a week it is a Sunday-night dump.
+    """
+
+    def test_a_zero_price_is_the_old_problem(self, paper):
+        """Bit-identical, so every oracle record solved before this still means itself."""
+        old = dp.solve(MIXED_PRICES, paper, initialSoc=config.initial_soc,
+                          calendar=False)
+        same = dp.solve(MIXED_PRICES, paper, initialSoc=config.initial_soc,
+                          calendar=False, terminalPrice=0.0)
+        assert same.profit == old.profit
+        assert same.soc == old.soc
+
+    def test_closing_stock_is_never_worth_more_than_selling_it(self, paper):
+        for soc in (0.0, 0.25, 0.5, 1.0):
+            stored = soc * paper.MWh
+            value = paper.terminalValue(stored, 100.0)
+            assert value <= 100.0 * stored * paper.dischargeEfficiency + 1e-12
+            assert value >= 0.0 or soc == 0.0
+
+    def test_an_empty_pack_is_worth_nothing(self, paper):
+        assert paper.terminalValue(0.0, 500.0) == pytest.approx(0.0, abs=1e-12)
+
+    def test_it_nets_off_the_cost_of_releasing_the_energy(self, paper):
+        stored = paper.MWh
+        gross = 100.0 * stored * paper.dischargeEfficiency
+        release = paper.cost(paper.totalCycleDegradation(1.0, 0.0))
+        assert paper.terminalValue(stored, 100.0) == pytest.approx(gross - release,
+                                                                   abs=1e-12)
+
+    def test_a_held_pack_is_not_dumped_into_the_last_interval(self, paper):
+        """Prices fall through the window, so with no terminal value the oracle still
+        sells the tail at the worst price of the day rather than hold it."""
+        dumped = dp.solve(FALLING_PRICES, paper, initialSoc=1.0, calendar=False)
+        held = dp.solve(FALLING_PRICES, paper, initialSoc=1.0, calendar=False,
+                        terminalPrice=200.0)
+        assert held.soc[-1] > dumped.soc[-1]
+
+    def test_the_value_is_reported_apart_from_the_trading(self, paper):
+        held = dp.solve(FALLING_PRICES, paper, initialSoc=1.0, calendar=False,
+                        terminalPrice=200.0)
+        closing = held.soc[-1] * paper.MWh
+        assert held.terminalValue == pytest.approx(
+            paper.terminalValue(closing, 200.0), abs=1e-9)
+        assert held.profit == pytest.approx(
+            held.revenue - held.degradationCost + held.terminalValue, abs=1e-9)
+
+    def test_it_travels_with_the_budget(self, paper):
+        both = dp.solve(MIXED_PRICES, paper, initialSoc=config.initial_soc,
+                          calendar=False, cycles=0.5,
+                        terminalPrice=100.0)
+        assert efcOf(both, paper) <= 0.5 + 1e-9
+        assert both.profit <= both.dualBound + 1e-9
