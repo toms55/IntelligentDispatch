@@ -299,10 +299,10 @@ class TestPerDay:
     """The episode is the scoring grain, the trading day the reporting grain. A weekly
     episode must still write seven result rows that sum to the week."""
 
-    def interval(self, revenue, degradation, cycles, terminalValue=0.0):
+    def interval(self, revenue, degradation, cycles, terminalValue=0.0, outOfBounds=0):
         return {"revenue": revenue, "degradation": degradation,
                 "profit": revenue - degradation, "cycles": cycles,
-                "terminalValue": terminalValue}
+                "terminalValue": terminalValue, "outOfBounds": outOfBounds}
 
     def test_one_day_is_one_entry(self):
         trajectory = [self.interval(1.0, 0.25, 0.1 * (n + 1)) for n in range(4)]

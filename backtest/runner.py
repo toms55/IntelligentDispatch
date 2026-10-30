@@ -326,7 +326,7 @@ def auditPlan(cfg):
         cfg.region, day + nem_interval, cfg.horizon, cfg.calendar, cfg.discretePower,
         model, cfg.initialSoc, cfg.gap, cfg.cycleBudget, cfg.terminalPrice)) is None]
     return {"folds": len(everyFold), "selected": len(selected),
-            "days": len(days), "missing": len(missing),
+            "episodes": len(days), "missing": len(missing),
             "leftoverDays": folds.leftoverDays(everyFold, cfg.end),
             "first": selected[0], "last": selected[-1]}
 
@@ -465,7 +465,8 @@ def runRolling(cfg, onProgress=None):
     audit = auditPlan(cfg)
     if audit["missing"] and not cfg.allowSolve:
         raise ValueError(
-            f"{audit['missing']} of {audit['days']} days are not in the oracle cache. "
+            f"{audit['missing']} of {audit['episodes']} episodes are not in the oracle "
+            f"cache. "
             f"Solving them is hours of MILP, so pass allowSolve to go ahead."
         )
 
@@ -489,9 +490,12 @@ def runRolling(cfg, onProgress=None):
 
             def trainForecasts(fold=fold, cache=cache):
                 if "grid" not in cache:
+                    # One row per training EPISODE, not per day: a row is one episode's
+                    # own step grid, and `_plan` checked the cache against these runs.
                     cache["grid"] = refreshMatrix(
-                        _trainDays(fold), cfg.region, cfg.horizon, cfg.forecastEvery,
-                        allowPartial=False, source=plan.forecastSource)
+                        _trainEpisodes(fold, cfg.horizon), cfg.region, cfg.horizon,
+                        cfg.forecastEvery, allowPartial=False,
+                        source=plan.forecastSource)
                 return cache["grid"]
         testPrices = folds.sliceWindow(plan.prices, fold.testStart, fold.testEnd)
         folds.requireFullDays(testPrices, fold.testStart, fold.testEnd)

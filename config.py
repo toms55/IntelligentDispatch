@@ -1,6 +1,10 @@
 from datetime import datetime
 
 # --- Episode -----------------------------------------------------------------
+# One trading day, 288 intervals. This is NOT the lookahead: see observation_intervals.
+# A multi-day episode (a weekly cycle budget, say) is supported by the code but not run:
+# the state of charge would carry across the days inside it and reset at its boundary
+# only, which the weekly-episode experiment tried and dropped.
 episode_intervals = 288
 # The battery starts every episode empty, and nothing values what it holds at the close.
 # A start above zero would hand the agent energy it never bought, and it would then sell
@@ -18,6 +22,21 @@ cycle_budget = None
 # capped, so the answer is a sandwich: the relative width between the feasible schedule
 # and the bound. See `optimisation.dp.solve`.
 cycle_dual_gap = 1e-4
+
+# What energy still in the pack at the episode close is worth, in $/MWh, per region.
+# Without it nothing values closing stock, so the last interval's best move is always to
+# sell whatever is left: a few cents on a day-long episode, a Sunday-night dump on a week.
+#
+# Pinned from the median RRP of the 2023 calendar year, which precedes every test window
+# the backtest scores, measured over all 105120 intervals of each region. A median rather
+# than a mean, because the mean is pulled up by the spikes the agent is meant to trade
+# into and should not be paid for holding. Set it too high and the battery hoards instead
+# of trading, so it belongs below what the market typically pays.
+#
+# Never re-pin this from a test window. It is a modelling constant with the same
+# discipline as price_knee.
+terminal_energy_price = {"NSW1": 86.0, "QLD1": 75.8, "SA1": 59.0, "TAS1": 54.3,
+                         "VIC1": 53.5}
 
 
 # --- Observation -------------------------------------------------------------

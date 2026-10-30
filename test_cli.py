@@ -23,7 +23,8 @@ def series():
 @pytest.fixture
 def schedule():
     return Schedule(0.5, [0.6, 0.7, 0.5, 0.4], [0.01, 0.01, 0.0, 0.0],
-                    [0.0, 0.0, 0.02, 0.01], 6.4, 1.4, 5.0)
+                    [0.0, 0.0, 0.02, 0.01], 6.4, 1.4, 5.0,
+                    cyclePrice=0.0, cyclesUsed=0.3, terminalValue=0.0)
 
 
 @pytest.fixture(autouse=True)
@@ -260,6 +261,77 @@ class TestDiscretePowerFlag:
         assert "dual bound" not in capsys.readouterr().out
 
 
+class TestCycleBudget:
+    """The weekly cycle budget and the terminal value, from the command line to the
+    oracle.
+
+    A budgeted run states a different problem, so the flag must reach every module of a
+    run. Where it reaches only some of them, the oracle stops bounding the agent and
+    every number downstream means nothing.
+    """
+
+    def budgeted(self, monkeypatch):
+        """A schedule that spent a budget, as the oracle reports one."""
+        schedule = Schedule(0.5, [0.6, 0.7, 0.5, 0.4], [0.01, 0.01, 0.0, 0.0],
+                            [0.0, 0.0, 0.02, 0.01], 6.4, 1.4, 5.0,
+                            cyclePrice=142.07, cyclesUsed=6.961, terminalValue=0.25)
+        monkeypatch.setattr(cli, "solve", lambda prices, model, **kwargs: schedule)
+        return schedule
+
+    def test_the_budget_reaches_the_oracle(self, calls):
+        cli.main(["lp", "2024-01-10", "2024-01-11", "--cycles", "7"])
+        assert calls["solve"][2]["cycles"] == 7.0
+
+    def test_the_default_is_the_configured_budget(self, calls):
+        cli.main(["lp", "2024-01-10", "2024-01-11"])
+        assert calls["solve"][2]["cycles"] == config.cycle_budget
+
+    def test_no_cycles_removes_the_budget(self, calls):
+        cli.main(["lp", "2024-01-10", "2024-01-11", "--no-cycles"])
+        assert calls["solve"][2]["cycles"] is None
+
+    def test_the_last_of_the_two_flags_wins(self, calls):
+        """Both write one destination, so a script overrides a default by appending a
+        flag rather than by editing the line that holds it."""
+        cli.main(["lp", "2024-01-10", "2024-01-11", "--cycles", "7", "--no-cycles"])
+        assert calls["solve"][2]["cycles"] is None
+        cli.main(["lp", "2024-01-10", "2024-01-11", "--no-cycles", "--cycles", "3.5"])
+        assert calls["solve"][2]["cycles"] == 3.5
+
+    def test_the_terminal_price_reaches_the_oracle(self, calls):
+        cli.main(["lp", "2024-01-10", "2024-01-11", "--terminal-price", "60"])
+        assert calls["solve"][2]["terminalPrice"] == 60.0
+
+    def test_the_closing_stock_is_worth_nothing_by_default(self, calls):
+        cli.main(["lp", "2024-01-10", "2024-01-11"])
+        assert calls["solve"][2]["terminalPrice"] == 0.0
+
+    def test_a_budgeted_solve_reports_what_it_spent(self, monkeypatch, capsys):
+        self.budgeted(monkeypatch)
+        cli.main(["lp", "2024-01-10", "2024-01-11", "--cycles", "7"])
+        out = capsys.readouterr().out
+        assert "cycles used" in out and "6.9610" in out
+        assert "cycle price" in out and "142.0700" in out
+
+    def test_an_unbudgeted_solve_reports_neither(self, monkeypatch, capsys):
+        self.budgeted(monkeypatch)
+        cli.main(["lp", "2024-01-10", "2024-01-11", "--no-cycles"])
+        out = capsys.readouterr().out
+        assert "cycles used" not in out and "cycle price" not in out
+
+    def test_the_terminal_value_is_reported_apart_from_the_trading(self, monkeypatch,
+                                                                   capsys):
+        self.budgeted(monkeypatch)
+        cli.main(["lp", "2024-01-10", "2024-01-11", "--terminal-price", "60"])
+        out = capsys.readouterr().out
+        assert "terminal value" in out and "0.2500" in out
+
+    def test_no_terminal_value_line_without_a_terminal_price(self, monkeypatch, capsys):
+        self.budgeted(monkeypatch)
+        cli.main(["lp", "2024-01-10", "2024-01-11"])
+        assert "terminal value" not in capsys.readouterr().out
+
+
 class TestRlSubcommands:
     """Argument plumbing only. Training itself is covered in rl/test_algos.py."""
 
@@ -399,6 +471,42 @@ class TestRlSubcommands:
         assert "regret" in out and "captured" in out and "oracle profit" in out
         assert "cap 17500" in out  # the cap the checkpoint trained under, not the window's
 
+    def test_baseline_passes_the_cycle_budget(self, rlCalls):
+        cli.main(["baseline", "2024-01-10", "2024-01-11", "--horizon", "4",
+                  "--cycles", "7", "--terminal-price", "60"])
+        assert rlCalls["baseline"]["cycles"] == 7.0
+        assert rlCalls["baseline"]["terminalPrice"] == 60.0
+
+    def test_train_passes_the_cycle_budget(self, rlCalls):
+        cli.main(["train", "2024-01-10", "2024-01-11", "--horizon", "4",
+                  "--timesteps", "10", "--seeds", "0", "--cycles", "7",
+                  "--terminal-price", "60"])
+        kwargs = rlCalls["train"][0][1]
+        assert kwargs["cycleBudget"] == 7.0
+        assert kwargs["terminalPrice"] == 60.0
+
+    # A budgeted agent means something else than an unbudgeted one, so it publishes
+    # beside the agents already there rather than over them.
+    def test_train_publishes_under_a_tag(self, rlCalls):
+        from rl import policies
+
+        cli.main(["train", "2024-01-10", "2024-01-11", "--horizon", "4",
+                  "--timesteps", "10", "--seeds", "0", "--policy-tag", "efc7"])
+        assert sorted(policies.available("SA1", rlCalls["policies"])) == [
+            "maskableppo-cold-efc7-s0"]
+
+    def test_eval_passes_the_cycle_budget_to_both_sides(self, rlCalls, tmp_path):
+        """The agent and the oracle it is scored against must face one budget. A
+        budgeted agent against an unbudgeted bound reports a shortfall it never had."""
+        _fakeCheckpoint(tmp_path, 0)
+        cli.main(["eval", "2024-01-10", "2024-01-11", "--horizon", "4",
+                  "--out", str(tmp_path), "--seeds", "0", "--cycles", "7",
+                  "--terminal-price", "60"])
+        assert rlCalls["baseline"]["cycles"] == 7.0
+        assert rlCalls["baseline"]["terminalPrice"] == 60.0
+        assert rlCalls["eval"][1]["cycleBudget"] == 7.0
+        assert rlCalls["eval"][1]["terminalPrice"] == 60.0
+
     def test_eval_refuses_a_checkpoint_with_no_price_scale(self, rlCalls, tmp_path):
         """A checkpoint from before the dated price cap. Guessing the transform would
         silently change what every observation means."""
@@ -420,7 +528,7 @@ class TestRolling:
         monkeypatch.setattr(runner, "runRolling",
                             lambda cfg, onProgress=None: seen.update(cfg=cfg) or 0)
         monkeypatch.setattr(runner, "auditPlan", lambda cfg: {
-            "folds": 1, "selected": 1, "days": 7, "missing": 0, "leftoverDays": 0,
+            "folds": 1, "selected": 1, "episodes": 1, "missing": 0, "leftoverDays": 0,
             "first": runner.folds.Fold(0, *[datetime(2025, 1, 1, 4)] * 4),
             "last": runner.folds.Fold(0, *[datetime(2025, 1, 1, 4)] * 4)})
         return seen
@@ -499,6 +607,17 @@ class TestRolling:
     def test_the_actions_csv_follows_the_run_name(self, spy, tmp_path):
         self.rolling("--results", str(tmp_path / "results" / "x" / "seed2"))
         assert spy["cfg"].actionsFile == tmp_path / "results" / "actions" / "x_NSW1.csv"
+
+    # A budgeted backtest states a different problem, and manifestOf records the budget,
+    # so an unbudgeted result set refuses a budgeted run.
+    def test_the_cycle_budget_reaches_the_config(self, spy):
+        self.rolling("--cycles", "7", "--terminal-price", "60")
+        assert spy["cfg"].cycleBudget == 7.0
+        assert spy["cfg"].terminalPrice == 60.0
+
+    def test_no_cycles_leaves_the_backtest_unbudgeted(self, spy):
+        self.rolling("--no-cycles")
+        assert spy["cfg"].cycleBudget is None
 
     # A name already used stops a fresh start; --resume continues it.
     def test_an_existing_name_needs_resume(self, spy, tmp_path):
