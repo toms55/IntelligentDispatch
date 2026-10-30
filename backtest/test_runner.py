@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import config
 from backtest import folds, records, runner
 from rl import policies
 from utils import nem_interval
@@ -64,11 +65,14 @@ def spy(monkeypatch, prices):
 
     def fakeBaseline(window, **kwargs):
         calls["baseline"].append(kwargs)
-        days = len(window) // 288
-        return [{"start": window.index[n * 288].isoformat(),
-                 "profitPerInterval": [0.01] * 288, "dualBound": 10.0, "profit": 9.0, "mipGap": 0.01,
-                 "soc": [0.5] * 288, "bought": [0.0] * 288, "sold": [0.0] * 288}
-                for n in range(days)]
+        horizon = kwargs.get("horizon") or config.episode_intervals
+        episodes = len(window) // horizon
+        return [{"start": window.index[n * horizon].isoformat(),
+                 "profitPerInterval": [0.01] * horizon, "dualBound": 10.0, "profit": 9.0,
+                 "mipGap": 0.01, "cyclesUsed": 6.5,
+                 "soc": [0.5] * horizon, "bought": [0.0] * horizon,
+                 "sold": [0.0] * horizon}
+                for n in range(episodes)]
 
     def fakeTrain(algo, trainPrices, model, **kwargs):
         calls["train"].append({"algo": algo, "prices": trainPrices, **kwargs})
@@ -83,11 +87,16 @@ def spy(monkeypatch, prices):
     def fakeEvaluate(checkpoints, testPrices, model, **kwargs):
         calls["evaluate"].append({"checkpoints": dict(checkpoints),
                                   "prices": testPrices, **kwargs})
-        windows = len(testPrices) // 288
-        return {seed: [{"window": w, "agentProfit": 1.0, "agentRevenue": 2.0,
-                        "agentDegradation": 1.0, "lpProfit": 10.0, "regret": 9.0,
+        horizon = kwargs.get("horizon") or config.episode_intervals
+        windows = len(testPrices) // horizon
+        days = horizon // 288
+        return {seed: [{"window": w, "agentProfit": 1.0 * days, "agentRevenue": 2.0 * days,
+                        "agentDegradation": 1.0 * days, "agentCycles": 0.5 * days,
+                        "agentTerminalValue": 0.0, "lpProfit": 10.0, "regret": 9.0,
+                        "perDay": [{"revenue": 2.0, "degradation": 1.0, "profit": 1.0,
+                                    "cycles": 0.5, "terminalValue": 0.0}] * days,
                         "trajectory": [{"price": 50.0, "soc": 0.5, "bought": 0.0,
-                                        "sold": 0.0, "profit": 0.0}] * 288}
+                                        "sold": 0.0, "profit": 0.0}] * horizon}
                        for w in range(windows)]
                 for seed in checkpoints}
 
@@ -528,3 +537,98 @@ class TestActionsFile:
         runner.runRolling(cfg)
         got = pd.read_csv(cfg.actionsFile)
         assert len(got) == 2 * 2 * 7 * 288
+
+
+class TestWeeklyEpisodes:
+    """An episode may hold several trading days. The day stays the reporting grain, so a
+    weekly fold still writes seven rows per seed, but the oracle bound is the episode's
+    and sits on its first day alone."""
+
+    @pytest.fixture
+    def weekly(self, config):
+        return config._replace(horizon=2016, cycleBudget=7.0, seeds=(0,))
+
+    def rows(self, cfg):
+        return records.readDays(cfg.resultsDir, REGION)
+
+    def test_the_oracle_is_solved_once_per_episode(self, weekly, spy):
+        runner.runRolling(weekly)
+        assert spy["baseline"][0]["horizon"] == 2016
+        assert spy["baseline"][0]["cycles"] == 7.0
+
+    def test_a_weekly_fold_still_writes_seven_day_rows(self, weekly, spy):
+        runner.runRolling(weekly)
+        frame = self.rows(weekly)
+        agent = frame[frame.algo != "oracle"]
+        perFold = agent.groupby("fold").size()
+        assert set(perFold) == {7}
+        assert agent.testDay.nunique() == len(agent)
+
+    def test_every_day_names_the_episode_it_sat_in(self, weekly, spy):
+        runner.runRolling(weekly)
+        frame = self.rows(weekly)
+        for episode, group in frame.groupby("episodeStart"):
+            assert len(group) == 7
+            assert group.testDay.min() == episode
+            assert group.testDay.max() == episode + pd.Timedelta(days=6)
+
+    def test_the_bound_sits_on_the_first_day_of_the_episode_only(self, weekly, spy):
+        """A day-long oracle started empty is no bound on a day the agent entered
+        holding energy, so there is no per-day bound to write."""
+        runner.runRolling(weekly)
+        frame = self.rows(weekly)
+        first = frame.testDay == frame.episodeStart
+        assert frame.loc[first, "oracleDualBound"].notna().all()
+        assert frame.loc[~first, "oracleDualBound"].isna().all()
+        assert frame.loc[~first, "oracleGap"].isna().all()
+        assert frame.loc[~first, "oracleCycles"].isna().all()
+
+    def test_a_whole_episode_scope_counts_the_bound_once(self, weekly, spy):
+        """Which is the point of the NaN: pandas skips it, so summing a week's rows
+        gives the one bound rather than seven copies of it."""
+        runner.runRolling(weekly)
+        frame = self.rows(weekly)
+        week = frame[(frame.fold == 0) & (frame.algo != "oracle")]
+        assert week.oracleDualBound.sum() == pytest.approx(10.0)
+        assert week.oracleDualBound.count() == 1
+
+    def test_the_day_rows_sum_to_the_episode(self, weekly, spy):
+        runner.runRolling(weekly)
+        frame = self.rows(weekly)
+        week = frame[(frame.fold == 0) & (frame.algo != "oracle")]
+        # The fake agent reports 1.0 of profit and 0.5 cycles a day over seven days.
+        assert week.agentProfit.sum() == pytest.approx(7.0, abs=1e-9)
+        assert week.agentCycles.sum() == pytest.approx(3.5, abs=1e-9)
+        assert set(week.cycleBudget) == {7.0}
+
+    def test_the_trajectory_is_still_written_in_trading_days(self, weekly, spy):
+        """The dashboard draws one day at a time, so the export keeps 288-interval days
+        whatever the episode length."""
+        runner.runRolling(weekly)
+        written = pd.read_parquet(weekly.resultsDir / REGION / "fold00.parquet")
+        agent = written[written.algo != "oracle"]
+        assert agent.interval.max() == 287
+        assert agent.testDay.nunique() == 7
+        assert len(agent) == 2016
+
+    def test_the_manifest_carries_the_budget(self, weekly, spy):
+        runner.runRolling(weekly)
+        manifest = records.manifestPath(weekly.resultsDir, REGION)
+        import json
+        assert json.loads(manifest.read_text())["cycleBudget"] == 7.0
+
+    def test_a_budget_free_result_set_refuses_a_budgeted_run(self, config, weekly, spy):
+        runner.runRolling(config)
+        with pytest.raises(ValueError, match="cycleBudget"):
+            runner.runRolling(weekly._replace(resultsDir=config.resultsDir))
+
+    def test_an_unbudgeted_run_still_resumes_a_result_set_from_before_the_budget(
+            self, config, spy):
+        """`cycleBudget: None` must read as the absent key, or every published run would
+        refuse to be added to."""
+        runner.runRolling(config)
+        manifest = records.manifestPath(config.resultsDir, REGION)
+        import json
+        stored = json.loads(manifest.read_text())
+        assert "cycleBudget" not in stored
+        assert runner.runRolling(config) == 0

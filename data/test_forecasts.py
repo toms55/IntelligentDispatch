@@ -596,3 +596,36 @@ class TestWeeklyRefresh:
     def test_an_episode_must_be_whole_trading_days(self):
         with pytest.raises(ValueError, match="whole number of 288-interval trading days"):
             forecasts.refreshRunTimes(RUN, horizon=336, every=48)
+
+
+class TestMatrixSizeGuard:
+    """The grid grows with the square of the horizon, so a weekly episode at a 5-minute
+    refresh is gigabytes. It says so rather than waiting for the OOM killer."""
+
+    def test_a_modest_matrix_is_allowed(self, monkeypatch):
+        monkeypatch.setattr(forecasts, "forecastMatrix",
+                            lambda runs, region, cover, **k: np.zeros((len(runs), cover)))
+        got = forecasts.refreshMatrix([pd.Timestamp("2024-01-10 04:00")], "NSW1",
+                                      horizon=288, every=48)
+        assert got.shape == (1, 6, 288)
+
+    def test_an_oversized_matrix_is_refused_with_the_figure(self):
+        """Weekly episodes at a 5-minute refresh. 200 of them is 6 GiB, which is what a
+        several-year training grid would ask for."""
+        weeks = [pd.Timestamp("2024-01-01 04:00") + pd.Timedelta(weeks=n)
+                 for n in range(200)]
+        with pytest.raises(ValueError, match="GiB, over the"):
+            forecasts.refreshMatrix(weeks, "NSW1", horizon=2016, every=1)
+
+    def test_a_year_of_weekly_training_episodes_still_fits(self):
+        """1.6 GiB, which is large but is a configuration the backtest may legitimately
+        ask for, so the cap must not refuse it."""
+        weeks = [pd.Timestamp("2024-01-01 04:00") + pd.Timedelta(weeks=n)
+                 for n in range(52)]
+        forecasts._requireSize(len(weeks), 2016, 1)
+
+    def test_the_cap_is_what_decides(self, monkeypatch):
+        monkeypatch.setattr(forecasts, "matrixSizeCap", 1)
+        with pytest.raises(ValueError, match="matrixSizeCap"):
+            forecasts.refreshMatrix([pd.Timestamp("2024-01-10 04:00")], "NSW1",
+                                    horizon=288, every=48)

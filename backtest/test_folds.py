@@ -281,3 +281,50 @@ class TestDayOffset:
     def test_a_partial_day_is_refused(self):
         with pytest.raises(ValueError):
             folds.dayOffset(SMALL_START, SMALL_START + timedelta(hours=30))
+
+
+class TestTestEpisodes:
+    """The scoring grain. `testDays` stays the reporting grain, and the two are the same
+    list only while an episode is one trading day."""
+
+    def test_a_daily_episode_is_the_day_list(self):
+        fold = folds.enumerateFolds(SMALL_START, SMALL_END, trainWeeks=4)[0]
+        assert fold.testEpisodes(288) == fold.testDays
+
+    @pytest.mark.parametrize("testWeeks,expected", [(1, 1), (2, 2)])
+    def test_a_weekly_episode_is_one_start_per_week(self, testWeeks, expected):
+        fold = folds.enumerateFolds(SMALL_START, SMALL_END, trainWeeks=4,
+                                    testWeeks=testWeeks, stepWeeks=testWeeks)[0]
+        got = fold.testEpisodes(2016)
+        assert len(got) == expected
+        assert got[0] == fold.testStart
+        assert got[-1] + timedelta(weeks=1) == fold.testEnd
+
+    def test_a_test_window_that_is_not_whole_episodes_is_refused(self):
+        """A part episode would be scored against an oracle record of another length."""
+        fold = folds.enumerateFolds(SMALL_START, SMALL_END, trainWeeks=4)[0]
+        with pytest.raises(ValueError, match="whole number of 4032-interval episodes"):
+            fold.testEpisodes(4032)
+
+    def test_an_episode_must_be_whole_trading_days(self):
+        fold = folds.enumerateFolds(SMALL_START, SMALL_END, trainWeeks=4)[0]
+        with pytest.raises(ValueError, match="whole number of 288-interval trading days"):
+            fold.testEpisodes(300)
+
+
+class TestEpisodeOffset:
+    def test_counts_whole_episodes(self):
+        assert folds.episodeOffset(SMALL_START, SMALL_START, 2016) == 0
+        assert folds.episodeOffset(SMALL_START, SMALL_START + timedelta(weeks=1),
+                                   2016) == 1
+        assert folds.episodeOffset(SMALL_START, SMALL_START + timedelta(days=1),
+                                   288) == 1
+
+    def test_a_partial_episode_is_refused(self):
+        with pytest.raises(ValueError, match="whole number of 2016-interval episodes"):
+            folds.episodeOffset(SMALL_START, SMALL_START + timedelta(days=1), 2016)
+
+    def test_it_agrees_with_the_day_offset_on_a_daily_episode(self):
+        moment = SMALL_START + timedelta(days=5)
+        assert folds.episodeOffset(SMALL_START, moment, 288) == folds.dayOffset(
+            SMALL_START, moment)

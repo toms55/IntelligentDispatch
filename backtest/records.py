@@ -16,7 +16,12 @@ import pandas as pd
 
 dayColumns = (
     "fold", "algo", "trainMode", "seed", "priceSource", "testDay",
-    "agentProfit", "agentRevenue", "agentDegradation", "oracleDualBound", "oracleGap",
+    # The episode the day sat in, and the cycle budget that episode had. A day is still
+    # the reporting grain, but with a weekly episode it is no longer the scoring grain,
+    # so the oracle columns below hold the episode's figures on its first day only.
+    "episodeStart", "cycleBudget",
+    "agentProfit", "agentRevenue", "agentDegradation", "agentCycles",
+    "oracleDualBound", "oracleGap", "oracleCycles",
     "spikeIntensity", "highVol", "timesteps", "warmFrom", "writtenAt",
 )
 
@@ -34,7 +39,8 @@ unitColumns = ("fold", "algo", "trainMode", "seed", "priceSource")
 _dayTypes = {"fold": "int64", "seed": "int64", "timesteps": "int64",
              "highVol": "bool", "agentProfit": "float64", "agentRevenue": "float64",
              "agentDegradation": "float64", "oracleDualBound": "float64",
-             "oracleGap": "float64",
+             "oracleGap": "float64", "agentCycles": "float64",
+             "oracleCycles": "float64", "cycleBudget": "float64",
              "spikeIntensity": "float64"}
 
 
@@ -95,8 +101,18 @@ def readDayFile(path):
     # keep_default_na so an absent warmFrom stays "" rather than becoming NaN, and
     # round_trip so a float reads back as the value written rather than one ulp off,
     # which a republish would then write out.
-    frame = pd.read_csv(path, parse_dates=["testDay"], dtype=_dayTypes,
-                        keep_default_na=False, float_precision="round_trip")
+    present = {name for name in pd.read_csv(path, nrows=0).columns}
+    types = {key: value for key, value in _dayTypes.items() if key in present}
+    # keep_default_na is off for warmFrom's sake, so the float columns name "" as their
+    # own missing marker. An oracle column is NaN on every day but the episode's first,
+    # and cycleBudget is NaN when no budget was in force, so without this they read back
+    # as the string "" and fail their dtype.
+    frame = pd.read_csv(path, parse_dates=[name for name in ("testDay", "episodeStart")
+                                           if name in present],
+                        dtype=types, keep_default_na=False,
+                        na_values={key: [""] for key, value in types.items()
+                                   if value == "float64"},
+                        float_precision="round_trip")
     # Result sets from before the rename call trainMode "arm".
     return frame.rename(columns={"arm": "trainMode"})
 

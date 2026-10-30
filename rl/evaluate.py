@@ -39,10 +39,39 @@ def rolloutWindow(agent, env, windowIndex, masking=False, bound=None):
         "agentProfit": totals["profit"],
         "agentRevenue": totals["revenue"],
         "agentDegradation": totals["degradation"],
+        "agentCycles": totals["cycles"],
+        "agentTerminalValue": totals["terminalValue"],
         "lpProfit": lpProfit,
         "regret": lpProfit - totals["profit"],
+        "perDay": perDay(trajectory),
         "trajectory": trajectory,
     }
+
+
+def perDay(trajectory, day=None):
+    """One entry per trading day inside the episode, in order.
+
+    The episode is the scoring grain and the trading day is the reporting grain, so a
+    weekly episode still writes seven result rows. Computed here rather than in the
+    backtest because this is where the per-interval infos are.
+
+    `cycles` is the EFC spent inside that day. The environment reports a running total,
+    so a day's own spend is the difference across it, and the seven days sum to the
+    episode. The terminal value lands on the last day, where the environment paid it.
+    """
+    day = config.observation_intervals if day is None else day
+    out = []
+    for first in range(0, len(trajectory), day):
+        block = trajectory[first:first + day]
+        before = trajectory[first - 1]["cycles"] if first else 0.0
+        out.append({
+            "revenue": sum(step["revenue"] for step in block),
+            "degradation": sum(step["degradation"] for step in block),
+            "profit": sum(step["profit"] + step["terminalValue"] for step in block),
+            "cycles": block[-1]["cycles"] - before,
+            "terminalValue": sum(step["terminalValue"] for step in block),
+        })
+    return out
 
 
 def evaluatePolicy(agent, env, algoName=None, masking=None, bounds=None):
@@ -57,7 +86,8 @@ def evaluatePolicy(agent, env, algoName=None, masking=None, bounds=None):
 
 def evaluateSeeds(checkpoints, prices, model, baselines=None, algoName="maskableppo",
                   calendar=True, horizon=None, rewardScale=None, forecasts=None,
-                  bounds=None, initialSoc=config.initial_soc):
+                  bounds=None, initialSoc=config.initial_soc,
+                  cycleBudget=config.cycle_budget, terminalPrice=0.0):
     """One evaluation per seed, over the same windows. Returns {seed: records}.
 
     Each env uses the price transform its own checkpoint trained under, read from
@@ -74,7 +104,8 @@ def evaluateSeeds(checkpoints, prices, model, baselines=None, algoName="maskable
     for seed, path in checkpoints.items():
         env = BessEnv(prices, model, baseline=baselines, calendar=calendar,
                       forecasts=forecasts, scaler=loadScaler(Path(path).parent),
-                      initialSoc=initialSoc, **extra)
+                      initialSoc=initialSoc, cycleBudget=cycleBudget,
+                      terminalPrice=terminalPrice, **extra)
         agent = algos.load(algoName, str(path), env=None)
         results[seed] = evaluatePolicy(agent, env, algoName=algoName, bounds=bounds)
     return results

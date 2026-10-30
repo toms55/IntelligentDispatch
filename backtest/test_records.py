@@ -19,8 +19,9 @@ DAY = datetime(2025, 1, 1, 4)
 def row(fold=0, trainMode="warm", seed=0, priceSource="realised", day=DAY, profit=1.5):
     return {
         "fold": fold, "algo": "maskableppo", "trainMode": trainMode, "seed": seed,
-        "priceSource": priceSource, "testDay": day,
+        "priceSource": priceSource, "testDay": day, "episodeStart": day,
         "agentProfit": profit, "agentRevenue": 2.0, "agentDegradation": 0.5,
+        "agentCycles": 1.25, "cycleBudget": 7.0, "oracleCycles": 6.5,
         "oracleDualBound": 4.0, "oracleGap": 0.01, "spikeIntensity": 3.25, "highVol": True,
         "timesteps": 30000, "warmFrom": "runs/rolling/NSW1/fold00/warm",
         "writtenAt": "2026-10-19T12:00:00",

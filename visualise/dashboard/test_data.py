@@ -21,7 +21,10 @@ def dayRows(count=14, folds=2):
         rows.append({
             "fold": index // (count // folds), "algo": "maskableppo", "trainMode": "warm",
             "seed": 0, "priceSource": "realised", "testDay": day,
+            # A daily episode, so every row opens its own and carries the oracle columns.
+            "episodeStart": day, "cycleBudget": 7.0,
             "agentProfit": 10.0 - index, "agentRevenue": 12.0, "agentDegradation": 2.0,
+            "agentCycles": 1.5, "oracleCycles": 6.75,
             "oracleDualBound": 40.0, "oracleGap": 0.01, "spikeIntensity": 5.0 * (index % 2),
             "highVol": bool(index % 2), "timesteps": 30000, "warmFrom": "",
             "writtenAt": "2026-01-01T00:00:00",

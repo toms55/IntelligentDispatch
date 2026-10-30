@@ -226,7 +226,7 @@ class TestForecastTile:
         tiles = figures.summaryTiles(self._one(frame, "forecast"), 48)
         assert [tile["label"] for tile in tiles] == [
             "Captured", "Agent profit", "Revenue", "Oracle profit", "Forecast",
-            "Cap Payout"]
+            "Cap Payout", "Cycles"]
 
     # The wording comes from the verified forecastEvery, so any refresh reads right.
     @pytest.mark.parametrize("every, heading, sub", [
@@ -323,3 +323,49 @@ class TestDayView:
     def test_an_empty_day_renders_a_message(self, trajectory):
         figure = figures.dayFigure(data.dispatchPath(trajectory.iloc[0:0]), [], DAY)
         assert figure.layout.annotations and "no" in figure.layout.annotations[0].text
+
+
+class TestCycleTile:
+    """A cycles tile, appended last so the tiles a published run already shows keep
+    their places, and absent entirely for a run that records no cycles."""
+
+    def week(self, budget=7.0, cycles=1.0):
+        """One weekly episode, seven days, two seeds."""
+        out = []
+        for seed in (0, 1):
+            for index in range(7):
+                day = DAY + timedelta(days=index)
+                out.append(dict(dayRows()[0], seed=seed, testDay=day, episodeStart=DAY,
+                                agentCycles=cycles, cycleBudget=budget,
+                                oracleDualBound=100.0 if index == 0 else float("nan")))
+        return pd.DataFrame(out)
+
+    def test_it_reads_the_mean_per_episode_against_the_budget(self):
+        tiles = {tile["label"]: tile for tile in figures.summaryTiles(self.week())}
+        assert tiles["Cycles"]["raw"] == pytest.approx(7.0)
+        assert tiles["Cycles"]["value"] == "7.00"
+        assert "of 7.0" in tiles["Cycles"]["sub"]
+
+    def test_the_mean_is_per_episode_not_per_day(self):
+        """Seven days of one cycle is seven cycles of a weekly budget, not one."""
+        tiles = {tile["label"]: tile for tile in figures.summaryTiles(self.week(cycles=0.5))}
+        assert tiles["Cycles"]["raw"] == pytest.approx(3.5)
+
+    def test_it_is_last_so_the_other_tiles_keep_their_places(self):
+        labels = [tile["label"] for tile in figures.summaryTiles(self.week())]
+        assert labels[-1] == "Cycles"
+
+    def test_a_run_without_cycles_shows_no_tile(self):
+        frame = self.week().drop(columns=["agentCycles", "cycleBudget"])
+        assert "Cycles" not in [tile["label"]
+                                for tile in figures.summaryTiles(frame)]
+
+    def test_the_captured_tile_names_the_weekly_bound(self):
+        tiles = {tile["label"]: tile for tile in figures.summaryTiles(self.week())}
+        assert "weekly bound" in tiles["Captured"]["sub"]
+
+    def test_a_daily_episode_keeps_the_old_wording(self):
+        frame = self.week()
+        frame["episodeStart"] = frame.testDay
+        tiles = {tile["label"]: tile for tile in figures.summaryTiles(frame)}
+        assert tiles["Captured"]["sub"] == "agent dollars over oracle dollars"

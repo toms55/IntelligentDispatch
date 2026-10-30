@@ -56,6 +56,11 @@ class RollingConfig(NamedTuple):
     trainSource: str = "realised"
     forecastEvery: int = config.forecast_refresh_intervals
     horizon: int = config.episode_intervals
+    # The most equivalent full cycles one episode may spend, and what the pack still
+    # holds at its close is worth. None and 0.0 are the unbudgeted problem every
+    # published run was scored under.
+    cycleBudget: Optional[float] = config.cycle_budget
+    terminalPrice: float = 0.0
     rewardScale: float = config.reward_scale
     initialSoc: float = config.initial_soc
     calendar: bool = False
@@ -108,6 +113,12 @@ def manifestOf(cfg):
     # Result sets from before training could read forecasts carry no such key.
     if cfg.trainSource == "realised":
         skip.add("trainSource")
+    # Nor does one from before the cycle budget, so an unbudgeted run still resumes while
+    # a budgeted one refuses an unbudgeted result set.
+    if cfg.cycleBudget is None:
+        skip.add("cycleBudget")
+    if not cfg.terminalPrice:
+        skip.add("terminalPrice")
     # Checkpoints trained against the old oracle-baselined reward carry no such key, so
     # this keeps a resumed run from mixing the two rewards in one result set.
     return {**{key: value for key, value in cfg._asdict().items() if key not in skip},
@@ -144,12 +155,16 @@ def _plan(cfg):
         folds.sliceWindow(prices, oracleStart, spanEnd), region=cfg.region, horizon=cfg.horizon, calendar=cfg.calendar,
         discretePower=cfg.discretePower, model=model, initialSoc=cfg.initialSoc,
         gap=cfg.gap, timeLimit=cfg.timeLimit, workers=cfg.workers,
+        cycles=cfg.cycleBudget, terminalPrice=cfg.terminalPrice,
     )
+    # Volatility is reported per trading day; a forecast is read per episode, because one
+    # refresh matrix row is one episode.
     days = sorted({day for fold in selected for day in fold.testDays})
-    forecastDays = days
+    forecastDays = sorted({episode for fold in selected
+                           for episode in fold.testEpisodes(cfg.horizon)})
     if cfg.trainSource == "forecast":
-        forecastDays = sorted(set(days).union(
-            *(_trainDays(fold) for fold in selected)))
+        forecastDays = sorted(set(forecastDays).union(
+            *(_trainEpisodes(fold, cfg.horizon) for fold in selected)))
     return Plan(everyFold, selected, prices, oracle, oracleStart,
                 volatility.volatilityFrame(prices, days),
                 PriceScaler(marketPriceCap(cfg.capDate)), model,
@@ -160,6 +175,13 @@ def _trainDays(fold):
     """The 04:00 start of each trading day in the training window."""
     count = (fold.trainEnd - fold.trainStart) // folds.oneDay
     return [fold.trainStart + step * folds.oneDay for step in range(count)]
+
+
+def _trainEpisodes(fold, horizon=config.episode_intervals):
+    """The 04:00 start of each episode in the training window."""
+    length = folds.episodeLength(horizon)
+    count = (fold.trainEnd - fold.trainStart) // length
+    return [fold.trainStart + step * length for step in range(count)]
 
 
 def _forecastSource(cfg, days):
@@ -260,28 +282,32 @@ def auditPlan(cfg):
     # The span is every fold, not the selection: one oracle build covers every test day
     # whichever folds run. Training days need no oracle at all.
     spanStart, spanEnd = everyFold[0].testStart, everyFold[-1].testEnd
-    days = [spanStart + n * folds.oneDay
-            for n in range((spanEnd - spanStart) // folds.oneDay)]
+    # One cache record per episode, which is what buildBaseline writes.
+    length = folds.episodeLength(cfg.horizon)
+    days = [spanStart + n * length for n in range((spanEnd - spanStart) // length)]
     missing = [day for day in days if not (cacheRoot / cacheKey(
         cfg.region, day + nem_interval, cfg.horizon, cfg.calendar, cfg.discretePower,
-        model, cfg.initialSoc, cfg.gap)).exists()]
+        model, cfg.initialSoc, cfg.gap, cfg.cycleBudget,
+        cfg.terminalPrice)).exists()]
     return {"folds": len(everyFold), "selected": len(selected),
             "days": len(days), "missing": len(missing),
             "leftoverDays": folds.leftoverDays(everyFold, cfg.end),
             "first": selected[0], "last": selected[-1]}
 
 
-def _foldRecords(cfg, plan, start, dayCount):
-    """The oracle records for `dayCount` days from `start`, checked against their stamps."""
-    first = folds.dayOffset(plan.oracleStart, start)
-    if first + dayCount > len(plan.oracle):
+def _foldRecords(cfg, plan, start, episodeCount):
+    """The oracle records for `episodeCount` episodes from `start`, checked against their
+    stamps."""
+    length = folds.episodeLength(cfg.horizon)
+    first = folds.episodeOffset(plan.oracleStart, start, cfg.horizon)
+    if first + episodeCount > len(plan.oracle):
         raise ValueError(
-            f"the oracle record set holds {len(plan.oracle)} days, too few to reach day "
-            f"{first + dayCount} for the window starting {start:%Y-%m-%d}"
+            f"the oracle record set holds {len(plan.oracle)} episodes, too few to reach "
+            f"episode {first + episodeCount} for the window starting {start:%Y-%m-%d}"
         )
-    chunk = plan.oracle[first:first + dayCount]
+    chunk = plan.oracle[first:first + episodeCount]
     for step, record in enumerate(chunk):
-        wanted = (start + step * folds.oneDay + nem_interval).isoformat()
+        wanted = (start + step * length + nem_interval).isoformat()
         if record["start"] != wanted:
             raise ValueError(
                 f"oracle record {first + step} starts {record['start']}, expected "
@@ -314,18 +340,24 @@ def _ensureTrained(cfg, fold, trainMode, algo, seed, parent, trainPrices, scaler
         calendar=cfg.calendar, horizon=cfg.horizon, rewardScale=cfg.rewardScale,
         outDir=directory.parent, scaler=scaler, warmFrom=warmFrom,
         forecasts=None if trainForecasts is None else trainForecasts(),
-        initialSoc=cfg.initialSoc,
+        initialSoc=cfg.initialSoc, cycleBudget=cfg.cycleBudget,
+        terminalPrice=cfg.terminalPrice,
     )
     return directory
 
 
-def _trajectoryRows(cfg, fold, algo, trainMode, seed, source, day, steps, observed,
+def _trajectoryRows(cfg, fold, algo, trainMode, seed, source, episode, steps, observed,
                     runs=None):
+    # The episode is what the agent ran; the trading day is what the dashboard draws, so
+    # a weekly episode still writes 288-interval days. `episode` is the episode start.
+    perDay = config.observation_intervals
     for step, info in enumerate(steps):
         yield {
             "fold": fold, "algo": algo, "trainMode": trainMode, "seed": seed,
-            "priceSource": source, "testDay": day, "interval": step,
-            "settlementdate": day + (step + 1) * nem_interval,
+            "priceSource": source,
+            "testDay": episode + (step // perDay) * folds.oneDay,
+            "interval": step % perDay,
+            "settlementdate": episode + (step + 1) * nem_interval,
             "price": info["price"],
             "observedPrice": info["price"] if observed is None else observed[step],
             "forecastRunTime": None if runs is None else runs[step],
@@ -334,12 +366,15 @@ def _trajectoryRows(cfg, fold, algo, trainMode, seed, source, day, steps, observ
         }
 
 
-def _oracleRows(cfg, fold, day, record, prices):
+def _oracleRows(cfg, fold, episode, record, prices):
+    perDay = config.observation_intervals
     for step in range(cfg.horizon):
         yield {
             "fold": fold, "algo": "oracle", "trainMode": "oracle",
-            "seed": cfg.trajectorySeed, "priceSource": "realised", "testDay": day,
-            "interval": step, "settlementdate": day + (step + 1) * nem_interval,
+            "seed": cfg.trajectorySeed, "priceSource": "realised",
+            "testDay": episode + (step // perDay) * folds.oneDay,
+            "interval": step % perDay,
+            "settlementdate": episode + (step + 1) * nem_interval,
             "price": prices[step], "observedPrice": prices[step], "forecastRunTime": None,
             "soc": record["soc"][step], "bought": record["bought"][step],
             "sold": record["sold"][step], "profit": record["profitPerInterval"][step],
@@ -362,7 +397,6 @@ def runRolling(cfg, onProgress=None):
     existing = records.readDays(cfg.resultsDir, cfg.region)
     done = records.completedUnits(existing)
     logged = actions.writtenUnits(cfg.actionsFile) if cfg.actionsFile else set()
-    testDays = cfg.testWeeks * 7
     written = 0
 
     for position, fold in enumerate(plan.selected):
@@ -386,7 +420,8 @@ def runRolling(cfg, onProgress=None):
         testPrices = folds.sliceWindow(plan.prices, fold.testStart, fold.testEnd)
         folds.requireFullDays(testPrices, fold.testStart, fold.testEnd)
 
-        testRecords = _foldRecords(cfg, plan, fold.testStart, testDays)
+        episodes = fold.testEpisodes(cfg.horizon)
+        testRecords = _foldRecords(cfg, plan, fold.testStart, len(episodes))
         testBaselines = [record["profitPerInterval"] for record in testRecords]
         bounds = [record["dualBound"] for record in testRecords]
         gaps = [record["mipGap"] for record in testRecords]
@@ -410,7 +445,7 @@ def runRolling(cfg, onProgress=None):
                     # allowPartial=False: a NaN row reads as a flat $0 day and the
                     # agent idles through it, so a missing run must stop the run.
                     forecasts = (refreshMatrix(
-                        fold.testDays, cfg.region, cfg.horizon, cfg.forecastEvery,
+                        episodes, cfg.region, cfg.horizon, cfg.forecastEvery,
                         allowPartial=False, source=plan.forecastSource)
                         if source == "forecast" else None)
                     results = evaluateSeeds(
@@ -418,21 +453,23 @@ def runRolling(cfg, onProgress=None):
                         testPrices, plan.model, baselines=testBaselines,
                         algoName=algo, calendar=cfg.calendar, horizon=cfg.horizon,
                         rewardScale=cfg.rewardScale, forecasts=forecasts, bounds=bounds,
-                        initialSoc=cfg.initialSoc,
+                        initialSoc=cfg.initialSoc, cycleBudget=cfg.cycleBudget,
+                        terminalPrice=cfg.terminalPrice,
                     )
-                    rows += _resultRows(cfg, plan, fold, algo, trainMode, source, results,
-                                        position, gaps)
+                    rows += _resultRows(cfg, plan, fold, algo, trainMode, source,
+                                        results, position, testRecords, episodes)
                     if cfg.trajectorySeed in results:
                         trajectories += _resultTrajectories(
                             cfg, fold, algo, trainMode, source, results[cfg.trajectorySeed],
-                            testPrices, forecasts)
+                            testPrices, forecasts, episodes=episodes)
                     if cfg.actionsFile:
                         decisions += [
                             row for seed in pending
                             if (fold.index, seed, algo, trainMode, source) not in logged
                             for row in _resultTrajectories(
                                 cfg, fold, algo, trainMode, source, results[seed],
-                                testPrices, forecasts, seed=seed)]
+                                testPrices, forecasts, seed=seed,
+                                episodes=episodes)]
                     written += len(pending)
 
         if trajectories:
@@ -443,11 +480,12 @@ def runRolling(cfg, onProgress=None):
             kept = [row for row in records.readTrajectories(
                         cfg.resultsDir, cfg.region, fold.index)
                     if (row["algo"], row["trainMode"], row["priceSource"]) not in fresh]
-            trajectories += [row for day, record in zip(fold.testDays, testRecords)
+            length = folds.episodeLength(cfg.horizon)
+            trajectories += [row for episode, record in zip(episodes, testRecords)
                              for row in _oracleRows(
-                                 cfg, fold.index, day, record,
-                                 folds.sliceWindow(plan.prices, day,
-                                                   day + folds.oneDay).to_numpy())]
+                                 cfg, fold.index, episode, record,
+                                 folds.sliceWindow(plan.prices, episode,
+                                                   episode + length).to_numpy())]
             records.writeTrajectories(cfg.resultsDir, cfg.region, fold.index,
                                       kept + trajectories)
         if decisions:
@@ -492,7 +530,17 @@ def publishFinal(cfg, fold):
     return published
 
 
-def _resultRows(cfg, plan, fold, algo, trainMode, source, results, position, gaps):
+def _resultRows(cfg, plan, fold, algo, trainMode, source, results, position,
+                testRecords, episodes):
+    """One row per trading day, as always, scored from an episode that may hold several.
+
+    The oracle bound is the episode's and cannot be split across its days: once the state
+    of charge carries from one day into the next, a day-long oracle started empty is no
+    bound on a day the agent entered holding energy. So `oracleDualBound`, `oracleGap`
+    and `oracleCycles` sit on the episode's first day and are NaN on the rest. Pandas
+    skips NaN in `mean` and `sum`, so a whole-episode scope counts the bound exactly
+    once, and a single-day scope reports agent dollars with no denominator.
+    """
     stamp = datetime.now().isoformat(timespec="seconds")
 
     def parentOf(seed):
@@ -505,37 +553,51 @@ def _resultRows(cfg, plan, fold, algo, trainMode, source, results, position, gap
     for seed, perWindow in sorted(results.items()):
         parent = parentOf(seed)
         for record in perWindow:
-            day = fold.testDays[record["window"]]
-            stats = plan.volatility.loc[day]
-            out.append({
-                "fold": fold.index, "algo": algo, "trainMode": trainMode, "seed": seed,
-                "priceSource": source, "testDay": day,
-                "agentProfit": record["agentProfit"],
-                "agentRevenue": record["agentRevenue"],
-                "agentDegradation": record["agentDegradation"],
-                "oracleDualBound": record["lpProfit"],
-                # None when the solve stopped with no incumbent; the CSV holds NaN.
-                "oracleGap": (float("nan") if gaps[record["window"]] is None
-                              else gaps[record["window"]]),
-                "spikeIntensity": float(stats.spikeIntensity),
-                "highVol": bool(stats.highVol),
-                "timesteps": cfg.warmTimesteps if (trainMode == "warm" and position)
-                             else cfg.coldTimesteps,
-                "warmFrom": parent if trainMode == "warm" else "",
-                "writtenAt": stamp,
-            })
+            episode = episodes[record["window"]]
+            oracle = testRecords[record["window"]]
+            for offset, perDay in enumerate(record["perDay"]):
+                day = episode + offset * folds.oneDay
+                stats = plan.volatility.loc[day]
+                first = offset == 0
+                out.append({
+                    "fold": fold.index, "algo": algo, "trainMode": trainMode,
+                    "seed": seed, "priceSource": source, "testDay": day,
+                    "episodeStart": episode,
+                    "agentProfit": perDay["profit"],
+                    "agentRevenue": perDay["revenue"],
+                    "agentDegradation": perDay["degradation"],
+                    "agentCycles": perDay["cycles"],
+                    "cycleBudget": (float("nan") if cfg.cycleBudget is None
+                                    else cfg.cycleBudget),
+                    "oracleCycles": _episodeOnly(first, oracle.get("cyclesUsed")),
+                    "oracleDualBound": _episodeOnly(first, record["lpProfit"]),
+                    # None when the solve stopped with no incumbent; the CSV holds NaN.
+                    "oracleGap": _episodeOnly(first, oracle["mipGap"]),
+                    "spikeIntensity": float(stats.spikeIntensity),
+                    "highVol": bool(stats.highVol),
+                    "timesteps": cfg.warmTimesteps if (trainMode == "warm" and position)
+                                 else cfg.coldTimesteps,
+                    "warmFrom": parent if trainMode == "warm" else "",
+                    "writtenAt": stamp,
+                })
     return out
 
 
-def _resultTrajectories(cfg, fold, algo, trainMode, source, perWindow, testPrices, forecasts,
-                        seed=None):
+def _episodeOnly(first, value):
+    """`value` on the episode's first day, NaN on the rest."""
+    return float("nan") if not first or value is None else value
+
+
+def _resultTrajectories(cfg, fold, algo, trainMode, source, perWindow, testPrices,
+                        forecasts, seed=None, episodes=None):
     seed = cfg.trajectorySeed if seed is None else seed
+    episodes = fold.testDays if episodes is None else episodes
     out = []
     for record in perWindow:
-        day = fold.testDays[record["window"]]
+        episode = episodes[record["window"]]
         observed, runs = ((None, None) if forecasts is None
                           else (decisionPath(forecasts[record["window"]]),
-                                decisionRuns(day, forecasts[record["window"]])))
-        out += list(_trajectoryRows(cfg, fold.index, algo, trainMode, seed,
-                                    source, day, record["trajectory"], observed, runs))
+                                decisionRuns(episode, forecasts[record["window"]])))
+        out += list(_trajectoryRows(cfg, fold.index, algo, trainMode, seed, source,
+                                    episode, record["trajectory"], observed, runs))
     return out

@@ -1,8 +1,11 @@
 """Tests for visualise/dashboard/live.py. No network: every path is built here."""
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
 
+import config
 from rl import policies
 from rl.features import scalerFor
 from rl.heuristic import ThresholdPolicy
@@ -183,3 +186,34 @@ class TestRefreshSlot:
     ])
     def test_the_slot_starts_on_a_five_minute_boundary(self, now, slot):
         assert live.refreshSlot(now) == pd.Timestamp(slot)
+
+
+class TestCycleBudget:
+    """The screen plans one trading day, so it gets one day's share of the week's
+    budget. The whole week's would let a Monday spend the lot."""
+
+    def test_a_day_gets_a_seventh_of_the_week(self, monkeypatch):
+        monkeypatch.setattr(config, "cycle_budget", 7.0)
+        assert live.dailyBudget() == pytest.approx(1.0)
+
+    def test_no_budget_stays_no_budget(self, monkeypatch):
+        monkeypatch.setattr(config, "cycle_budget", None)
+        assert live.dailyBudget() is None
+
+
+class TestOnlyLoadableAgents:
+    def test_the_dropdown_omits_an_agent_of_another_layout(self, tmp_path):
+        """Offering it would offer a model the screen is certain to fail on."""
+        checkpoint = tmp_path / "fold00"
+        checkpoint.mkdir(parents=True)
+        (checkpoint / policies.agentFile).write_bytes(b"weights")
+        (checkpoint / policies.scalerFile).write_text(
+            json.dumps({"cap": 23200.0, "floor": -1000.0, "knee": 300.0}))
+        directory = policies.publish(checkpoint, "NSW1", "maskableppo", "warm", 0,
+                                     root=tmp_path / "out")
+        assert list(live.findCheckpoints("NSW1", tmp_path / "out")) == [directory.name]
+
+        facts = policies.describe(directory)
+        facts["observationSize"] = config.observation_size + 1
+        (directory / policies.metadataFile).write_text(json.dumps(facts))
+        assert live.findCheckpoints("NSW1", tmp_path / "out") == {}

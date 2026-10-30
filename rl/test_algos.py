@@ -238,3 +238,59 @@ class TestThresholdPolicy:
         records = evaluate.evaluatePolicy(ThresholdPolicy(), env, masking=True)
         assert len(records) == 3
         assert all("agentProfit" in record for record in records)
+
+
+class TestPerDay:
+    """The episode is the scoring grain, the trading day the reporting grain. A weekly
+    episode must still write seven result rows that sum to the week."""
+
+    def interval(self, revenue, degradation, cycles, terminalValue=0.0):
+        return {"revenue": revenue, "degradation": degradation,
+                "profit": revenue - degradation, "cycles": cycles,
+                "terminalValue": terminalValue}
+
+    def test_one_day_is_one_entry(self):
+        trajectory = [self.interval(1.0, 0.25, 0.1 * (n + 1)) for n in range(4)]
+        got = evaluate.perDay(trajectory, day=4)
+        assert len(got) == 1
+        assert got[0]["revenue"] == pytest.approx(4.0)
+        assert got[0]["profit"] == pytest.approx(3.0)
+        assert got[0]["cycles"] == pytest.approx(0.4)
+
+    def test_a_running_total_becomes_each_day_own_spend(self):
+        """The environment reports cumulative cycles, so a day's spend is the difference
+        across it. Copying the running total would count day one seven times."""
+        trajectory = [self.interval(0.0, 0.0, cycles)
+                      for cycles in (0.5, 1.0, 1.0, 2.5)]
+        got = evaluate.perDay(trajectory, day=2)
+        assert [entry["cycles"] for entry in got] == pytest.approx([1.0, 1.5])
+        assert sum(entry["cycles"] for entry in got) == pytest.approx(
+            trajectory[-1]["cycles"])
+
+    def test_the_days_sum_to_the_episode(self):
+        trajectory = [self.interval(float(n), 0.5, 0.01 * (n + 1)) for n in range(12)]
+        got = evaluate.perDay(trajectory, day=4)
+        assert len(got) == 3
+        assert sum(entry["revenue"] for entry in got) == pytest.approx(66.0)
+        assert sum(entry["degradation"] for entry in got) == pytest.approx(6.0)
+        assert sum(entry["profit"] for entry in got) == pytest.approx(60.0)
+
+    def test_the_terminal_value_lands_on_the_closing_day(self):
+        trajectory = [self.interval(0.0, 0.0, 0.0) for _ in range(8)]
+        trajectory[-1] = self.interval(0.0, 0.0, 0.0, terminalValue=5.0)
+        got = evaluate.perDay(trajectory, day=4)
+        assert got[0]["terminalValue"] == 0.0
+        assert got[1]["terminalValue"] == pytest.approx(5.0)
+        assert got[1]["profit"] == pytest.approx(5.0)
+
+    def test_a_rollout_reports_its_days_and_its_cycles(self, paper, series, tmp_path):
+        env = makeEnv(paper, series)
+        agent, _ = trainOne("a2c", series, paper, seed=0, timesteps=96, calendar=False,
+                            horizon=24, rewardScale=1.0, outDir=tmp_path)
+        record = evaluate.rolloutWindow(agent, env, 0)
+        assert len(record["perDay"]) == 1
+        assert record["perDay"][0]["profit"] == pytest.approx(record["agentProfit"],
+                                                              abs=1e-12)
+        assert record["agentCycles"] == pytest.approx(
+            sum(step["sold"] for step in record["trajectory"])
+            / paper.dischargeEfficiency / paper.MWh, abs=1e-12)

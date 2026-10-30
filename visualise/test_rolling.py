@@ -17,8 +17,10 @@ day2 = "2024-01-02 04:00:00"
 def _row(seed, source, day, agentProfit, oracle, fold=0):
     return {
         "fold": fold, "algo": "maskableppo", "trainMode": "warm", "seed": seed,
-        "priceSource": source, "testDay": day, "agentProfit": agentProfit,
-        "agentRevenue": agentProfit, "agentDegradation": 0.0,
+        "priceSource": source, "testDay": day, "episodeStart": day,
+        "cycleBudget": 7.0, "agentProfit": agentProfit,
+        "agentRevenue": agentProfit, "agentDegradation": 0.0, "agentCycles": 1.0,
+        "oracleCycles": 6.0,
         "oracleDualBound": oracle, "oracleGap": 0.0, "spikeIntensity": 0.0,
         "highVol": False, "timesteps": 30000, "warmFrom": "",
         "writtenAt": "2026-01-01T00:00:00",

@@ -4,7 +4,7 @@ import pytest
 
 from backtest import publish, records
 from visualise.dashboard import data
-from visualise.dashboard.test_data import REGION, dayRows, writeActions
+from visualise.dashboard.test_data import DAY, REGION, dayRows, writeActions
 
 
 def finishedRun(results, name, region=REGION, sources=("realised",), every=48):
@@ -109,3 +109,63 @@ class TestPublish:
         loaded = data.loadRun(REGION, root / "old").days
         assert "arm" not in loaded and set(loaded.trainMode) == {"warm"}
         assert len(loaded) == 14
+
+
+class TestCycleBudget:
+    """The last check on real prices. The environment cannot exceed the budget, but this
+    is the one guard that sees a whole published run, and it runs before anything is
+    written."""
+
+    def overBudget(self, results, name, column="agentCycles", value=99.0):
+        """A finished run whose first day breaks the budget."""
+        rows = [dict(row) for row in dayRows()]
+        rows[0][column] = value
+        for fold in sorted({row["fold"] for row in rows}):
+            records.writeFold(results / name / "all", REGION, fold,
+                              [row for row in rows if row["fold"] == fold])
+        records.writeManifest(results / name / "all", REGION,
+                              {"region": REGION, "forecastEvery": 48})
+        return results / name
+
+    def test_a_run_inside_the_budget_is_published(self, results, root):
+        assert publish.publish(finishedRun(results, "rolling"), root)
+
+    def test_a_run_over_the_budget_is_refused(self, results, root):
+        run = self.overBudget(results, "rolling")
+        with pytest.raises(ValueError, match="over the cycle budget"):
+            publish.publish(run, root)
+
+    def test_nothing_is_written_when_it_is_refused(self, results, root):
+        run = self.overBudget(results, "rolling")
+        with pytest.raises(ValueError):
+            publish.publish(run, root)
+        assert not root.exists() or list(root.iterdir()) == []
+
+    def test_a_run_exactly_at_the_budget_is_accepted(self, results, root):
+        run = self.overBudget(results, "rolling", value=7.0)
+        assert publish.publish(run, root)
+
+    def test_a_run_with_no_budget_is_not_checked(self, results, root):
+        """Every published run so far has none, so an absent budget must publish."""
+        rows = [{key: value for key, value in row.items()
+                 if key not in ("cycleBudget", "agentCycles")} for row in dayRows()]
+        run = results / "rolling"
+        (run / "all" / REGION).mkdir(parents=True)
+        pd.DataFrame(rows).to_csv(run / "all" / REGION / "fold00.csv", index=False)
+        records.writeManifest(run / "all", REGION, {"region": REGION,
+                                                    "forecastEvery": 48})
+        assert publish.publish(run, root)
+
+    def test_the_sum_over_an_episode_is_what_counts(self, results, root):
+        """A weekly episode's seven days each hold part of the spend, so a day under the
+        budget says nothing. Seven days of 1.5 is 10.5 against a budget of 7."""
+        rows = [dict(row, episodeStart=DAY, agentCycles=1.5) for row in dayRows(count=7,
+                                                                                folds=1)]
+        run = results / "rolling"
+        for fold in sorted({row["fold"] for row in rows}):
+            records.writeFold(run / "all", REGION, fold,
+                              [row for row in rows if row["fold"] == fold])
+        records.writeManifest(run / "all", REGION, {"region": REGION,
+                                                    "forecastEvery": 48})
+        with pytest.raises(ValueError, match="spent 10.5"):
+            publish.publish(run, root)

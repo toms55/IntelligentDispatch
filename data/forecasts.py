@@ -357,6 +357,24 @@ def refreshRunTimes(dayStart, horizon=config.episode_intervals,
     return [dayStart + offset * nem_interval for offset in range(0, horizon, every)]
 
 
+# The most memory one refresh matrix may take. The grid is episodes * (horizon / every) *
+# horizon float64 values, so it grows with the SQUARE of the horizon at a fixed refresh.
+# A 52-week training grid of weekly episodes is 1.6 GiB at a 5-minute refresh against
+# 35 MB at a 30-minute one. State the figure here rather than wait for the OOM killer to
+# state it.
+matrixSizeCap = 4 * 2**30
+
+
+def _requireSize(episodes, horizon, every):
+    size = episodes * (horizon // every) * horizon * 8
+    if size > matrixSizeCap:
+        raise ValueError(
+            f"a {episodes}-episode refresh matrix of {horizon} intervals every {every} "
+            f"needs {size / 2**30:.1f} GiB, over the {matrixSizeCap / 2**30:.0f} GiB cap. "
+            f"Raise `every`, cut the episodes, or raise forecasts.matrixSizeCap"
+        )
+
+
 def refreshMatrix(dayStarts, region="SA1", horizon=config.episode_intervals,
                   every=config.forecast_refresh_intervals, allowPartial=True, source=None):
     """Every refresh run of every episode, laid on the episode's own step grid.
@@ -376,6 +394,7 @@ def refreshMatrix(dayStarts, region="SA1", horizon=config.episode_intervals,
     """
     _requireDivides(horizon, every)
     starts = [pd.Timestamp(day) for day in dayStarts]
+    _requireSize(len(starts), horizon, every)
     grid = np.full((len(starts), horizon // every, horizon), np.nan)
     if not starts:
         return grid

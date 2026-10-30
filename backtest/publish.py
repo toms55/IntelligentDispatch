@@ -43,6 +43,30 @@ def regionDirs(runDir):
     return sorted((merged if merged.is_dir() else Path(runDir)).iterdir())
 
 
+def requireWithinBudget(days, region):
+    """Refuse a region where any episode spent more cycles than its budget allowed.
+
+    The environment clips every discharge to the remaining budget and masks the action
+    once it is gone, so this cannot fire. It runs anyway, because it is the only check
+    that sees the whole run on real prices rather than one episode of a test, and it runs
+    before anything is written or committed. A run with no budget has nothing to check.
+    """
+    if "cycleBudget" not in days or days.cycleBudget.isna().all():
+        return
+    agent = days[days.algo != "oracle"]
+    spent = agent.groupby(["seed", "priceSource", "episodeStart"]).agg(
+        cycles=("agentCycles", "sum"), budget=("cycleBudget", "max"))
+    over = spent[spent.cycles > spent.budget + 1e-9]
+    if len(over):
+        seed, source, episode = over.index[0]
+        worst = over.iloc[0]
+        raise ValueError(
+            f"{region} has {len(over)} episode(s) over the cycle budget; the first is "
+            f"seed {seed}, {source} prices, the episode starting {episode}, which spent "
+            f"{worst.cycles:.6f} of {worst.budget} cycles"
+        )
+
+
 def publish(runDir, root=data.backtestRoot, name=None):
     """Write every finished region of runDir to root/<run>_<region>.csv.
 
@@ -61,6 +85,7 @@ def publish(runDir, root=data.backtestRoot, name=None):
                  if manifest.exists() else None)
         if every is not None:
             days["forecastEvery"] = int(every)
+        requireWithinBudget(days, region)
         target = run.parent / exportName(run.name, region)
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_suffix(".csv.tmp")

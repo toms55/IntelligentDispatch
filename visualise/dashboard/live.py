@@ -39,14 +39,28 @@ defaultSoc = 0.5
 columns = ("settlementdate", "price", "action", "soc", "revenue", "profit")
 
 
+def dailyBudget():
+    """One trading day's pro-rata share of the weekly cycle budget.
+
+    The screen plans one day, not one week, so the week's whole budget would let it spend
+    the lot on a Monday. A seventh of it is the share a day is due. No input box: the
+    screen already states a start state of charge it did not measure either.
+    """
+    return None if config.cycle_budget is None else config.cycle_budget / 7
+
+
 def findCheckpoints(region, root=defaultCheckpoints):
     """Every agent published for `region`, as {label: directory}.
 
     `rl/policies.py` owns the layout. Training publishes its final agent there, and
     this screen reads it, so a machine that only runs the dashboard needs that one
     directory copied across and nothing else.
+
+    `loadable`, not `available`: this screen builds its environment from `config`, so an
+    agent trained under another observation layout cannot be run here, and the dropdown
+    must not offer one.
     """
-    return policies.available(region, root)
+    return policies.loadable(region, root)
 
 
 # The live screen reruns the agent on every NEM dispatch interval, at minutes ending in 0
@@ -119,7 +133,8 @@ def suggest(path, label, region, root=defaultCheckpoints,
         return pd.DataFrame(columns=list(columns))
     agent, scaler, masking = _policy(label, root, region)
     env = BessEnv(path, SchadeDegradation(*battery), horizon=len(path),
-                  initialSoc=initialSoc, calendar=calendar, scaler=scaler)
+                  initialSoc=initialSoc, calendar=calendar, scaler=scaler,
+                  cycleBudget=dailyBudget())
     steps = rolloutWindow(agent, env, 0, masking=masking)["trajectory"]
     bought = np.array([step["bought"] for step in steps])
     sold = np.array([step["sold"] for step in steps])
