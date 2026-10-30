@@ -24,6 +24,8 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
+import config
+
 defaultRoot = Path("trainedPolicies")
 agentFile = "agent.zip"
 scalerFile = "scaler.json"
@@ -67,6 +69,11 @@ def publish(checkpoint, region, algo, trainMode, seed, root=defaultRoot, tag=Non
         "region": region, "algo": algo, "trainMode": trainMode, "seed": int(seed),
         "label": label(algo, trainMode, seed, tag),
         "source": str(checkpoint),
+        # What the weights expect to read, and the budget they were trained under. The
+        # forecast screen builds its environment from config, so an agent of another
+        # layout cannot be loaded into it and must not be offered: see `loadable`.
+        "observationSize": config.observation_size,
+        "cycleBudget": config.cycle_budget,
         "publishedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         **facts,
     }, indent=2, default=str) + "\n")
@@ -84,6 +91,30 @@ def available(region, root=defaultRoot):
         return {}
     return {child.name: child for child in sorted(directory.iterdir())
             if (child / agentFile).exists()}
+
+
+# The observation layout of every agent published before `publish` recorded one: SoC,
+# 58 price features and the trading-day clock. Those agents carry no `observationSize`,
+# and this is what their weights expect.
+unrecordedObservationSize = 60
+
+
+def loadable(region, root=defaultRoot):
+    """The published agents this build can actually run, as {label: directory}.
+
+    An agent is loadable when it was published under the observation layout now in
+    `config`. A 60-slot agent cannot be loaded into a 62-slot environment, and offering
+    it in a dropdown offers a model the screen is certain to fail on.
+
+    An agent published before the layout was recorded states none, so it is read as
+    `unrecordedObservationSize`, which is the layout every one of them was trained under.
+    """
+    out = {}
+    for label, directory in available(region, root).items():
+        size = describe(directory).get("observationSize", unrecordedObservationSize)
+        if int(size) == config.observation_size:
+            out[label] = directory
+    return out
 
 
 def regions(root=defaultRoot):

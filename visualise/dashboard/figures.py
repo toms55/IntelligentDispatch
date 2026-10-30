@@ -97,9 +97,14 @@ def summaryTiles(frame, every=None):
     """
     got = metrics.summarise(frame)
     empty = got["days"] == 0
+    # Once an episode holds several trading days the bound is the episode's, so the share
+    # is only a share of a whole episode. A single-day scope has no bound of its own and
+    # the tile says so rather than printing a ratio that divides by nothing.
+    perDay = metrics.perDayBound(frame)
     head = [
         ("Captured", _percent(got["captured"]), got["captured"],
-         "agent dollars over oracle dollars"),
+         "agent dollars over oracle dollars" if perDay
+         else "agent dollars over the weekly bound"),
         ("Agent profit", _money(got["agentProfit"]), got["agentProfit"],
          "after degradation"),
     ]
@@ -118,7 +123,7 @@ def summaryTiles(frame, every=None):
              "accent": forecastLine if frame.priceSource.iloc[0] == "forecast" else None},
             {"label": "Cap Payout", "value": _money(facts["spikeIntensity"]),
              "raw": facts["spikeIntensity"], "sub": capPayoutKey},
-        ]
+        ] + _cycleTile(frame)
     rows = head + [
         oracle,
         ("Win rate", _percent(got["winRate"]), got["winRate"], "days above zero"),
@@ -128,7 +133,27 @@ def summaryTiles(frame, every=None):
          "in this scope"),
     ]
     return [{"label": label, "value": "no data" if empty else value,
-             "raw": raw, "sub": sub} for label, value, raw, sub in rows]
+             "raw": raw, "sub": sub}
+            for label, value, raw, sub in rows] + _cycleTile(frame)
+
+
+def _cycleTile(frame):
+    """The cycles tile, or nothing at all.
+
+    A run from before the cycle budget records no cycles, and a tile reading "no data"
+    would say less than no tile. Returned as a list so the caller appends it either way,
+    and appended last so the tiles a published run already shows keep their places.
+    """
+    use = metrics.cycleUse(frame)
+    if pd.isna(use["cycles"]):
+        return []
+    return [{
+        "label": "Cycles",
+        "value": f"{use['cycles']:.2f}",
+        "raw": use["cycles"],
+        "sub": ("mean per episode, no budget" if pd.isna(use["budget"])
+                else f"mean per episode of {use['budget']:.1f}"),
+    }]
 
 
 def forecastTiles(frame, initialSoc):

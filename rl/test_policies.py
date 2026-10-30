@@ -3,6 +3,7 @@ import json
 
 import pytest
 
+import config
 from rl import policies
 
 REGION = "NSW1"
@@ -97,3 +98,39 @@ class TestAvailable:
                          root=tmp_path / "out")
         (tmp_path / "out" / "VIC1" / "a2c-cold-s0").mkdir(parents=True)
         assert policies.regions(tmp_path / "out") == [REGION]
+
+
+class TestLoadable:
+    """The forecast screen builds its environment from `config`, so an agent of another
+    observation layout cannot run there and must not be offered."""
+
+    def publishOne(self, tmp_path, seed=0):
+        return policies.publish(checkpoint(tmp_path / "fold51"), REGION, "maskableppo",
+                                "warm", seed, root=tmp_path / "out")
+
+    def test_publish_records_the_layout_and_the_budget(self, tmp_path):
+        directory = self.publishOne(tmp_path)
+        facts = policies.describe(directory)
+        assert facts["observationSize"] == config.observation_size
+        assert facts["cycleBudget"] == config.cycle_budget
+
+    def test_an_agent_of_this_layout_is_loadable(self, tmp_path):
+        self.publishOne(tmp_path)
+        assert list(policies.loadable(REGION, tmp_path / "out")) == ["maskableppo-warm-s0"]
+
+    def test_an_agent_of_another_layout_is_excluded(self, tmp_path):
+        directory = self.publishOne(tmp_path)
+        facts = policies.describe(directory)
+        facts["observationSize"] = config.observation_size + 1
+        (directory / policies.metadataFile).write_text(json.dumps(facts))
+        assert policies.available(REGION, tmp_path / "out")
+        assert policies.loadable(REGION, tmp_path / "out") == {}
+
+    def test_an_agent_from_before_the_record_is_read_as_the_old_layout(
+            self, tmp_path):
+        """Those agents carry no observationSize, and every one of them was trained on
+        the 60-slot vector, so that is what they are taken to expect."""
+        directory = self.publishOne(tmp_path)
+        (directory / policies.metadataFile).unlink()
+        wanted = config.observation_size == policies.unrecordedObservationSize
+        assert bool(policies.loadable(REGION, tmp_path / "out")) == wanted

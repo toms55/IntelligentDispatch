@@ -9,6 +9,8 @@ profit is concentrated in a handful of volatile days: a quiet day where the orac
 $0.02 produces a per-day ratio that is pure noise, and averaging those ratios lets the
 quiet days outvote the days the money is actually in.
 """
+from datetime import timedelta
+
 import pandas as pd
 import pytest
 
@@ -156,3 +158,56 @@ class TestDifference:
     def test_no_matched_folds_is_an_empty_comparison(self):
         got = metrics.difference(frameOf({"trainMode": "warm"}), "trainMode", "warm", "cold")
         assert got.perFold.empty and pd.isna(got.pooled)
+
+
+class TestWeeklyBound:
+    """With a weekly episode the oracle bound sits on the episode's first day and is NaN
+    on the other six. Pandas skips NaN, so a whole-episode scope counts it once."""
+
+    def week(self, start=DAY, bound=100.0, profit=10.0):
+        out = []
+        for index in range(7):
+            day = start + timedelta(days=index)
+            out.append(rows(testDay=day, episodeStart=start, agentProfit=profit,
+                             agentCycles=1.0, highVol=bool(index % 2),
+                             oracleDualBound=bound if index == 0 else float("nan")))
+        return pd.DataFrame(out)
+
+    def test_the_bound_is_counted_once_over_the_week(self):
+        got = metrics.summarise(self.week())
+        assert got["days"] == 7
+        assert got["agentProfit"] == pytest.approx(70.0)
+        assert got["oracleProfit"] == pytest.approx(100.0)
+        assert got["captured"] == pytest.approx(0.7)
+
+    def test_a_single_day_scope_has_no_capture(self):
+        """One day of a week carries no bound of its own, so there is nothing to divide
+        by and the share must read as missing rather than as zero or as infinity."""
+        week = self.week()
+        quiet = week[week.testDay == DAY + timedelta(days=1)]
+        got = metrics.summarise(quiet)
+        assert got["agentProfit"] == pytest.approx(10.0)
+        assert pd.isna(got["oracleProfit"])
+        assert pd.isna(got["captured"])
+
+    def test_the_volatility_buckets_report_dollars_without_a_share(self):
+        got = metrics.byBucket(self.week())
+        for high in (True, False):
+            assert got[high]["agentProfit"] > 0
+            assert pd.isna(got[high]["captured"])
+            assert pd.isna(got[high]["oracleProfit"])
+
+    def test_a_daily_episode_still_reports_its_share_per_bucket(self):
+        """The old behaviour, which every published run must keep."""
+        out = []
+        for index in range(4):
+            day = DAY + timedelta(days=index)
+            out.append(rows(testDay=day, episodeStart=day, agentProfit=10.0,
+                             oracleDualBound=20.0, highVol=bool(index % 2)))
+        got = metrics.byBucket(pd.DataFrame(out))
+        for high in (True, False):
+            assert got[high]["captured"] == pytest.approx(0.5)
+
+    def test_a_run_without_the_column_is_treated_as_per_day(self):
+        frame = self.week()
+        assert metrics.perDayBound(frame.drop(columns=["episodeStart"]))

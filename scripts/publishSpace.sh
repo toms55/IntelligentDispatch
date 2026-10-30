@@ -14,12 +14,15 @@
 #   1. the packages the two screens import
 #   2. the runs named by --results: the day rows the backtest screen replays, and their
 #      actions exports, which hold the dispatch it draws
-#   3. `trainedPolicies/`: one published agent per region, for the forecast screen
+#   3. `trainedPolicies/`: the agents the forecast screen can load
 #   4. the Dockerfile, the requirements and the Space card
 #
-# Both 2 and 3 carry one seed per region, the one `config.best_seed` names. Every seed
-# stays here, because the thesis reports the spread over seeds. The Space shows the one,
-# so a reader sees one dispatch per region rather than five that differ only by seed.
+# The two screens stage differently. Stage 2 carries one seed per region, the one
+# `config.best_seed` names: the backtest screen draws one dispatch per region, not five
+# that differ only by seed, and the thesis reports the seed spread from the full set that
+# stays here, not from the Space. Stage 3 carries every seed of POLICY_SPECS, because the
+# forecast screen runs an agent live rather than replaying a row, and its dropdown is the
+# only way to compare seeds, algorithms and observation variants against each other.
 #
 # Name a run once per run to stage several:
 #
@@ -38,25 +41,38 @@ set -euo pipefail
 # for a test Space. Every caller reads it from here, so the name is in one place.
 SPACE=${DASHBOARD_SPACE:-toms55/IntelligentDispatch}
 # The runs to stage, in order. The first is the one the Space opens. --results replaces
-# this default on its first use and appends on every use after it.
+# this default on its first use and appends on every use after it. Every entry here
+# states its initial SoC and its experimental setting in the name; a run that does not
+# (the pre-SoC-fix `rolling2023_profit*` family, scored at the old `initial_soc=0.5`)
+# stays off the Space so the two scoring conventions never sit side by side.
 RUNS=(
-  results/backtestResults/rolling2023_profit_fc5m_allseeds
   results/backtestResults/rolling2023_start_at_0_SoC_five_min_refresh
+  results/backtestResults/rolling2023_dqn_start_at_0_SoC_five_min_refresh
   results/backtestResults/rolling2023_price_scale_start_at_0_SoC_five_min_refresh
   results/backtestResults/rolling2023_price_history_start_at_0_SoC_five_min_refresh
   results/backtestResults/rolling2023_weekday_season_start_at_0_SoC_five_min_refresh
-  results/backtestResults/rolling2023_dqn_start_at_0_SoC_five_min_refresh
 )
 runsGiven=no
 # The run's actions exports stay in results/actions/, which git tracks; see
 # backtest/publish.py.
 ACTIONS=results/actions
 # The agents come from the published layout, not from a training output directory, so the
-# Space runs the same bytes this machine's dashboard runs. `config.best_seed` picks which
-# one per region.
+# Space runs the same bytes this machine's dashboard runs.
 POLICIES=trainedPolicies
-ALGO=maskableppo
 TRAIN_MODE=warm
+# Every (algo, tag) pair of the experiment family staged above that the live forecast
+# screen can actually run, read from each agent's `policy.json:source`, which names the
+# run it was trained for. The three observation and price-transform variants are left
+# out, each for its own reason the live code on this branch cannot load:
+#   - price_history and weekday_season trained on a wider observation (108 slots) than
+#     `rl/features.py` builds here (60 slots), so `live.suggest` raises on them.
+#   - price_scale_at_5's scaler.json carries a "scale" field `PriceScaler.__init__`
+#     here does not accept.
+# Their backtest rows stay staged above; only the live rollout is the problem.
+POLICY_SPECS=(
+  "maskableppo:start_at_0_SoC"
+  "dqn:start_at_0_SoC"
+)
 REGION=NSW1
 STAGE=runs/space
 PUSH=no
@@ -70,7 +86,6 @@ while [[ $# -gt 0 ]]; do
     --results)    if [[ "$runsGiven" == no ]]; then RUNS=("$2"); runsGiven=yes;
                   else RUNS+=("$2"); fi; shift 2 ;;
     --policies)   POLICIES="$2"; shift 2 ;;
-    --algo)       ALGO="$2"; shift 2 ;;
     --train-mode) TRAIN_MODE="$2"; shift 2 ;;
     --region)     REGION="$2"; shift 2 ;;
     --stage)      STAGE="$2"; shift 2 ;;
@@ -296,32 +311,38 @@ printf '\nENV DASHBOARD_RESULTS=%s\n' "$DEFAULT_RUN" >> "$STAGE/Dockerfile"
 echo "$staged run(s), $(du -sh "$STAGE/results" | cut -f1), opening on $(basename "$DEFAULT_RUN")"
 
 # -------------------------------------------------------------- 3. the agents
-# One agent per region, the seed `config.best_seed` names, so every region in the
-# dropdown can run the forecast screen. This machine keeps every seed under $POLICIES
-# for the thesis, and the Space gets the one, matching the rows stage 2 staged.
-# `rl/policies.py` is the only code that writes this layout, so the publishing goes
-# through it rather than through cp.
-say "3/5 agents from $POLICIES, the best seed per region"
-$PYTHON - "$POLICIES" "$STAGE/trainedPolicies" "$ALGO" "$TRAIN_MODE" <<'PYTHON'
+# Every seed of every (algo, tag) in POLICY_SPECS, for every region, so the forecast
+# screen's dropdown offers the same models the thesis compares. This machine keeps the
+# same agents under $POLICIES, and `rl/policies.py` is the only code that writes this
+# layout, so the publishing goes through it rather than through cp.
+say "3/5 agents from $POLICIES, every seed of ${#POLICY_SPECS[@]} (algo, tag) pair(s)"
+$PYTHON - "$POLICIES" "$STAGE/trainedPolicies" "$TRAIN_MODE" "${POLICY_SPECS[@]}" <<'PYTHON'
 import sys
-from pathlib import Path
 
-import config
 from rl import policies
 
-source, root, algo, trainMode = sys.argv[1:5]
-for region, seed in sorted(config.best_seed.items()):
-    label = policies.label(algo, trainMode, seed)
-    directory = policies.available(region, source).get(label)
-    if directory is None:
-        raise SystemExit(
-            f"{source}/{region} holds no {label}, so the forecast screen would offer "
-            f"{region} a seed the backtest rows do not show. Publish it with "
-            f"`python -m cli publish`, or correct config.best_seed."
-        )
-    published = policies.publish(directory, region, algo, trainMode, seed, root=root,
-                                 publishedBy="scripts/publishSpace.sh")
-    print(f"  {region}: {published.name}")
+source, root, trainMode, *specs = sys.argv[1:]
+seeds = (0, 1, 2, 3, 4)
+staged = 0
+for spec in specs:
+    algo, tag = spec.split(":", 1)
+    for region in policies.regions(source):
+        found = policies.available(region, source)
+        for seed in seeds:
+            label = policies.label(algo, trainMode, seed, tag)
+            directory = found.get(label)
+            if directory is None:
+                print(f"  skip {region}/{label}: not published at {source}")
+                continue
+            published = policies.publish(directory, region, algo, trainMode, seed,
+                                          root=root, tag=tag,
+                                          publishedBy="scripts/publishSpace.sh")
+            print(f"  {region}: {published.name}")
+            staged += 1
+if staged == 0:
+    raise SystemExit(f"{source} holds none of POLICY_SPECS, so the forecast screen "
+                      "would offer nothing. Check POLICY_SPECS against the published "
+                      "labels, or publish them with `python -m cli publish`.")
 PYTHON
 
 # --------------------------------------------------------------- 4. the check
@@ -399,7 +420,7 @@ fi
   git lfs install --local >/dev/null
   git add -A
   git -c user.email=publish@localhost -c user.name=publish commit -q \
-    -m "dashboard: $(basename "$DEFAULT_RUN") of ${#RUNS[@]} run(s), best seed per region"
+    -m "dashboard: $(basename "$DEFAULT_RUN") of ${#RUNS[@]} run(s), best seed per region, every seed on the forecast screen"
   git remote add space "https://huggingface.co/spaces/$SPACE"
   if [[ "$PUSH" == yes ]]; then
     echo "pushing to https://huggingface.co/spaces/$SPACE"

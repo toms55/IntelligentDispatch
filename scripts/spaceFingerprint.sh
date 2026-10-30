@@ -22,17 +22,20 @@ set -euo pipefail
 
 # The runs the upload stages, in the same order and with the same default as
 # publishSpace.sh. $RUNS overrides it, space separated.
-defaultRuns="results/backtestResults/rolling2023_profit_fc5m_allseeds"
-defaultRuns+=" results/backtestResults/rolling2023_start_at_0_SoC_five_min_refresh"
+defaultRuns="results/backtestResults/rolling2023_start_at_0_SoC_five_min_refresh"
+defaultRuns+=" results/backtestResults/rolling2023_dqn_start_at_0_SoC_five_min_refresh"
 defaultRuns+=" results/backtestResults/rolling2023_price_scale_start_at_0_SoC_five_min_refresh"
 defaultRuns+=" results/backtestResults/rolling2023_price_history_start_at_0_SoC_five_min_refresh"
 defaultRuns+=" results/backtestResults/rolling2023_weekday_season_start_at_0_SoC_five_min_refresh"
-defaultRuns+=" results/backtestResults/rolling2023_dqn_start_at_0_SoC_five_min_refresh"
 read -r -a RUNS <<< "${RUNS:-$defaultRuns}"
 ACTIONS=${ACTIONS:-results/actions}
 POLICIES=${POLICIES:-trainedPolicies}
-ALGO=${ALGO:-maskableppo}
 TRAIN_MODE=${TRAIN_MODE:-warm}
+# The (algo, tag) pairs the upload stages, in the same order and with the same default
+# as publishSpace.sh's POLICY_SPECS. $POLICY_SPECS overrides it, space separated.
+defaultSpecs="maskableppo:start_at_0_SoC"
+defaultSpecs+=" dqn:start_at_0_SoC"
+read -r -a POLICY_SPECS <<< "${POLICY_SPECS:-$defaultSpecs}"
 
 # The record of the last publish. It sits in the git directory, because it is state of
 # this one clone and not content of the repository. `--git-common-dir` keeps one record
@@ -53,10 +56,10 @@ describe() {
   for item in config.py utils data degradation rl backtest visualise deploy; do
     git rev-parse "HEAD:$item"
   done
-  # Stage 2 stages each named run's CSV and its actions export, one per region, and
-  # stage 3 the best seed's weights. The sources are the whole files, not the filtered
-  # rows, so a change to any seed of a staged run moves this. That is the safe
-  # direction: it republishes a little too often, never too rarely.
+  # Stage 2 stages each named run's CSV and its actions export, one per region. The
+  # sources are the whole files, not the filtered rows, so a change to any seed of a
+  # staged run moves this. That is the safe direction: it republishes a little too
+  # often, never too rarely.
   for results in "${RUNS[@]}"; do
     run=$(basename "$results")
     # The run's CSV, and its export as Parquet. The live CSV a backtest appends to sits
@@ -65,11 +68,16 @@ describe() {
       find "$ACTIONS" -maxdepth 1 -type f -name "${run}_*.parquet"
     } 2>/dev/null | grep -E "/${run}_[A-Z]+[0-9]\.(csv|parquet)$" | sort | describe || true
   done
-  # Which agent each region stages comes from `config.best_seed`, whose tree hash is
-  # already above, so only the weights themselves are described here. The other seeds
-  # stay out: republishing one must not look like a change to the Space.
-  while read -r region seed; do
-    directory="$POLICIES/$region/$ALGO-$TRAIN_MODE-s$seed"
-    if [[ -d "$directory" ]]; then find "$directory" -type f | sort | describe; fi
-  done < <(bash "$(dirname "$0")/bestSeeds.sh")
+  # Stage 3 of publishSpace.sh stages every seed of every (algo, tag) pair in
+  # POLICY_SPECS, for every region, so the same set is described here.
+  for region in "$POLICIES"/*/; do
+    region=$(basename "$region")
+    for spec in "${POLICY_SPECS[@]}"; do
+      algo=${spec%%:*}; tag=${spec#*:}
+      for seed in 0 1 2 3 4; do
+        directory="$POLICIES/$region/$algo-$TRAIN_MODE-$tag-s$seed"
+        if [[ -d "$directory" ]]; then find "$directory" -type f | sort | describe; fi
+      done
+    done
+  done
 } | sha256sum | cut -d' ' -f1

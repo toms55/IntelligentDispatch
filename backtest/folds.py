@@ -35,6 +35,33 @@ class Fold:
         count = (self.testEnd - self.testStart) // oneDay
         return [self.testStart + step * oneDay for step in range(count)]
 
+    def testEpisodes(self, horizon=config.episode_intervals):
+        """The 04:00 start of each episode in the test window.
+
+        `testDays` is the reporting grain and this is the scoring grain. They are the same
+        list while an episode is one trading day. A weekly episode carries the state of
+        charge across the days inside it, so the window it is scored on is the week.
+        """
+        length = episodeLength(horizon)
+        if (self.testEnd - self.testStart) % length:
+            raise ValueError(
+                f"the test window {self.testStart:%Y-%m-%d} to {self.testEnd:%Y-%m-%d} is "
+                f"not a whole number of {horizon}-interval episodes"
+            )
+        count = (self.testEnd - self.testStart) // length
+        return [self.testStart + step * length for step in range(count)]
+
+
+def episodeLength(horizon=config.episode_intervals):
+    """One episode as a timedelta. A whole number of trading days, because AEMO's
+    boundary is 04:00 and an episode must open on one."""
+    if horizon % config.observation_intervals:
+        raise ValueError(
+            f"a {horizon}-interval episode is not a whole number of "
+            f"{config.observation_intervals}-interval trading days"
+        )
+    return horizon * nem_interval
+
 
 def requireTradingDayStart(moment, label):
     if moment.time() != tradingDayStart:
@@ -142,3 +169,19 @@ def dayOffset(spanStart, moment):
             f"{moment} is not a whole number of trading days after {spanStart}"
         )
     return delta // oneDay
+
+
+def episodeOffset(spanStart, moment, horizon=config.episode_intervals):
+    """Whole episodes from `spanStart` to `moment`, for indexing span-wide records.
+
+    The oracle is solved one record per episode, so this is what finds a fold's slice of
+    it. `dayOffset` indexes the per-day reporting grain and stays as it is.
+    """
+    length = episodeLength(horizon)
+    delta = moment - spanStart
+    if delta % length:
+        raise ValueError(
+            f"{moment} is not a whole number of {horizon}-interval episodes after "
+            f"{spanStart}"
+        )
+    return delta // length
