@@ -834,3 +834,25 @@ class TestTerminalValue:
                         terminalPrice=100.0)
         assert efcOf(both, paper) <= 0.5 + 1e-9
         assert both.profit <= both.dualBound + 1e-9
+
+
+class TestWhichSolverPricesTheBudget:
+    """Only the priced search has a shadow price to report. The MILP states the budget as
+    an exact row, so it reports none, and "none" must not read as "nothing"."""
+
+    def test_the_milp_reports_no_cycle_price(self, paper):
+        milp = solve(MIXED_PRICES[:8], paper, initialSoc=config.initial_soc,
+                     calendar=False, discretePower=True, cycles=0.05)
+        assert milp.cyclesUsed > 0.0
+        assert milp.cyclePrice is None
+
+    def test_the_dp_reports_the_rent_it_settled_on(self, paper):
+        capped = dp.solve(MIXED_PRICES, paper, initialSoc=config.initial_soc,
+                          calendar=False, cycles=0.05)
+        assert capped.cyclePrice > 0.0
+
+    def test_an_unbinding_budget_prices_nothing_because_it_searched_for_nothing(self,
+                                                                                paper):
+        capped = dp.solve(MIXED_PRICES, paper, initialSoc=config.initial_soc,
+                          calendar=False, cycles=100.0)
+        assert capped.cyclePrice == 0.0
