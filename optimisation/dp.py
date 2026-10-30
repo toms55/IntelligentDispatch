@@ -21,6 +21,7 @@ the same arithmetic. `optimisation/test_dp.py` holds this module to the MILP.
 """
 import numpy as np
 
+import config
 from optimisation.lp import Schedule
 from utils import nem_interval_hours
 
@@ -104,6 +105,9 @@ class _StateSpace:
                 self.calendar[action][i] = model.cost(qCal)
 
         self.throughput = self.sold - self.bought
+        # Energy removed cell-side, which is what an equivalent full cycle is measured in:
+        # sum(cellSide) / MWh is the EFC a path spends.
+        self.cellSide = self.sold / model.dischargeEfficiency
         self.reachable = masks
 
     @staticmethod
@@ -125,20 +129,29 @@ def stateSpace(model, initialSoc, dtHours, horizon):
 
 
 def valueFunction(prices, model, initialSoc=0.5, dtHours=nem_interval_hours,
-                  calendar=True, space=None):
+                  calendar=True, space=None, cyclePrice=0.0, terminalPrice=0.0):
     """The optimal value of every state at every interval, and the action that gets it.
 
     Returns (value, action, space). `value[t][i]` is the most profit obtainable over
     intervals t to the end, starting that interval with `space.energy[i]` in the pack.
-    `value[horizon]` is all zeros. This is the oracle evaluated at every state, not only
-    along one path, so it costs the same as solving the one path.
+    This is the oracle evaluated at every state, not only along one path, so it costs the
+    same as solving the one path.
+
+    `cyclePrice` charges an extra `cyclePrice` dollars per MWh removed cell-side. It is
+    the rent `solve` bisects on to meet a cycle budget, and it is not a real cost, so a
+    value read out of here is a value after rent, not a profit. `terminalPrice` values
+    whatever the pack still holds at the close, so `value[horizon]` stops being zeros.
     """
     space = space or stateSpace(model, initialSoc, dtHours, len(prices))
     horizon = len(prices)
     degradation = space.cycle + space.calendar if calendar else space.cycle
+    if cyclePrice:
+        degradation = degradation + cyclePrice * space.cellSide
 
     value = np.zeros((horizon + 1, len(space.energy)), dtype=float)
-    action = np.zeros((horizon, len(space.energy)), dtype=np.int64)
+    if terminalPrice:
+        value[horizon] = [model.terminalValue(e, terminalPrice) for e in space.energy]
+    action = np.zeros((horizon, len(space.energy)), dtype=np.int8)
     for t in range(horizon - 1, -1, -1):
         candidates = (prices[t] * space.throughput - degradation
                       + value[t + 1][space.successor])
@@ -147,19 +160,18 @@ def valueFunction(prices, model, initialSoc=0.5, dtHours=nem_interval_hours,
     return value, action, space
 
 
-def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=True):
-    """The exact discrete-power oracle, as a `Schedule`.
 
-    Drop-in for `optimisation.lp.solve(..., discretePower=True)`. `status` is always
-    "Optimal", `mipGap` is 0.0, and `dualBound` is the profit, because the answer is
-    exact.
+def _rollout(prices, model, action, space, initialSoc, calendar, terminalPrice):
+    """Walk the chosen actions forward and score them with the true costs.
+
+    The rent reaches nothing here. Every figure comes from `space.cycle` and
+    `space.calendar`, so a rented solve still reports a real profit, and
+    `cyclesUsed` is the equivalent full cycles the walk actually spent.
     """
-    prices = np.asarray(prices, dtype=float)
-    _, action, space = valueFunction(prices, model, initialSoc, dtHours, calendar)
-
     index = 0  # _StateSpace numbers the starting energy first.
     soc, bought, sold = [], [], []
     revenuePerInterval, cyclePerInterval, calendarPerInterval = [], [], []
+    removed = 0.0
     for t in range(len(prices)):
         chosen = int(action[t][index])
         bought.append(float(space.bought[chosen][index]))
@@ -169,6 +181,7 @@ def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=Tr
         calendarPerInterval.append(
             float(space.calendar[chosen][index]) if calendar else 0.0
         )
+        removed += float(space.cellSide[chosen][index])
         index = int(space.successor[chosen][index])
         soc.append(float(space.energy[index] / model.MWh))
 
@@ -179,14 +192,17 @@ def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=Tr
         r - d for r, d in zip(revenuePerInterval, degradationPerInterval)
     ]
     revenue = sum(revenuePerInterval)
-    profit = sum(profitPerInterval)
+    degradationCost = sum(degradationPerInterval)
+    terminal = (model.terminalValue(float(space.energy[index]), terminalPrice)
+                if terminalPrice else 0.0)
+    profit = sum(profitPerInterval) + terminal
     return Schedule(
         initialSoc,
         soc,
         bought,
         sold,
         revenue,
-        revenue - profit,
+        degradationCost,
         profit,
         revenuePerInterval,
         cyclePerInterval,
@@ -196,4 +212,69 @@ def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=Tr
         "Optimal",
         0.0,
         profit,
+        0.0,
+        removed / model.MWh,
+        terminal,
     )
+
+
+def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=True,
+          cycles=None, terminalPrice=0.0, dualGap=config.cycle_dual_gap):
+    """The exact discrete-power oracle, as a `Schedule`.
+
+    Drop-in for `optimisation.lp.solve(..., discretePower=True)`. With no cycle budget
+    `status` is "Optimal", `mipGap` is 0.0 and `dualBound` is the profit, because the
+    answer is exact.
+
+    `cycles` caps the equivalent full cycles the schedule may spend. A hard cap would
+    need a second state dimension, and cumulative discharge is continuous, so instead
+    every MWh removed cell-side pays rent and the rent is bisected until usage lands on
+    the budget. Two numbers come out of that, and both are honest: `profit` is a schedule
+    inside the budget, so it is achievable, and `dualBound` is
+    min over rents of (value after rent + rent * budget), which no legal schedule can
+    beat. `mipGap` is the relative width between them, and `cyclePrice` is the rent that
+    bought the incumbent, in $ per MWh cell-side. The two never meet exactly: the battery
+    discharges in whole intervals, so realised usage steps and no rent lands on the
+    budget.
+    """
+    prices = np.asarray(prices, dtype=float)
+    space = stateSpace(model, initialSoc, dtHours, len(prices))
+
+    def at(cyclePrice):
+        value, action, _ = valueFunction(prices, model, initialSoc, dtHours, calendar,
+                                         space=space, cyclePrice=cyclePrice,
+                                         terminalPrice=terminalPrice)
+        schedule = _rollout(prices, model, action, space, initialSoc, calendar,
+                            terminalPrice)
+        return schedule, float(value[0][0])
+
+    free, freeValue = at(0.0)
+    if cycles is None or free.cyclesUsed <= cycles + 1e-9:
+        return free
+
+    budget = cycles * model.MWh
+    # Above this rent a discharge can never pay for itself, so usage is zero and the
+    # bracket's upper end is feasible by construction.
+    ceiling = max(float(prices.max()), 0.0) * model.dischargeEfficiency + 1.0
+    best, rented = at(ceiling)
+    bestPrice = ceiling
+    bound = min(freeValue, rented + ceiling * budget)
+
+    lo, hi = 0.0, ceiling
+    for _ in range(40):
+        mid = 0.5 * (lo + hi)
+        schedule, rented = at(mid)
+        bound = min(bound, rented + mid * budget)
+        if schedule.cyclesUsed <= cycles + 1e-9:
+            hi = mid
+            if schedule.profit > best.profit:
+                best, bestPrice = schedule, mid
+        else:
+            lo = mid
+        if bound - best.profit <= abs(bound) * dualGap or hi - lo <= 1e-12:
+            break
+
+    best.cyclePrice = bestPrice
+    best.dualBound = bound
+    best.mipGap = (bound - best.profit) / abs(bound) if bound else 0.0
+    return best

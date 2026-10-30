@@ -37,8 +37,8 @@ class BessEnv(gymnasium.Env):
     def __init__(self, prices, model, baseline=None, horizon=config.episode_intervals,
                  initialSoc=config.initial_soc, dtHours=nem_interval_hours,
                  calendar=True, rewardScale=config.reward_scale, shuffle=False,
-                 forecasts=None, scaler=None,
-                 invalidPenalty=config.invalid_action_penalty):
+                 forecasts=None, scaler=None, cycleBudget=config.cycle_budget,
+                 terminalPrice=0.0, invalidPenalty=config.invalid_action_penalty):
         self.prices = prices.to_numpy(dtype=float)
         self.timestamps = prices.index
         # One cap for the whole run, from the last timestamp. Pass `scaler` to reuse the
@@ -60,6 +60,15 @@ class BessEnv(gymnasium.Env):
         # agent reads the latest published by each step. Settlement always uses the
         # realised price regardless.
         self.forecasts = forecasts
+        # The most equivalent full cycles one episode may spend, standing in for a cycle
+        # warranty. `None` is no budget, which is the environment every published agent
+        # trained in. The budget is enforced by the clip in `_applyAction`, not by the
+        # mask, so it binds under DQN and A2C as well, exactly as the SoC boundary does.
+        self.cycleBudget = cycleBudget
+        self.budgetMWh = None if cycleBudget is None else cycleBudget * model.MWh
+        # What the pack still holds at the close is worth. Zero is the old environment,
+        # where the last interval's best move is always to sell whatever is left.
+        self.terminalPrice = terminalPrice
 
         self.windows = list(range(0, len(self.prices) - horizon + 1, horizon))
         if not self.windows:
@@ -78,6 +87,7 @@ class BessEnv(gymnasium.Env):
         self.windowIndex = 0
         self.stepIndex = 0
         self.stored = initialSoc * model.MWh
+        self.spentMWh = 0.0
 
     # --- Gymnasium API -------------------------------------------------------
 
@@ -93,8 +103,9 @@ class BessEnv(gymnasium.Env):
             self.windowCursor += 1
         self.stepIndex = 0
         self.stored = self.initialSoc * self.model.MWh
-        self.totals = {"revenue": 0.0, "degradation": 0.0, "profit": 0.0,
-                       "baseline": 0.0, "outOfBounds": 0}
+        self.spentMWh = 0.0
+        self.totals = {"revenue": 0.0, "degradation": 0.0, "profit": 0.0, "baseline": 0.0,
+                       "outOfBounds": 0, "cycles": 0.0, "terminalValue": 0.0}
         return self._observation(), {}
 
     def step(self, action):
@@ -110,19 +121,26 @@ class BessEnv(gymnasium.Env):
         qCd, qCal, degradationCost = self._degradation(socPrev, socNew)
         profit = revenue - degradationCost
         baseline = self._baselineAt(self.stepIndex)
-        # The penalty is the one term in the reward that is not profit. It stays out of
-        # `totals` and out of every info key below, so the figures the backtest reports
-        # remain raw dollars and the oracle keeps bounding the agent.
-        reward = profit / self.rewardScale - self.invalidPenalty * outOfBounds
-
-        self.totals["revenue"] += revenue
-        self.totals["degradation"] += degradationCost
-        self.totals["profit"] += profit
-        self.totals["baseline"] += baseline
-        self.totals["outOfBounds"] += outOfBounds
 
         self.stepIndex += 1
         truncated = self.stepIndex >= self.horizon
+        # Paid once, on the step that closes the episode, so the agent is rewarded for
+        # holding stock rather than dumping it into the last interval.
+        terminal = (self.model.terminalValue(self.stored, self.terminalPrice)
+                    if truncated and self.terminalPrice else 0.0)
+        # The penalty is the one term in the reward that is not profit. It stays out of
+        # `totals` and out of every info key below, so the figures the backtest reports
+        # remain raw dollars and the oracle keeps bounding the agent.
+        reward = (profit + terminal) / self.rewardScale - self.invalidPenalty * outOfBounds
+
+        self.totals["revenue"] += revenue
+        self.totals["degradation"] += degradationCost
+        self.totals["profit"] += profit + terminal
+        self.totals["baseline"] += baseline
+        self.totals["outOfBounds"] += outOfBounds
+        self.totals["cycles"] = self.spentMWh / self.model.MWh
+        self.totals["terminalValue"] += terminal
+
         info = {
             "price": price,
             "soc": socNew,
@@ -138,6 +156,8 @@ class BessEnv(gymnasium.Env):
             # moves nothing and so reads as idle anywhere the energy is the record.
             "attemptedAction": action,
             "outOfBounds": outOfBounds,
+            "cycles": self.totals["cycles"],
+            "terminalValue": terminal,
         }
         if truncated:
             info["episode_totals"] = dict(self.totals)
@@ -153,7 +173,7 @@ class BessEnv(gymnasium.Env):
             [
                 self._chargeHeadroom() > self.tolerance,
                 True,
-                self._dischargeHeadroom() > self.tolerance,
+                self._dischargeRoom() > self.tolerance,
             ],
             dtype=bool,
         )
@@ -169,6 +189,21 @@ class BessEnv(gymnasium.Env):
     def _dischargeHeadroom(self):
         return self.stored * self.model.dischargeEfficiency
 
+    def _budgetHeadroom(self):
+        """Energy, cell-side, the cycle budget still allows. Unbounded with no budget."""
+        if self.budgetMWh is None:
+            return float("inf")
+        return self.budgetMWh - self.spentMWh
+
+    def _dischargeRoom(self):
+        """The most a discharge can sell, meter-side, before the rate limit.
+
+        Both clips in one place, so the mask and the move cannot disagree: the SoC floor
+        and the cycle budget, the budget converted to meter-side energy.
+        """
+        return min(self._dischargeHeadroom(),
+                   self._budgetHeadroom() * self.model.dischargeEfficiency)
+
     def _applyAction(self, action):
         """Move energy, clipped to what fits. Returns meter-side (bought, sold)."""
         if action == CHARGE:
@@ -177,9 +212,10 @@ class BessEnv(gymnasium.Env):
             self.stored = min(self.stored, self.model.MWh)
             return boughtMWh, 0.0
         if action == DISCHARGE:
-            soldMWh = min(self.fullStep, max(0.0, self._dischargeHeadroom()))
-            self.stored -= soldMWh / self.model.dischargeEfficiency
-            self.stored = max(self.stored, 0.0)
+            soldMWh = min(self.fullStep, max(0.0, self._dischargeRoom()))
+            removed = soldMWh / self.model.dischargeEfficiency
+            self.stored = max(self.stored - removed, 0.0)
+            self.spentMWh += removed
             return 0.0, soldMWh
         return 0.0, 0.0
 
@@ -196,7 +232,12 @@ class BessEnv(gymnasium.Env):
 
     def _observation(self):
         start = self.windows[self.windowIndex]
-        end = start + self.horizon
+        # AEMO publishes no RRP past the end of the trading day, so the agent reads one
+        # trading day ahead whatever the episode length, or a realised-price agent trains
+        # on information its forecast-priced twin can never have. An episode opens at
+        # 04:00, so the boundary is a whole number of trading days into it.
+        day = config.observation_intervals
+        horizonEnd = min(self.horizon, (self.stepIndex // day + 1) * day)
         # The episode is over once stepIndex reaches the horizon, and that observation
         # carries no prices, so its clock slot reads zero rather than the next day's.
         remaining = (
@@ -205,9 +246,9 @@ class BessEnv(gymnasium.Env):
         )
         return features.observation(
             self.stored / self.model.MWh,
-            self._observedPrices(start, end),
+            self._observedPrices(start, start + self.horizon),
             self.stepIndex,
-            self.horizon,
+            horizonEnd,
             self.scaler,
             remaining,
             self._cyclesLeft(),
@@ -215,8 +256,16 @@ class BessEnv(gymnasium.Env):
         )
 
     def _cyclesLeft(self):
-        """The unspent fraction of the cycle budget. 1.0 while no budget is in force."""
-        return 1.0
+        """The unspent fraction of the cycle budget. 1.0 while no budget is in force.
+
+        A fraction rather than the cycles themselves, so the slot stays in [0, 1] with
+        every other fraction in the vector.
+        """
+        if self.budgetMWh is None:
+            return 1.0
+        if self.budgetMWh == 0.0:
+            return 0.0
+        return max(0.0, self._budgetHeadroom() / self.budgetMWh)
 
     def _observedPrices(self, start, end):
         """The price path the agent reads. Slots before stepIndex are zeroed rather than

@@ -85,6 +85,24 @@ class SchadeDegradation:
         "Eq. 10 convert capacity loss fraction to $"
         return self.replacementCost * self.MWh * Q
 
+    def terminalValue(self, stored: float, price: float) -> float:
+        """What energy still in the pack at the episode close is worth, in $.
+
+        Not from the paper. An episode is a finite horizon, and with nothing valuing the
+        closing stock the last interval's best move is always to sell whatever is left at
+        whatever it pays. The oracle and the environment both do it, so it is consistent
+        rather than unfair, but over a week-long episode it is a Sunday-night dump.
+
+        The value is what selling the stock would net: the energy it would deliver at
+        `price`, less the cycling cost of releasing it. `price` is a pinned modelling
+        constant, not a forecast. Set it too high and the battery hoards instead of
+        trading, so it belongs below what the market typically pays.
+
+        `stored` is cell-side, as everywhere in this module.
+        """
+        delivered = price * stored * self.dischargeEfficiency
+        return delivered - self.cost(self.totalCycleDegradation(stored / self.MWh, 0.0))
+
     def step(self, socPrev: float, socNew: float, dt_hours: float) -> tuple:
         "One interval of degradation: (cycling fraction, calendar fraction, $)."
         q_cd = self.totalCycleDegradation(socPrev, socNew)

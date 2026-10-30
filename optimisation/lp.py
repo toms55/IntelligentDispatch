@@ -37,6 +37,14 @@ class Schedule:
     # Use this as the oracle bound, never `profit`: a gap/time-limited solve returns an
     # incumbent that can sit below the true optimum.
     dualBound: float = None
+    # The cycle budget's shadow price, in $ per MWh removed cell-side, and the equivalent
+    # full cycles the schedule spent. cyclePrice is 0.0 when no budget binds. It is a
+    # search device and reaches none of the figures above: see optimisation/dp.py.
+    cyclePrice: float = None
+    cyclesUsed: float = None
+    # What the closing stock is worth, already included in `profit` but reported apart
+    # from it so it is never mistaken for trading revenue.
+    terminalValue: float = 0.0
 
 
 def fillBottomUp(soc, segmentCapacities):
@@ -67,11 +75,17 @@ def defaultSolver(verbose=False, timeLimit=None, gap=None, threads=None, options
 
 def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=True,
           solver=None, discretePower=False, timeLimit=None, gap=None, threads=None,
-          options=None):
+          options=None, cycles=None, terminalPrice=0.0):
     """Best possible dispatch against a known price series.
 
     prices: $/MWh per interval. model: a SchadeDegradation. discretePower restricts
     every interval to full rate or nothing. options are extra HiGHS settings.
+
+    `cycles` caps the equivalent full cycles the schedule may spend, as one exact
+    constraint row. `terminalPrice` values whatever the pack still holds at the close.
+    Both are here to cross-check `optimisation.dp` on short horizons. Do not wire this
+    path into the backtest: the cycle row couples every interval, and a 288-interval
+    discrete solve already took 1555 s to prove.
     """
     intervals = range(len(prices))
     segmentCapacity = model.segmentCapacities
@@ -119,6 +133,20 @@ def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=Tr
             problem += totalBought <= energyLimit
             problem += totalSold <= energyLimit
 
+    if cycles is not None:
+        problem += pulp.lpSum(
+            (1 / dischargeEff) * sold[s][t] for s in segments for t in intervals
+        ) <= cycles * model.MWh
+
+    # What the closing stock is worth: the energy it would deliver at `terminalPrice`,
+    # less the cost of releasing it. segmentCost is already $ per MWh sold out of each
+    # segment, so the release cost is linear in `stored` and no new binaries appear.
+    last = len(prices) - 1
+    terminalExpr = pulp.lpSum(
+        dischargeEff * (terminalPrice - segmentCost[s]) * stored[s][last]
+        for s in segments
+    ) if terminalPrice else 0.0
+
     revenueExpr = pulp.lpSum(
         prices[t] * pulp.lpSum(sold[s][t] - bought[s][t] for s in segments)
         for t in intervals
@@ -130,7 +158,8 @@ def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=Tr
         _calendarCost(problem, storedEnergy, model, dtHours) if calendar
         else [0.0] * len(prices)
     )
-    problem += revenueExpr - pulp.lpSum(cycleExpr) - pulp.lpSum(calendarExpr)
+    problem += (revenueExpr - pulp.lpSum(cycleExpr) - pulp.lpSum(calendarExpr)
+                + terminalExpr)
 
     problem.solve(solver or defaultSolver(timeLimit=timeLimit, gap=gap, threads=threads,
                                             options=options))
@@ -155,6 +184,9 @@ def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=Tr
         r - d for r, d in zip(revenuePerInterval, degradationPerInterval)
     ]
     revenue = sum(revenuePerInterval)
+    degradationCost = sum(degradationPerInterval)
+    terminalValue = float(pulp.value(terminalExpr)) if terminalPrice else 0.0
+    cyclesUsed = sum(soldPerInterval) / dischargeEff / model.MWh
     profit = pulp.value(problem.objective)
     gapAchieved, dualBound = _solverInfo(problem, profit)
     return Schedule(
@@ -163,7 +195,7 @@ def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=Tr
         boughtPerInterval,
         soldPerInterval,
         revenue,
-        revenue - profit,
+        degradationCost,
         profit,
         revenuePerInterval,
         cyclePerInterval,
@@ -173,6 +205,9 @@ def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=Tr
         status,
         gapAchieved,
         dualBound,
+        0.0,
+        cyclesUsed,
+        terminalValue,
     )
 
 
