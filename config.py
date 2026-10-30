@@ -12,12 +12,19 @@ gamma = 1.0
 
 
 # --- Observation -------------------------------------------------------------
+# How far ahead the agent reads, which is NOT the episode length. AEMO publishes no RRP
+# past the end of the current trading day, so a forecast can never reach further than
+# this, and an episode longer than one day must still read only one day ahead or the
+# realised-price agent trains on information the forecast-priced agent cannot have.
+observation_intervals = 288
+
 five_minute_interval_count = 12  # 5-minute values, the first hour of the forecast
 bucket_window_intervals = 6  # dispatch intervals per 30-minute bucket beyond that
 
-price_bucket_count = (episode_intervals - five_minute_interval_count) // bucket_window_intervals
+price_bucket_count = (observation_intervals - five_minute_interval_count) // bucket_window_intervals
 price_feature_count = five_minute_interval_count + price_bucket_count
-observation_size = 1 + price_feature_count + 1  # soc, prices, time left
+# soc, prices, trading-day clock, cycle budget left, episode left
+observation_size = 1 + price_feature_count + 3
 
 # The knee of the asinh price transform, in $/MWh. Below the knee the transform is
 # roughly linear, above it roughly logarithmic. The market price cap and floor are not

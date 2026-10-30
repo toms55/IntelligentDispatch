@@ -14,6 +14,14 @@ import config
 from utils import nem_interval
 from utils.market import market_price_floor, marketPriceCap
 
+# The layout, named once. Index by these rather than by a literal or by -1: a negative
+# index silently follows the end of the vector when a slot is appended.
+socIndex = 0
+priceSlice = slice(1, 1 + config.price_feature_count)
+clockIndex = 1 + config.price_feature_count
+cycleIndex = clockIndex + 1
+episodeIndex = cycleIndex + 1
+
 
 class PriceScaler:
     """A fixed price to observation transform, pinned to one market price cap.
@@ -112,15 +120,27 @@ def tradingDayRemaining(stamp):
     return 1.0 - elapsed / 24
 
 
-def observation(soc, prices, start, horizonEnd, scaler, remaining):
-    """The full vector: SoC, forward prices, time left in the trading day.
+def observation(soc, prices, start, horizonEnd, scaler, remaining, cyclesLeft,
+                episodeLeft):
+    """The full vector: SoC, forward prices, time left, budget left, episode left.
 
     `remaining` comes from `tradingDayRemaining`. The caller passes it rather than a
     stamp because only the caller knows whether an interval is still open: the
     observation returned on truncation has no interval left, and its price slots are all
     zero, so its clock slot is zero too.
+
+    `cyclesLeft` is the unspent fraction of the cycle budget and `episodeLeft` the
+    unspent fraction of the episode. Both are required, with no default. The policy is a
+    function of this vector alone, so an agent that cannot see its remaining budget
+    cannot ration it, and a default here would hand the live screen a budget nobody
+    chose. `remaining` reads the clock and so repeats every trading day, which is why it
+    cannot stand in for `episodeLeft` on an episode longer than a day.
     """
-    values = [soc] + priceFeatures(prices, start, horizonEnd, scaler) + [remaining]
+    values = (
+        [soc]
+        + priceFeatures(prices, start, horizonEnd, scaler)
+        + [remaining, cyclesLeft, episodeLeft]
+    )
     return np.asarray(values, dtype=np.float32)
 
 
@@ -128,9 +148,9 @@ def observationBounds(scaler):
     """Explicit finite low/high arrays for the Box space."""
     low = np.empty(config.observation_size, dtype=np.float32)
     high = np.empty(config.observation_size, dtype=np.float32)
-    low[0], high[0] = 0.0, 1.0  # soc
-    priceEnd = 1 + config.price_feature_count
-    low[1:priceEnd] = scaler.low
-    high[1:priceEnd] = scaler.high
-    low[-1], high[-1] = 0.0, 1.0  # intervals remaining
+    low[socIndex], high[socIndex] = 0.0, 1.0
+    low[priceSlice] = scaler.low
+    high[priceSlice] = scaler.high
+    # The trading-day clock, the cycle budget left and the episode left are all fractions.
+    low[clockIndex:], high[clockIndex:] = 0.0, 1.0
     return low, high

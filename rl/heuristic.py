@@ -6,10 +6,8 @@ works unchanged on forecast-filled observations.
 """
 import numpy as np
 
-import config
 from rl.env import CHARGE, DISCHARGE, IDLE
-
-priceSlice = slice(1, 1 + config.price_feature_count)
+from rl.features import priceSlice
 
 
 class ThresholdPolicy:

@@ -44,7 +44,7 @@ forecastLine = "#7b4fc9"
 # Past this many runs in a day the run rules would cover the chart.
 maxRunRules = 12
 weekdayNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-capPayoutKey = (f"(1/{config.episode_intervals}) \u03a3\u209c"
+capPayoutKey = (f"(1/{config.observation_intervals}) \u03a3\u209c"
                 f" max(RRP\u209c \u2212 ${config.spike_threshold:,.0f}, 0)")
 highVolKey = f"cap payout at or above ${config.high_vol_intensity:.2f}"
 
@@ -77,7 +77,7 @@ def refreshText(priceSource, every):
                 "Dispatched on realised prices, with perfect knowledge of the price.")
     if every is None:
         return ("Refresh unknown", "This run does not state its forecast pull frequency.")
-    if every >= config.episode_intervals:
+    if every >= config.observation_intervals:
         return ("Pulled once a day",
                 "One AEMO forecast was pulled at 04:00 and held for the whole "
                 "trading day.")

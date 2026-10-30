@@ -12,7 +12,7 @@ from utils.market import market_price_floor
 
 @pytest.fixture
 def ramp():
-    return [float(n) for n in range(config.episode_intervals)]
+    return [float(n) for n in range(config.observation_intervals)]
 
 
 class TestPriceScaler:
@@ -105,16 +105,16 @@ class TestScalerFor:
 
 class TestPriceFeatures:
     def test_has_the_configured_length(self, ramp, scaler):
-        got = features.priceFeatures(ramp, 0, config.episode_intervals, scaler)
+        got = features.priceFeatures(ramp, 0, config.observation_intervals, scaler)
         assert len(got) == config.price_feature_count == 58
 
     def test_the_first_hour_is_five_minute_resolution(self, ramp, scaler):
-        got = features.priceFeatures(ramp, 0, config.episode_intervals, scaler)
+        got = features.priceFeatures(ramp, 0, config.observation_intervals, scaler)
         for step in range(config.five_minute_interval_count):
             assert got[step] == pytest.approx(scaler(ramp[step]))
 
     def test_beyond_the_first_hour_is_half_hour_means(self, ramp, scaler):
-        got = features.priceFeatures(ramp, 0, config.episode_intervals, scaler)
+        got = features.priceFeatures(ramp, 0, config.observation_intervals, scaler)
         first = config.five_minute_interval_count
         window = ramp[first:first + config.bucket_window_intervals]
         assert got[first] == pytest.approx(scaler(sum(window) / len(window)))
@@ -124,54 +124,60 @@ class TestPriceFeatures:
             config.five_minute_interval_count
             + config.price_bucket_count * config.bucket_window_intervals
         )
-        assert covered == config.episode_intervals
+        assert covered == config.observation_intervals
 
     def test_is_forward_looking(self, ramp, scaler):
-        got = features.priceFeatures(ramp, 100, config.episode_intervals, scaler)
+        got = features.priceFeatures(ramp, 100, config.observation_intervals, scaler)
         assert got[0] == pytest.approx(scaler(ramp[100]))
         assert got[1] == pytest.approx(scaler(ramp[101]))
 
     def test_pads_past_the_horizon_instead_of_reading_on(self, ramp, scaler):
         longer = ramp + [9999.0] * 50
-        got = features.priceFeatures(longer, config.episode_intervals - 2,
-                                     config.episode_intervals, scaler)
+        got = features.priceFeatures(longer, config.observation_intervals - 2,
+                                     config.observation_intervals, scaler)
         assert got[0] == pytest.approx(scaler(ramp[-2]))
         assert got[1] == pytest.approx(scaler(ramp[-1]))
         assert all(value == 0.0 for value in got[2:])
 
     def test_pads_a_part_full_bucket_from_what_is_there(self, ramp, scaler):
-        start = config.episode_intervals - config.five_minute_interval_count - 2
-        got = features.priceFeatures(ramp, start, config.episode_intervals, scaler)
+        start = config.observation_intervals - config.five_minute_interval_count - 2
+        got = features.priceFeatures(ramp, start, config.observation_intervals, scaler)
         tail = ramp[start + config.five_minute_interval_count:]
         assert got[config.five_minute_interval_count] == pytest.approx(
             scaler(sum(tail) / len(tail))
         )
 
     def test_a_shorter_series_pads_rather_than_raising(self, scaler):
-        got = features.priceFeatures([10.0, 20.0], 0, config.episode_intervals, scaler)
+        got = features.priceFeatures([10.0, 20.0], 0, config.observation_intervals, scaler)
         assert len(got) == config.price_feature_count
         assert got[2] == 0.0
 
 
 class TestObservation:
     def test_assembles_the_slots_in_order(self, ramp, scaler):
-        got = features.observation(0.42, ramp, 0, config.episode_intervals, scaler, 1.0)
+        got = features.observation(0.42, ramp, 0, config.observation_intervals,
+                                   scaler, 0.8, 0.6, 0.4)
         assert got.shape == (config.observation_size,)
-        assert got[0] == pytest.approx(0.42, abs=1e-6)
-        priceEnd = 1 + config.price_feature_count
-        assert got[1:priceEnd] == pytest.approx(
-            np.asarray(features.priceFeatures(ramp, 0, config.episode_intervals, scaler),
-                       dtype=np.float32), abs=1e-6
+        assert got[features.socIndex] == pytest.approx(0.42, abs=1e-6)
+        assert got[features.priceSlice] == pytest.approx(
+            np.asarray(features.priceFeatures(ramp, 0, config.observation_intervals,
+                                              scaler), dtype=np.float32), abs=1e-6
         )
-        assert got[-1] == pytest.approx(1.0)
+        assert got[features.clockIndex] == pytest.approx(0.8)
+        assert got[features.cycleIndex] == pytest.approx(0.6)
+        assert got[features.episodeIndex] == pytest.approx(0.4)
 
     def test_a_forecast_equal_to_the_realised_prices_gives_the_same_vector(self, ramp, scaler):
-        realised = features.observation(0.5, ramp, 24, config.episode_intervals, scaler, 0.9)
-        forecast = features.observation(0.5, list(ramp), 24, config.episode_intervals, scaler, 0.9)
+        realised = features.observation(0.5, ramp, 24, config.observation_intervals,
+                                        scaler, 0.9, 1.0, 0.9)
+        forecast = features.observation(0.5, list(ramp), 24,
+                                        config.observation_intervals, scaler,
+                                        0.9, 1.0, 0.9)
         assert np.array_equal(realised, forecast)
 
     def test_is_float32(self, ramp, scaler):
-        got = features.observation(0.5, ramp, 0, config.episode_intervals, scaler, 1.0)
+        got = features.observation(0.5, ramp, 0, config.observation_intervals,
+                                   scaler, 1.0, 1.0, 1.0)
         assert got.dtype == np.float32
 
 
@@ -181,10 +187,10 @@ class TestTradingDayRemaining:
 
     def test_reproduces_the_old_formula_over_an_aligned_day(self):
         pandas = pytest.importorskip("pandas")
-        stamps = pandas.date_range("2024-01-10 04:05", periods=config.episode_intervals,
+        stamps = pandas.date_range("2024-01-10 04:05", periods=config.observation_intervals,
                                    freq="5min")
         for step, stamp in enumerate(stamps):
-            old = (config.episode_intervals - step) / config.episode_intervals
+            old = (config.observation_intervals - step) / config.observation_intervals
             assert features.tradingDayRemaining(stamp) == pytest.approx(old, abs=1e-12)
 
     def test_the_trading_day_opens_at_one_and_closes_at_one_interval(self):
@@ -192,7 +198,7 @@ class TestTradingDayRemaining:
         assert features.tradingDayRemaining(pandas.Timestamp("2024-01-10 04:05")) == 1.0
         assert features.tradingDayRemaining(
             pandas.Timestamp("2024-01-11 04:00")
-        ) == pytest.approx(1 / config.episode_intervals)
+        ) == pytest.approx(1 / config.observation_intervals)
 
     def test_reads_the_clock_not_the_episode(self):
         """The bug this replaces: the current forecast screen starts its episode at the
@@ -200,7 +206,7 @@ class TestTradingDayRemaining:
         pandas = pytest.importorskip("pandas")
         assert features.tradingDayRemaining(
             pandas.Timestamp("2024-01-10 14:05")
-        ) == pytest.approx(168 / config.episode_intervals)
+        ) == pytest.approx(168 / config.observation_intervals)
 
 
 class TestObservationBounds:
@@ -214,6 +220,31 @@ class TestObservationBounds:
 
     def test_contain_every_price_the_market_allows(self, scaler):
         low, high = features.observationBounds(scaler)
-        extremes = [scaler.floor, scaler.cap] * config.episode_intervals
-        got = features.observation(1.0, extremes, 0, config.episode_intervals, scaler, 1.0)
+        extremes = [scaler.floor, scaler.cap] * config.observation_intervals
+        got = features.observation(1.0, extremes, 0, config.observation_intervals,
+                                   scaler, 1.0, 1.0, 1.0)
         assert np.all(got >= low - 1e-6) and np.all(got <= high + 1e-6)
+
+
+class TestLayoutIndices:
+    """The layout is one definition, and it does not move with the episode length."""
+
+    def test_the_slots_are_where_features_says_they_are(self):
+        assert features.socIndex == 0
+        assert features.priceSlice == slice(1, 1 + config.price_feature_count)
+        assert features.clockIndex == 1 + config.price_feature_count
+        assert features.cycleIndex == features.clockIndex + 1
+        assert features.episodeIndex == features.cycleIndex + 1
+        assert config.observation_size == features.episodeIndex + 1
+
+    def test_the_lookahead_is_a_trading_day_not_an_episode(self):
+        covered = (
+            config.five_minute_interval_count
+            + config.price_bucket_count * config.bucket_window_intervals
+        )
+        assert covered == config.observation_intervals
+
+    def test_the_new_slots_are_fractions(self, scaler):
+        low, high = features.observationBounds(scaler)
+        for index in (features.cycleIndex, features.episodeIndex):
+            assert (low[index], high[index]) == (0.0, 1.0)

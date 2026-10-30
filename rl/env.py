@@ -191,7 +191,13 @@ class BessEnv(gymnasium.Env):
             self.horizon,
             self.scaler,
             remaining,
+            self._cyclesLeft(),
+            max(0.0, 1.0 - self.stepIndex / self.horizon),
         )
+
+    def _cyclesLeft(self):
+        """The unspent fraction of the cycle budget. 1.0 while no budget is in force."""
+        return 1.0
 
     def _observedPrices(self, start, end):
         """The price path the agent reads. Slots before stepIndex are zeroed rather than

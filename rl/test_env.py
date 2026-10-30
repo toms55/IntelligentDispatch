@@ -287,16 +287,27 @@ class TestObservation:
         obs, _ = env.reset(seed=0)
         assert obs[0] == pytest.approx(0.37, abs=1e-6)
 
-    def test_time_remaining_is_the_last_slot_and_counts_down(self, paper):
+    def test_time_remaining_is_the_clock_slot_and_counts_down(self, paper):
+        # Index by name, never by -1: a negative index silently follows the end of the
+        # vector when a slot is appended, and episodeLeft also counts down from 1.0.
         env = makeEnv(paper)
         obs, _ = env.reset(seed=0)
-        assert obs[-1] == pytest.approx(1.0)
-        seen = [obs[-1]]
+        assert obs[features.clockIndex] == pytest.approx(1.0)
+        seen = [obs[features.clockIndex]]
         for _ in range(len(MIXED_PRICES)):
             obs, _, _, _, _ = env.step(IDLE)
-            seen.append(obs[-1])
+            seen.append(obs[features.clockIndex])
         assert all(b < a for a, b in zip(seen, seen[1:]))
         assert seen[-1] == pytest.approx(0.0)
+
+    def test_the_episode_slot_counts_down_over_the_episode(self, paper):
+        env = makeEnv(paper)
+        obs, _ = env.reset(seed=0)
+        assert obs[features.episodeIndex] == pytest.approx(1.0)
+        for step in range(len(MIXED_PRICES)):
+            obs, _, _, _, _ = env.step(IDLE)
+            left = 1.0 - (step + 1) / len(MIXED_PRICES)
+            assert obs[features.episodeIndex] == pytest.approx(left, abs=1e-6)
 
     def test_never_reads_a_price_past_the_episode(self, paper):
         inside = MIXED_PRICES
