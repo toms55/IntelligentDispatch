@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import config
 from data import forecasts
 
 
@@ -471,7 +472,7 @@ def refreshArchive(monkeypatch):
 class TestRefresh:
     # Every four hours from the 04:00 start, the last one at midnight.
     def test_the_run_times(self):
-        got = forecasts.refreshRunTimes(RUN)
+        got = forecasts.refreshRunTimes(RUN, config.observation_intervals)
         assert [run.strftime("%H:%M") for run in got] == [
             "04:00", "08:00", "12:00", "16:00", "20:00", "00:00"]
         assert got[-1] == pd.Timestamp("2024-01-11 00:00")
@@ -484,7 +485,7 @@ class TestRefresh:
     # Row r is run r on the episode grid: NaN before it was published, its own path
     # after, cut at the episode end.
     def test_each_run_sits_at_its_own_offset(self, refreshArchive):
-        grid = forecasts.refreshMatrix([RUN], "SA1")
+        grid = forecasts.refreshMatrix([RUN], "SA1", config.observation_intervals)
         assert grid.shape == (1, 6, 288)
         for refresh, run in enumerate(REFRESH_RUNS):
             offset = refresh * 48
@@ -494,15 +495,18 @@ class TestRefresh:
 
     # A daily refresh is the old single 04:00 path.
     def test_a_daily_refresh_is_the_0400_path(self, refreshArchive):
-        grid = forecasts.refreshMatrix([RUN], "SA1", every=288)
+        grid = forecasts.refreshMatrix([RUN], "SA1", config.observation_intervals,
+                                       every=288)
         np.testing.assert_allclose(grid[:, 0], forecasts.forecastMatrix([RUN], "SA1"))
 
     # The prefetched cache gives the same grid as the live path.
     def test_the_cached_grid_matches_the_live_one(self, refreshArchive, tmp_path):
         forecasts.prefetchForecasts(RUN, RUN, "SA1", cacheDir=tmp_path)
         source = forecasts.loadForecastCache("SA1", cacheDir=tmp_path)
-        np.testing.assert_allclose(forecasts.refreshMatrix([RUN], "SA1", source=source),
-                                   forecasts.refreshMatrix([RUN], "SA1"), equal_nan=True)
+        day = config.observation_intervals
+        np.testing.assert_allclose(
+            forecasts.refreshMatrix([RUN], "SA1", day, source=source),
+            forecasts.refreshMatrix([RUN], "SA1", day), equal_nan=True)
 
     # The agent reads the latest run published by each step.
     def test_the_active_run(self):
@@ -531,7 +535,7 @@ class TestRefresh:
 
     # The decision path takes step k from the run active at k.
     def test_the_decision_path(self, refreshArchive):
-        grid = forecasts.refreshMatrix([RUN], "SA1")[0]
+        grid = forecasts.refreshMatrix([RUN], "SA1", config.observation_intervals)[0]
         got = forecasts.decisionPath(grid)
         assert got.shape == (288,)
         for step in (0, 47, 48, 150, 287):

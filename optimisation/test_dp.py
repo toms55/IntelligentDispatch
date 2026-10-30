@@ -154,9 +154,9 @@ class TestMatchesTheMilp:
 
         prices = list(
             price_series(day, day + timedelta(days=1), "NSW1")
-            .to_numpy(dtype=float)[:config.episode_intervals]
+            .to_numpy(dtype=float)[:config.observation_intervals]
         )
-        assert len(prices) == config.episode_intervals
+        assert len(prices) == config.observation_intervals
         exact = dp.solve(prices, paper, initialSoc=config.initial_soc, calendar=False)
         milp = solve(prices, paper, initialSoc=config.initial_soc, calendar=False,
                      discretePower=True, gap=config.backtest_gap,

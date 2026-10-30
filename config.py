@@ -1,7 +1,12 @@
 from datetime import datetime
 
 # --- Episode -----------------------------------------------------------------
-episode_intervals = 288
+# One NEM week, 2016 intervals. A week rather than a trading day because the cycle
+# budget below is a weekly figure, and a weekly warranty cannot be enforced inside a
+# day-long episode. The state of charge carries across the days inside the week and
+# resets at the week boundary only. This is NOT the lookahead: see
+# observation_intervals.
+episode_intervals = 2016
 # The battery starts every episode empty, and nothing values what it holds at the close.
 # A start above zero would hand the agent energy it never bought, and it would then sell
 # that energy at whatever the last interval pays. Starting empty removes both: under
@@ -12,12 +17,29 @@ gamma = 1.0
 
 # The most equivalent full cycles an episode may spend, standing in for a cycle warranty.
 # One EFC is the nominal usable capacity removed cell-side, so a partial discharge counts
-# proportionally. `None` is no budget at all, which is every result published so far.
-cycle_budget = None
+# proportionally. `None` is no budget at all, which is every result published before this.
+# Measured on NSW1, the week of 2024-08-05: a budget of 7 cuts the oracle from 17.885 EFC
+# to 6.961, a 61% reduction in throughput, for 2.3% of its profit.
+cycle_budget = 7.0
 # How tightly the oracle's cycle budget is solved. The budget is priced rather than
 # capped, so the answer is a sandwich: the relative width between the feasible schedule
 # and the bound. See `optimisation.dp.solve`.
 cycle_dual_gap = 1e-4
+
+# What energy still in the pack at the episode close is worth, in $/MWh, per region.
+# Without it nothing values closing stock, so the last interval's best move is always to
+# sell whatever is left: a few cents on a day-long episode, a Sunday-night dump on a week.
+#
+# Pinned from the median RRP of the 2023 calendar year, which precedes every test window
+# the backtest scores, measured over all 105120 intervals of each region. A median rather
+# than a mean, because the mean is pulled up by the spikes the agent is meant to trade
+# into and should not be paid for holding. Set it too high and the battery hoards instead
+# of trading, so it belongs below what the market typically pays.
+#
+# Never re-pin this from a test window. It is a modelling constant with the same
+# discipline as price_knee.
+terminal_energy_price = {"NSW1": 86.0, "QLD1": 75.8, "SA1": 59.0, "TAS1": 54.3,
+                         "VIC1": 53.5}
 
 
 # --- Observation -------------------------------------------------------------

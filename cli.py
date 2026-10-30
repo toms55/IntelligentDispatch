@@ -96,6 +96,24 @@ def _sharedParser():
                         metavar="SOC",
                         help=f"state of charge at the start of every episode and every "
                              f"oracle window, 0-1 (default: {config.initial_soc})")
+    # One destination for both flags, so the last one on the command line wins. A script
+    # then drops a budget by appending --no-cycles, rather than by editing the line that
+    # sets it.
+    parser.add_argument("--cycles", type=float, default=config.cycle_budget,
+                        metavar="EFC",
+                        help=f"the most equivalent full cycles one episode may spend, "
+                             f"standing in for a cycle warranty. One EFC is the usable "
+                             f"capacity removed cell-side, so a partial discharge counts "
+                             f"proportionally. The agent and the oracle it is scored "
+                             f"against both face it (default: {config.cycle_budget})")
+    parser.add_argument("--no-cycles", dest="cycles", action="store_const", const=None,
+                        help="spend as many cycles as prices reward, which is the "
+                             "problem every published result was produced under")
+    parser.add_argument("--terminal-price", type=float, default=0.0, metavar="PRICE",
+                        help="what energy still in the pack at the episode close is "
+                             "worth, in $/MWh. Zero values it at nothing, so the last "
+                             "interval's best move is always to sell whatever is left "
+                             "(default: 0.0)")
     parser.add_argument("--csv", nargs="?", const=DEFAULT_PATH, metavar="PATH",
                         help="write the per-interval trajectory as CSV; "
                              "PATH defaults to <module>_<region>_<start>.csv in the cwd")
@@ -236,12 +254,25 @@ def _runLp(args):
         discretePower=args.discrete_power,
         gap=args.gap,
         timeLimit=args.time_limit,
+        cycles=args.cycles,
+        terminalPrice=args.terminal_price,
     )
     _report(prices, schedule, args)
     if args.discrete_power:
         bound = "n/a" if schedule.dualBound is None else f"{schedule.dualBound:12.4f}"
         gap = "n/a" if schedule.mipGap is None else f"{schedule.mipGap:.2%}"
         print(f"dual bound     {bound}   (mip gap {gap}, status {schedule.status})")
+    if args.cycles is not None:
+        # The cycle price is the rent that met the budget, in $ per MWh removed
+        # cell-side. It is the shadow price of a cycle of warranty, and it reaches none
+        # of the figures above: see optimisation/dp.py.
+        print(f"cycles used    {schedule.cyclesUsed:12.4f}   of {args.cycles:.2f}")
+        print(f"cycle price    {schedule.cyclePrice:12.4f}   $/MWh cell-side")
+    if args.terminal_price:
+        # Already inside `profit`, and stated apart from it so it is never read as money
+        # the trading made.
+        print(f"terminal value {schedule.terminalValue:12.4f}   at "
+              f"${args.terminal_price:.2f}/MWh")
     return 0
 
 
@@ -264,6 +295,7 @@ def _runBaseline(args):
         model=_battery(args), initialSoc=args.initial_soc,
         gap=args.gap, timeLimit=args.time_limit, workers=args.workers,
         cacheDir=args.cache_dir, onDone=progress if args.verbose else None,
+        cycles=args.cycles, terminalPrice=args.terminal_price,
     )
     profit = sum(record["profit"] for record in records)
     bound = sum(record["dualBound"] for record in records)
@@ -292,13 +324,15 @@ def _runTrain(args):
                 timesteps=args.timesteps, calendar=not args.no_calendar,
                 horizon=args.horizon, rewardScale=args.reward_scale, outDir=args.out,
                 scaler=scaler, initialSoc=args.initial_soc,
+                cycleBudget=args.cycles, terminalPrice=args.terminal_price,
             )
         print(f"wrote          {path}.zip")
         # One fit from fresh weights is a cold agent, which is the train mode the
         # rolling backtest gives the same thing. The dashboard reads this directory.
         published = policies.publish(
             path.parent, args.region, args.algo, "cold", seed,
-            root=args.policies, command="train", timesteps=args.timesteps,
+            root=args.policies, tag=args.policy_tag, command="train",
+            timesteps=args.timesteps,
             window=[args.start.isoformat(), args.end.isoformat()],
             priceCap=scaler.cap,
         )
@@ -316,6 +350,7 @@ def _runEval(args):
         calendar=not args.no_calendar, model=model, initialSoc=args.initial_soc,
         discretePower=args.baseline_oracle == "discrete",
         gap=args.gap, timeLimit=args.time_limit, workers=args.workers,
+        cycles=args.cycles, terminalPrice=args.terminal_price,
     )
     baselines = baseline.profitPerInterval(records)
     # Never the summed per-interval profit: a timed-out window can contribute zeros.
@@ -369,7 +404,8 @@ def _runEval(args):
         checkpoints, prices, model, baselines=baselines, algoName=args.algo,
         calendar=not args.no_calendar, horizon=args.horizon,
         rewardScale=args.reward_scale, forecasts=forecasts, bounds=bounds,
-        initialSoc=args.initial_soc,
+        initialSoc=args.initial_soc, cycleBudget=args.cycles,
+        terminalPrice=args.terminal_price,
     )
     summary = evaluate.acrossSeeds(results)
     _reportEval(summary, results, args)
@@ -437,7 +473,9 @@ def _rolling(args):
         coldTimesteps=args.cold_timesteps, priceSources=sources,
         trainSource=args.train_source,
         forecastEvery=_refreshIntervals(args, args.horizon),
-        horizon=args.horizon, rewardScale=args.reward_scale,
+        horizon=args.horizon, cycleBudget=args.cycles,
+        terminalPrice=args.terminal_price,
+        rewardScale=args.reward_scale,
         initialSoc=args.initial_soc, calendar=not args.no_calendar,
         discretePower=args.baseline_oracle == "discrete",
         gap=args.gap, timeLimit=args.time_limit, workers=args.workers,
@@ -457,8 +495,8 @@ def _rolling(args):
           f"{audit['first'].trainEnd:%Y-%m-%d}, test .. {audit['first'].testEnd:%Y-%m-%d}")
     print(f"last           test {audit['last'].testStart:%Y-%m-%d} .. "
           f"{audit['last'].testEnd:%Y-%m-%d}")
-    print(f"oracle cache   {audit['days'] - audit['missing']} of {audit['days']} days "
-          f"present, {audit['missing']} would be solved")
+    print(f"oracle cache   {audit['episodes'] - audit['missing']} of "
+          f"{audit['episodes']} episode(s) present, {audit['missing']} would be solved")
     print(f"actions        {cfg.actionsFile}")
     if args.dry_run:
         return 0
@@ -725,6 +763,12 @@ def main(argv=None):
                             "window. Pass the end of the window you will score on to "
                             "keep full resolution over prices above the training year's "
                             "cap. The scale is saved beside the checkpoint either way")
+    # `cli rolling` has had this since the convention was written. A budgeted agent needs
+    # it just as much: it means something else than the unbudgeted agent of the same
+    # name, so it must publish beside that one rather than over it.
+    train.add_argument("--policy-tag", metavar="TAG",
+                       help="publish the agents as <algo>-cold-TAG-s<seed>, beside any "
+                            "already published rather than over them")
     train.set_defaults(run=_runTrain)
 
     evalCmd = addParser("eval", "score trained agents against the oracle")

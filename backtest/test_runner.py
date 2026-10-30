@@ -8,6 +8,7 @@ resumed run does not redo work.
 The checkpoint on disk is the training record. There is no separate ledger: a unit is
 done when its rows are in the fold CSV, and training is done when agent.zip exists.
 """
+import json
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -331,8 +332,9 @@ class TestDryRun:
     def test_the_audit_counts_folds_and_cache_misses(self, config, spy):
         report = runner.auditPlan(config)
         assert report["folds"] == 6
-        assert report["days"] == 42          # fold 0's test start to fold 5's test end
-        assert 0 <= report["missing"] <= report["days"]
+        # One oracle record per episode: six weekly test windows, not forty-two days.
+        assert report["episodes"] == 6
+        assert 0 <= report["missing"] <= report["episodes"]
         assert spy["train"] == [] and spy["evaluate"] == []
 
 
@@ -356,6 +358,9 @@ class TestAuditReportsTheSelection:
 
 
 class TestForecastSource:
+    # Every test here states a 288-interval episode. The subject is one trading day's
+    # refresh runs, and one episode holds one day only at that horizon.
+
     # A span with no forecast price source never touches the forecast cache.
     def test_a_realised_only_run_loads_nothing(self, config, monkeypatch):
         monkeypatch.setattr(runner, "loadForecastCache",
@@ -365,14 +370,14 @@ class TestForecastSource:
     # No prefetched cache falls back to the live per-run path.
     def test_no_cache_falls_back_to_the_live_path(self, config, monkeypatch):
         monkeypatch.setattr(runner, "loadForecastCache", lambda region: None)
-        cfg = config._replace(priceSources=("forecast",))
+        cfg = config._replace(horizon=288, priceSources=("forecast",))
         assert runner._forecastSource(cfg, [START]) is None
 
     # A test day the prefetch never reached names the prefetch command.
     def test_a_missing_day_names_the_prefetch(self, config, monkeypatch):
         frame = refreshFrame([START])
         monkeypatch.setattr(runner, "loadForecastCache", lambda region: frame)
-        cfg = config._replace(priceSources=("forecast",))
+        cfg = config._replace(horizon=288, priceSources=("forecast",))
         with pytest.raises(ValueError, match="cli prefetch"):
             runner._forecastSource(cfg, [START, START + folds.oneDay])
 
@@ -385,7 +390,7 @@ class TestForecastSource:
         lost = pd.Timestamp(START) + pd.Timedelta(hours=16)
         frame = frame.drop(lost)
         monkeypatch.setattr(runner, "loadForecastCache", lambda region: frame)
-        cfg = config._replace(priceSources=("forecast",))
+        cfg = config._replace(horizon=288, priceSources=("forecast",))
         source = runner._forecastSource(cfg, [START])
         np.testing.assert_array_equal(source.loc[lost].iloc[:240], np.arange(49.0, 289.0))
         assert source.loc[lost].iloc[240:].isna().all()
@@ -394,7 +399,7 @@ class TestForecastSource:
     def test_a_missing_opening_run_is_refused(self, config, monkeypatch):
         frame = refreshFrame([START]).drop(pd.Timestamp(START))
         monkeypatch.setattr(runner, "loadForecastCache", lambda region: frame)
-        cfg = config._replace(priceSources=("forecast",))
+        cfg = config._replace(horizon=288, priceSources=("forecast",))
         with pytest.raises(ValueError, match="first 2024-01-01 04:00"):
             runner._forecastSource(cfg, [START])
 
@@ -403,7 +408,7 @@ class TestForecastSource:
         frame = refreshFrame([START])
         frame.iloc[0, 11:] = None
         monkeypatch.setattr(runner, "loadForecastCache", lambda region: frame)
-        cfg = config._replace(priceSources=("forecast",))
+        cfg = config._replace(horizon=288, priceSources=("forecast",))
         with pytest.raises(ValueError, match="11 of 288"):
             runner._forecastSource(cfg, [START])
 
@@ -412,7 +417,7 @@ class TestForecastSource:
         frame = refreshFrame([START])
         frame.loc[pd.Timestamp(START) + pd.Timedelta(hours=12), "145":] = None
         monkeypatch.setattr(runner, "loadForecastCache", lambda region: frame)
-        cfg = config._replace(priceSources=("forecast",))
+        cfg = config._replace(horizon=288, priceSources=("forecast",))
         assert runner._forecastSource(cfg, [START]) is frame
 
     # ...and one that stops short of it, as when AEMO skipped the PREDISPATCH run, keeps
@@ -423,7 +428,7 @@ class TestForecastSource:
         short = pd.Timestamp(START) + pd.Timedelta(hours=12)
         frame.loc[short, "144":] = None
         monkeypatch.setattr(runner, "loadForecastCache", lambda region: frame)
-        cfg = config._replace(priceSources=("forecast",))
+        cfg = config._replace(horizon=288, priceSources=("forecast",))
         row = runner._forecastSource(cfg, [START]).loc[short]
         assert (row.iloc[:143] == 1.0).all() and row.iloc[143] == 2.0
 
@@ -431,14 +436,15 @@ class TestForecastSource:
     def test_a_daily_refresh_needs_only_the_0400_run(self, config, monkeypatch):
         frame = refreshFrame([START]).iloc[:1]
         monkeypatch.setattr(runner, "loadForecastCache", lambda region: frame)
-        cfg = config._replace(priceSources=("forecast",), forecastEvery=288)
+        cfg = config._replace(horizon=288, priceSources=("forecast",),
+                                forecastEvery=288)
         assert runner._forecastSource(cfg, [START]) is frame
 
     # A fully covered day passes the cache straight through.
     def test_a_complete_day_is_accepted(self, config, monkeypatch):
         frame = refreshFrame([START])
         monkeypatch.setattr(runner, "loadForecastCache", lambda region: frame)
-        cfg = config._replace(priceSources=("forecast",))
+        cfg = config._replace(horizon=288, priceSources=("forecast",))
         assert runner._forecastSource(cfg, [START]) is frame
 
 
@@ -466,13 +472,15 @@ class TestTrainingOnForecasts:
         assert all(call["forecasts"] is None
                    for call in self._run(config, spy, monkeypatch, "realised"))
 
-    # One refresh stack per training day, on the episode's own step grid.
-    def test_forecast_training_reads_one_stack_per_training_day(self, config, spy,
-                                                                 monkeypatch):
+    # One refresh stack per training episode, on the episode's own step grid.
+    def test_forecast_training_reads_one_stack_per_episode(self, config, spy,
+                                                           monkeypatch):
         calls = self._run(config, spy, monkeypatch, "forecast")
         assert calls
         for call in calls:
-            assert call["forecasts"].shape == (4 * 7, 288 // 48, 288)
+            # One stack per training EPISODE, each on the episode's own step grid: four
+            # weekly episodes of 2016 intervals, a refresh every 48 of them.
+            assert call["forecasts"].shape == (4, 2016 // 48, 2016)
             assert len(call["prices"]) == 4 * 7 * 288
 
     # A training day the prefetch never reached stops the run before any fit.
@@ -614,21 +622,20 @@ class TestWeeklyEpisodes:
     def test_the_manifest_carries_the_budget(self, weekly, spy):
         runner.runRolling(weekly)
         manifest = records.manifestPath(weekly.resultsDir, REGION)
-        import json
         assert json.loads(manifest.read_text())["cycleBudget"] == 7.0
 
-    def test_a_budget_free_result_set_refuses_a_budgeted_run(self, config, weekly, spy):
-        runner.runRolling(config)
+    def test_a_budget_free_result_set_refuses_a_budgeted_run(self, config, spy):
+        free = config._replace(cycleBudget=None)
+        runner.runRolling(free)
         with pytest.raises(ValueError, match="cycleBudget"):
-            runner.runRolling(weekly._replace(resultsDir=config.resultsDir))
+            runner.runRolling(config)
 
     def test_an_unbudgeted_run_still_resumes_a_result_set_from_before_the_budget(
             self, config, spy):
         """`cycleBudget: None` must read as the absent key, or every published run would
         refuse to be added to."""
-        runner.runRolling(config)
-        manifest = records.manifestPath(config.resultsDir, REGION)
-        import json
-        stored = json.loads(manifest.read_text())
+        free = config._replace(cycleBudget=None)
+        runner.runRolling(free)
+        stored = json.loads(records.manifestPath(free.resultsDir, REGION).read_text())
         assert "cycleBudget" not in stored
-        assert runner.runRolling(config) == 0
+        assert runner.runRolling(free) == 0

@@ -14,12 +14,22 @@ flag. The agent trains on realised 2024 prices and is scored on 2025, twice: onc
 with realised prices in its observation and once with the AEMO forecast it would
 actually have had. See `TODO.txt` for what remains.
 
+An episode is one NEM week, 2016 intervals, and it carries a cycle budget. The
+battery may spend at most `config.cycle_budget` equivalent full cycles in that week,
+which stands in for a cycle warranty. The `terminalPrice` setting values what the pack
+still holds at the close, so the agent is not paid to dump its stock into the last
+interval. That price is a pinned modelling constant, not a forecast.
+
 The central invariant: the environment and `solve(discretePower=True)` are the same
 problem stated twice. Same three actions, same partial-top-up rule at the SoC
-boundary, same episode length, same starting SoC, same degradation terms. Break any
-one and the oracle stops bounding the agent, and every number downstream means
-nothing. `rl/test_env.py::TestMatchesTheOracle` replays an oracle schedule through
-the environment and holds the two to 1e-9.
+boundary, same episode length, same starting SoC, same degradation terms, same cycle
+budget, same terminal value. Break any one and the oracle stops bounding the agent,
+and every number downstream means nothing.
+`rl/test_env.py::TestMatchesTheOracle` replays an oracle schedule through the
+environment and holds the two to 1e-9.
+`rl/test_env.py::TestMatchesTheBudgetedOracle` does the same with a budget and a
+terminal value in force, over both calendar modes, and holds soc, profit, cycles and
+terminal value to 1e-9.
 
 ## Environment
 
@@ -81,6 +91,8 @@ Rules:
 
 1. Never build that path by hand. `rl/policies.py` is the only definition of it. Call
    `policies.publish(...)` to write and `policies.available(region)` to read.
+   `policies.loadable(region)` is the reader for a screen that must run the agent: it
+   drops every agent whose recorded `observationSize` is not the one `config` states now.
 2. Every command that trains an agent publishes its final agent there before it exits.
    `cli train` publishes each seed. `cli rolling` publishes the last fold of the run.
 3. Always copy `scaler.json` with the weights. The transform is pinned to a market
@@ -130,6 +142,16 @@ Rules:
    column. The manifest and the fold trajectories stay with the raw results.
 5. Publishing commits nothing. Commit `results/backtestResults/` and `results/actions/`
    after a backtest.
+6. A day row carries `episodeStart` and `cycleBudget` beside `testDay`, and
+   `agentCycles` and `oracleCycles` beside the profit columns. `episodeStart` names the
+   episode the day sat in. The oracle columns `oracleDualBound`, `oracleGap` and
+   `oracleCycles` hold the episode's figures on its first day and are empty on the rest.
+   See the Gotcha below for why there is no per-day bound.
+7. `publish.requireWithinBudget` refuses a region where any
+   `(seed, priceSource, episodeStart)` group sums `agentCycles` above its `cycleBudget`.
+   The environment cannot exceed the budget, so this never fires. It runs anyway,
+   because it is the only check that reads a whole run on real prices, and it runs
+   before anything is written.
 
 ### The two dashboard screens read different things
 
@@ -254,18 +276,47 @@ cover.
   `lp.py` stays for `discretePower=False`, where power is continuous and no finite
   state set exists. `dp.valueFunction` also returns the optimum at every state and
   interval, not only along one path, at the same cost.
+  `dp.solve(cycles=...)` prices the cycle budget rather than capping it. Every MWh
+  removed cell-side pays a rent, and `solve` bisects that rent until the schedule lands
+  on the budget. A hard cap would need a second state dimension, and that is not
+  possible. The pack energy saturates: under 8000 states for the paper battery, and 9121
+  for the project battery over a week, the same count at 1008 intervals and at 2016.
+  Cumulative discharge does not saturate. About a third of the oracle's
+  discharges are partial, and they cluster at 0.9025 of a full step, which is
+  `nu_C * nu_D`. Any integer grid therefore over-counts the EFC by 6 to 7.5 per cent,
+  and a grid fine enough to hold the error under 0.1 per cent costs about 1.5e10
+  states. The rent gives two honest numbers instead. `cyclePrice` is the rent that
+  bought the incumbent, and `cyclesUsed` is what the schedule spent.
+  `terminalPrice=...` makes the last value layer the worth of the closing stock, out of
+  `degradation.schade.SchadeDegradation.terminalValue`, and value iteration carries it
+  backwards for free. `lp.py` states the same budget as one exact constraint row and the
+  same terminal term in the objective. That path is for cross-checking short horizons
+  only. Do not wire it into the backtest, because the cycle row couples every interval.
 
 - **`rl/`** — the agent.
   - `features.py` owns the observation layout and is the single definition of it.
-    60 slots: SoC, 12 five-minute prices, 46 half-hour bucket means, and the fraction
-    of the trading day left. Training and inference both call this and neither is told
-    which it is. The last slot comes from `tradingDayRemaining`, which reads the clock:
-    an episode-relative fraction matches it only while an episode is a whole 04:00
-    trading day, and the current forecast screen starts its episode at the run time, so
-    it read 1.0 at every hour of the day.
+    62 slots: SoC, 12 five-minute prices, 46 half-hour bucket means, the fraction of the
+    trading day left, the fraction of the cycle budget left, and the fraction of the
+    episode left. Index by `socIndex`, `priceSlice`, `clockIndex`, `cycleIndex` and
+    `episodeIndex`, never by a literal or by -1. Training and inference both call
+    `observation()` and neither is told which it is. The clock slot comes from
+    `tradingDayRemaining`, which reads the clock: an episode-relative fraction matches
+    it only while an episode is a whole 04:00 trading day, and the current forecast
+    screen starts its episode at the run time, so it read 1.0 at every hour of the day.
+    The clock repeats every 24 hours, which is why it cannot stand in for the episode
+    slot on a week-long episode.
+    `config.observation_intervals` (288) is how far ahead the agent reads and
+    `config.episode_intervals` (2016) is how long an episode runs. They are two
+    different numbers now. The price features derive from the first one, because AEMO
+    publishes no RRP past the end of the current trading day.
   - `env.py` — `BessEnv`, three actions, masking plus clipping at the SoC boundary.
     Takes a price `Series` rather than a date range, which is what keeps tests off the
     network. `forecasts=` swaps what the agent sees without touching what it is paid.
+    `cycleBudget=` caps the equivalent full cycles one episode may spend and
+    `terminalPrice=` values the closing stock. `_dischargeRoom()` holds both discharge
+    clips, the SoC floor and the remaining budget, so the mask and the move cannot
+    disagree. The clip in `_applyAction` is what enforces the budget, so it binds under
+    DQN and A2C as well, which read no mask.
   - `baseline.py` — per-window oracle solutions, cached on disk under `data_cache/`.
   - `algos.py` — the `--algo` registry: MaskablePPO, DQN, A2C.
   - `train.py`, `evaluate.py` — one run per seed, and regret against the oracle.
@@ -275,10 +326,19 @@ cover.
 - **`backtest/`** — the rolling-origin backtest: `runner.py` runs the folds,
   `records.py` writes them, `actions.py` exports the dispatch, and `publish.py` writes a
   finished run into `results/backtestResults/`. See the convention above.
+  A trading day is the reporting grain and an episode is the scoring grain. The two are
+  the same thing only while an episode is one day. `folds.py` therefore holds both:
+  `Fold.testDays` and `dayOffset` name the days, and `Fold.testEpisodes(horizon)` and
+  `episodeOffset(spanStart, moment, horizon)` name the episodes. `episodeLength(horizon)`
+  is one episode as a timedelta, and it refuses a horizon that is not a whole number of
+  trading days. The oracle is solved one record per episode, and `_foldRecords` indexes
+  it with `episodeOffset`. `evaluate.perDay` then splits one episode's trajectory into
+  its trading days, so a weekly fold still writes seven result rows per seed.
 
-- **`config.py`** — experiment design pinned in one place: episode horizon, SoC reset,
-  seeds, splits, the observation layout constants, and the two oracle roles. Module
-  constants are lower_snake, matching `utils/constants.py`.
+- **`config.py`** — experiment design pinned in one place: episode horizon, observation
+  horizon, SoC reset, the cycle budget, seeds, splits, the observation layout constants,
+  and the two oracle roles. Module constants are lower_snake, matching
+  `utils/constants.py`.
 
 - **`utils/constants.py`** — `nem_interval` (5 min) and `nem_interval_hours` (1/12),
   used to scale per-hour rates.
@@ -321,9 +381,17 @@ cover.
   manifest against what happened. Never edit a finished manifest by hand:
   `python -m backtest.stamp` is the only code that does, and it stamps an old run once
   a day only when every row predates the intra-day refresh.
+  A Cycles tile states the mean equivalent full cycles per episode against the budget,
+  from `metrics.cycleUse`. A mean per episode, not a total, so the figure reads against
+  the budget at every scope. `figures._cycleTile` appends it last and omits it entirely
+  for a run that records no cycles, so the tiles a published run already shows keep
+  their places. `data.loadRun` reads a run that carries none of the new columns, so
+  every run published so far still draws.
   The current forecast screen refetches and reruns the agent on every NEM dispatch
   interval, at minutes ending in 0 or 5 (`live.refreshSlot`), as a live BESS would
-  submit a new action each interval.
+  submit a new action each interval. It plans one trading day, so it passes
+  `live.dailyBudget()`, which is a seventh of the week's budget. The whole week's would
+  let a Monday spend the lot.
   Either screen hands its numbers over as a CSV. The backtest button downloads the
   published rows of the region on screen, over the days the two date boxes name. The
   boxes open on the whole run (`runSpan`), and a date outside it downloads nothing and
@@ -375,6 +443,15 @@ cover.
   entry solved at 0.5 no longer matches and the oracle re-solves. The forecast screen is
   separate and still opens at 50% (`live.defaultSoc`), because it reports a real battery
   part way through a day.
+- **`cacheKey` records the cycle budget and the terminal price, so every oracle record
+  from before them is re-solved.** A budgeted window is a different problem, and serving
+  an unbudgeted record for it would hand the agent a bound it cannot reach. The existing
+  `data_cache/lp_baseline` and `oracleResults/` records still match an unbudgeted
+  request, so nothing is clobbered and the A/B still has its unbudgeted side. That A/B is
+  "weekly plus a terminal value, budgeted against unbudgeted", not a comparison against
+  the published daily numbers: the episode length changed at the same time.
+  `baseline.solveWindow` also refuses to cache a record whose `cyclesUsed` exceeds the
+  budget, because a cached record is served for good.
 - **`cacheKey` does not record the solver time limit.** A window that stops on the limit
   writes a loose dual bound, and `solveWindow` then serves that record from cache for
   good. Raising `--time-limit` later cannot reach it, so delete the files to redo them.
@@ -395,9 +472,60 @@ cover.
 - **Episode windows align to 04:00, the NEM trading day boundary, and that is
   load-bearing.** PREDISPATCH always stops at the end of a trading day, so its horizon
   depends on the time of day: a 04:00 run reaches 288 intervals, 08:00 reaches 240, and
-  12:00 only 192. 04:00 is the one run time where exactly one episode fits.
-- `gamma` is 1.0: an episode is one trading day of profit, and every interval counts
-  the same.
+  12:00 only 192. 04:00 is the one run time where exactly one trading day of forecast
+  fits. That is why the observation reads 288 intervals whatever the episode length.
+  A week-long episode therefore opens at 04:00 and reads one trading day ahead.
+  `refreshMatrix` cuts each run at the end of its own trading day, not at the episode
+  end. Without that cut the realised-price agent would train on prices the
+  forecast-priced agent can never have.
+- `gamma` is 1.0: an episode is one NEM week of profit, and every interval counts the
+  same. An undiscounted 2016-step episode carries about seven times the return variance
+  of a daily one, and a fold holds one episode rather than seven, so the timestep count
+  per fold is a flag with a manifest entry and not a fixed number.
+- **The cycle rent reaches no reported number.** `dp.solve(cycles=...)` prices the
+  budget and bisects the rent, but every figure in the returned `Schedule` comes from
+  the true cost arrays along the chosen path. Quote `Schedule.profit` as the achievable
+  figure, because it is a schedule inside the budget, and `Schedule.dualBound` as the
+  ceiling, because it is the least of (value after rent + rent * budget) over every rent
+  tried. That is the same contract the MILP already has. The two never meet exactly: the
+  battery discharges in whole intervals, so realised usage steps and no rent lands on
+  the budget. Measured on NSW1, the week of 2024-08-05, 2016 intervals, no calendar
+  term: no budget gives $4574995 at 17.885 EFC in 24.6s, and a budget of 7 gives
+  $4470982 against a bound of $4472087, a 2.5e-4 gap, at 6.961 EFC in 14.1s. The shadow
+  price of a cycle of warranty is $142.07 per MWh. A leak of the rent into a reported
+  cost breaks the 1e-9 replay invariant, which is the right way to catch it.
+- **There is no per-day oracle bound once the state of charge carries across the days
+  inside an episode.** A day-long oracle started empty is no bound on a day the agent
+  entered holding energy. So `oracleDualBound`, `oracleGap` and `oracleCycles` sit on
+  the episode's first day and are NaN on the other six. Pandas skips NaN in `mean` and
+  `sum`, so a whole-episode scope counts the bound exactly once, and `summarise` passes
+  `min_count=1` so a scope holding no bound at all sums to NaN rather than to zero.
+  Two costs follow. A single-day scope shows no capture ratio, and `metrics.byBucket`
+  blanks `captured`, `oracleProfit`, `foldMedian` and `foldIqr`, so it reports agent
+  dollars with no share. A volatility bucket holds a set of days, and the episode whose
+  bound those days share may open in the other bucket. `metrics.perDayBound` is the one
+  test of this, and it reads `episodeStart == testDay`. Both costs come from the weekly
+  episode, not from the budget.
+- **One equivalent full cycle is the nominal usable capacity removed CELL-side.**
+  `EFC = sum(sold / dischargeEfficiency) / model.MWh`. A 100 per cent to 0 per cent
+  discharge is exactly 1.0 and a partial counts proportionally. Measuring meter-side
+  would understate the spend by `nu_D`, a 5 per cent error, and a budget that is 5 per
+  cent loose is not the budget anybody asked for. `_StateSpace.cellSide` in `dp.py` and
+  `BessEnv.spentMWh` both hold the cell-side figure.
+- **The observation went from 60 slots to 62, so an agent published under the old layout
+  cannot be loaded into the new environment.** `policies.loadable(region, root)` filters
+  `available()` on the `observationSize` that `publish` now records, and `live.py` reads
+  `loadable` so the forecast dropdown never offers a model the screen is certain to fail
+  on. An agent published before that fact was recorded states no size, so `loadable`
+  reads it as `policies.unrecordedObservationSize` (60), which is the layout every one of
+  them trained under. A warm start raises on its own: `algos.load` names both spaces when
+  the layout has moved.
+- **`refreshMatrix` has a size cap.** The grid is
+  `episodes * (horizon / every) * horizon` float64 values, so it grows with the square of
+  the horizon at a fixed refresh. A 52-week training grid of weekly episodes is 1.6 GiB
+  at a 5-minute refresh against 35 MB at a 30-minute one. `forecasts.matrixSizeCap`
+  (4 GiB) refuses anything larger and names the figure, rather than waiting for the OOM
+  killer to name it. Add a new input that needs more and raise the cap deliberately.
 - **A PREDISPATCH run is filed under its trading day.** The run labelled 04:00 on the
   1st is the previous trading day's last and sits in the previous month's MMSDM file;
   `fileLag` in `forecasts.py` is why `runRows` reads that month too.
