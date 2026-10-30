@@ -492,10 +492,12 @@ def _runPrefetch(args):
     from data.forecasts import prefetchForecasts
 
     start, end = _window(args)
-    # Always the full episode horizon: a shorter one is a slice of this cache.
+    # One trading day, not one episode: refreshMatrix cuts every run at the 04:00 boundary
+    # because AEMO publishes nothing past it for a morning run, so a longer episode reads
+    # this same cache.
     target = prefetchForecasts(
-        start, end, args.region, config.episode_intervals,
-        every=_refreshIntervals(args, config.episode_intervals))
+        start, end, args.region, config.observation_intervals,
+        every=_refreshIntervals(args, config.observation_intervals))
     print(f"wrote {target}")
     return 0
 

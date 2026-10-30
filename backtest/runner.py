@@ -165,7 +165,7 @@ def _trainDays(fold):
 def _forecastSource(cfg, days):
     """The prefetched forecast paths, checked to cover every refresh run of every day
     given, test days and, when the agent trains on forecasts, training days, each from its
-    run time to the episode end.
+    run time to the end of its own trading day.
 
     Without the check a run the prefetch missed becomes a silent NaN row, and the agent
     scores as if it idled. An absent cache falls back to the live per-run path.
@@ -175,18 +175,25 @@ def _forecastSource(cfg, days):
     source = loadForecastCache(cfg.region)
     if source is None:
         return None
-    # Each run must reach the episode end, and no further is needed.
+    # Each run must reach the end of its own trading day, and no further is needed:
+    # refreshMatrix cuts it there, because AEMO publishes nothing past the 04:00 boundary
+    # for a morning run. On a one-day episode this is the old `horizon - offset`.
+    day = config.observation_intervals
     needed, opener = {}, {}
-    for day in days:
+    for episode in days:
         for offset, run in zip(range(0, cfg.horizon, cfg.forecastEvery),
-                               refreshRunTimes(day, cfg.horizon, cfg.forecastEvery)):
-            needed[run], opener[run] = cfg.horizon - offset, pd.Timestamp(day)
+                               refreshRunTimes(episode, cfg.horizon, cfg.forecastEvery)):
+            needed[run] = day - offset % day
+            # The trading day the run sits in, not the episode start: a gap must be held
+            # from a run of the same trading day, because a live agent at 14:00 on
+            # Wednesday never had Monday's 04:00 run to fall back on.
+            opener[run] = pd.Timestamp(episode) + (offset // day) * day * nem_interval
     runs = list(needed)
     want = np.array([needed[run] for run in runs])
 
     def coverage(frame):
-        present = frame.reindex(runs).iloc[:, :cfg.horizon].notna().to_numpy()
-        return (present & (np.arange(cfg.horizon) < want[:, None])).sum(axis=1)
+        present = frame.reindex(runs).iloc[:, :day].notna().to_numpy()
+        return (present & (np.arange(day) < want[:, None])).sum(axis=1)
 
     # A run AEMO never published, or one whose PREDISPATCH half it skipped (both on
     # 2024-09-05 from 14:00 in every region), is filled from the latest earlier run of the
