@@ -267,7 +267,10 @@ def _runLp(args):
         # cell-side. It is the shadow price of a cycle of warranty, and it reaches none
         # of the figures above: see optimisation/dp.py.
         print(f"cycles used    {schedule.cyclesUsed:12.4f}   of {args.cycles:.2f}")
-        print(f"cycle price    {schedule.cyclePrice:12.4f}   $/MWh cell-side")
+        # The MILP states the budget as an exact row and prices nothing, so it has no
+        # shadow price to state. Only the priced search reports one.
+        if schedule.cyclePrice is not None:
+            print(f"cycle price    {schedule.cyclePrice:12.4f}   $/MWh cell-side")
     if args.terminal_price:
         # Already inside `profit`, and stated apart from it so it is never read as money
         # the trading made.

@@ -38,8 +38,10 @@ class Schedule:
     # incumbent that can sit below the true optimum.
     dualBound: float = None
     # The cycle budget's shadow price, in $ per MWh removed cell-side, and the equivalent
-    # full cycles the schedule spent. cyclePrice is 0.0 when no budget binds. It is a
-    # search device and reaches none of the figures above: see optimisation/dp.py.
+    # full cycles the schedule spent. `optimisation.dp` reports the price it bisected to,
+    # and 0.0 where no budget binds. `lp.solve` states the budget as an exact row instead
+    # and prices nothing, so it reports None: not computed, rather than worth nothing.
+    # The price is a search device and reaches none of the figures above.
     cyclePrice: float = None
     cyclesUsed: float = None
     # What the closing stock is worth, already included in `profit` but reported apart
@@ -205,7 +207,10 @@ def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=Tr
         status,
         gapAchieved,
         dualBound,
-        0.0,
+        # No cyclePrice: this path states the budget as an exact constraint row and never
+        # prices it, so there is no shadow price to report. `None` says "not computed".
+        # Reporting 0.0 here would read as "a cycle of warranty is worth nothing".
+        None,
         cyclesUsed,
         terminalValue,
     )
