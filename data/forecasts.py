@@ -324,10 +324,28 @@ def _stepColumns(horizon):
 
 
 def _requireDivides(horizon, every):
+    """A refresh grid has to line up with the trading day, not only with the episode.
+
+    `visualise.dashboard.data.verifyRefresh` reconstructs the run a step read from the
+    *trading day* start, so a refresh that divides the episode but not a trading day puts
+    every run on a different grid from the one the dashboard checks against. 224 divides
+    2016 and is exactly that case.
+    """
+    day = config.observation_intervals
     if every <= 0 or horizon % every:
         raise ValueError(
             f"a forecast refresh every {every} intervals does not divide a "
             f"{horizon}-interval episode"
+        )
+    if horizon % day:
+        raise ValueError(
+            f"a {horizon}-interval episode is not a whole number of {day}-interval "
+            f"trading days"
+        )
+    if day % every:
+        raise ValueError(
+            f"a forecast refresh every {every} intervals does not divide a "
+            f"{day}-interval trading day"
         )
 
 
@@ -344,10 +362,17 @@ def refreshMatrix(dayStarts, region="SA1", horizon=config.episode_intervals,
     """Every refresh run of every episode, laid on the episode's own step grid.
 
     Shape (days, refreshes, horizon). Row r is the run published r * every intervals in,
-    placed so column k is the episode's step k. Columns before the run are NaN, because
-    it had not been published yet, and the run is cut at the episode end, which is the
-    end of the trading day where PREDISPATCH stops anyway. every == horizon is one 04:00
-    run per day.
+    placed so column k is the episode's step k. Columns before the run are NaN, because it
+    had not been published yet.
+
+    Each run is cut at the end of its OWN trading day, not at the episode end. All morning
+    AEMO's horizon collapses onto the 04:00 boundary: measured on the live pulls in
+    data_cache/forecast_raw, an 08:00 run reaches 20 hours and a 12:30 run only 15.5, so
+    nothing past the boundary exists to read. From 13:00 bids have closed for the next
+    trading day and a run reaches up to 39 hours, which this deliberately discards, so that
+    the window a realised-price agent trains on is the one a forecast-priced agent can
+    always have. For a one-day episode this is identically the old cut at the episode end.
+    every == observation_intervals is one 04:00 run per trading day.
     """
     _requireDivides(horizon, every)
     starts = [pd.Timestamp(day) for day in dayStarts]
@@ -356,8 +381,9 @@ def refreshMatrix(dayStarts, region="SA1", horizon=config.episode_intervals,
         return grid
     for refresh, offset in enumerate(range(0, horizon, every)):
         runs = [day + offset * nem_interval for day in starts]
-        grid[:, refresh, offset:] = forecastMatrix(
-            runs, region, horizon - offset, allowPartial=allowPartial, source=source)
+        cover = config.observation_intervals - offset % config.observation_intervals
+        grid[:, refresh, offset:offset + cover] = forecastMatrix(
+            runs, region, cover, allowPartial=allowPartial, source=source)
     return grid
 
 
@@ -410,14 +436,17 @@ def liveForecast(region="SA1", horizon=288):
     return forecastSeries(nemNow().floor("5min"), region, horizon, allowPartial=True)
 
 
-def prefetchForecasts(runStart, runEnd, region, horizon=288, cacheDir=None,
+def prefetchForecasts(runStart, runEnd, region, horizon=config.observation_intervals,
+                      cacheDir=None,
                       every=config.forecast_refresh_intervals):
     """Stitch every refresh run of every trading day in the span into one parquet per
     region: the 04:00 run that opens the day, then one every `every` intervals.
 
     Runs are fetched a month at a time, so a month of paths costs two archive reads
     rather than two per run. A run AEMO never published is left out. Each path is
-    stored from its own run time, uncut; refreshMatrix cuts it at the episode end.
+    stored from its own run time, uncut; refreshMatrix cuts it at the end of its own
+    trading day. One trading day of steps is therefore all this needs to hold, whatever the
+    episode length, so a weekly episode reads this cache unchanged and needs no refetch.
     """
     directory = Path(cacheDir) if cacheDir is not None else forecastCacheRoot
     directory.mkdir(parents=True, exist_ok=True)

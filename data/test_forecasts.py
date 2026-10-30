@@ -536,3 +536,63 @@ class TestRefresh:
         assert got.shape == (288,)
         for step in (0, 47, 48, 150, 287):
             assert got[step] == grid[step // 48, step]
+
+
+def fakeSource(runs, horizon=288):
+    """A prefetch cache holding one trading day of steps for every run, values keyed on
+    (run index, step) so a misplaced column is visible rather than plausible."""
+    columns = forecasts._stepColumns(horizon)
+    values = [[1000.0 * r + step for step in range(1, horizon + 1)]
+              for r in range(len(runs))]
+    return pd.DataFrame(values, index=pd.DatetimeIndex(runs), columns=columns)
+
+
+class TestWeeklyRefresh:
+    """A weekly episode still reads one trading day ahead, because PREDISPATCH stops at
+    the end of its own trading day and AEMO publishes no RRP past it."""
+
+    weekly = 7 * 288
+
+    def runsOf(self, every):
+        return [RUN + offset * forecasts.nem_interval
+                for offset in range(0, self.weekly, every)]
+
+    def test_has_one_row_per_refresh(self):
+        runs = self.runsOf(48)
+        grid = forecasts.refreshMatrix([RUN], "SA1", horizon=self.weekly, every=48,
+                                       source=fakeSource(runs))
+        assert grid.shape == (1, 42, self.weekly)
+
+    def test_each_run_is_cut_at_the_end_of_its_own_trading_day(self):
+        runs = self.runsOf(48)
+        grid = forecasts.refreshMatrix([RUN], "SA1", horizon=self.weekly, every=48,
+                                       source=fakeSource(runs))
+        for refresh, offset in enumerate(range(0, self.weekly, 48)):
+            dayEnd = (offset // 288 + 1) * 288
+            assert np.isnan(grid[0, refresh, :offset]).all()
+            assert np.isnan(grid[0, refresh, dayEnd:]).all()
+            covered = grid[0, refresh, offset:dayEnd]
+            expected = [1000.0 * refresh + step
+                        for step in range(1, dayEnd - offset + 1)]
+            np.testing.assert_allclose(covered, expected)
+
+    def test_a_single_daily_run_covers_its_own_day_only(self):
+        runs = self.runsOf(288)
+        grid = forecasts.refreshMatrix([RUN], "SA1", horizon=self.weekly, every=288,
+                                       source=fakeSource(runs))
+        assert grid.shape == (1, 7, self.weekly)
+        for day in range(7):
+            assert not np.isnan(grid[0, day, day * 288:(day + 1) * 288]).any()
+            assert np.isnan(grid[0, day, (day + 1) * 288:]).all()
+
+    # 224 divides 2016 but not 288, so its runs would land off the trading-day grid and
+    # data.verifyRefresh, which reconstructs a run time from the day start, would disagree.
+    def test_a_refresh_that_does_not_divide_a_trading_day_is_refused(self):
+        with pytest.raises(ValueError, match="288"):
+            forecasts.refreshRunTimes(RUN, horizon=self.weekly, every=224)
+
+    # 336 is seven refreshes of 48, so it passes the episode check, but it is 28 hours:
+    # one and a sixth trading days, so the second day's runs would start mid-day.
+    def test_an_episode_must_be_whole_trading_days(self):
+        with pytest.raises(ValueError, match="whole number of 288-interval trading days"):
+            forecasts.refreshRunTimes(RUN, horizon=336, every=48)
