@@ -47,15 +47,41 @@ class TestRegistry:
         with pytest.raises(ValueError, match="unknown algorithm"):
             algos.build("ppo2", makeEnv(paper, series), seed=0)
 
-    def test_only_maskable_ppo_claims_masking(self):
+    def test_ppo_and_dqn_claim_masking(self):
         assert algos.supportsMasking("maskableppo") is True
-        assert algos.supportsMasking("dqn") is False
+        assert algos.supportsMasking("dqn") is True
         assert algos.supportsMasking("a2c") is False
 
-    @pytest.mark.parametrize("name", ["maskableppo", "dqn", "a2c"])
+    @pytest.mark.parametrize("name", ["maskableppo", "a2c"])
     def test_runs_undiscounted(self, paper, series, name):
         agent = algos.build(name, makeEnv(paper, series), seed=0)
         assert agent.gamma == config.gamma == 1.0
+
+    def test_dqn_discounts(self, paper, series):
+        assert algos.build("dqn", makeEnv(paper, series), seed=0).gamma == algos.dqnGamma < 1
+
+
+class TestMaskableDqn:
+    @pytest.mark.parametrize("deterministic", [True, False])
+    def test_never_picks_a_masked_move(self, paper, series, deterministic):
+        env = makeEnv(paper, series)
+        agent = algos.build("dqn", env, seed=0)
+        agent.exploration_rate = 0.5
+        obs, _ = env.reset()
+        for mask in ([True, False, False], [False, True, False], [False, False, True]):
+            picks = {int(agent.predict(obs, deterministic=deterministic,
+                                       action_masks=np.array(mask))[0])
+                     for _ in range(20)}
+            assert picks == {mask.index(True)}
+
+    def test_reads_the_training_env_mask_when_given_none(self, paper, series):
+        env = makeEnv(paper, series)
+        agent = algos.build("dqn", env, seed=0)
+        agent.exploration_rate = 1.0
+        agent._last_obs = agent.env.reset()
+        # Empty at the start, so a discharge is masked and must never be explored.
+        picks = {int(agent.predict(agent._last_obs)[0][0]) for _ in range(50)}
+        assert DISCHARGE not in picks
 
     def test_overrides_reach_the_algorithm(self, paper, series):
         agent = algos.build("a2c", makeEnv(paper, series), seed=0, learning_rate=0.004)
