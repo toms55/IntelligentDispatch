@@ -825,3 +825,91 @@ class TestTradingDayLookahead:
             a, _, _, _, _ = quiet.step(IDLE)
             b, _, _, _, _ = wild.step(IDLE)
         assert a != pytest.approx(b, abs=0.0)
+
+
+# Ends on prices that pay the pack to charge, as optimisation/test_dp.py states it.
+CLOSING_PRICES = [20.0, -50.0, 10.0, 300.0, -80.0, 9.0, -200.0, -150.0]
+
+
+class TestEndEmpty:
+    """`endEmpty=True` closes every episode with the pack empty, whatever the policy.
+
+    The override is the rule, and the mask only reports it, so a policy that reads no
+    mask (DQN, A2C) must end empty as surely as MaskablePPO does.
+    """
+
+    @pytest.mark.parametrize("calendar", [False, True])
+    @pytest.mark.parametrize("cycles", [None, 0.05, 0.5])
+    @pytest.mark.parametrize("prices", [CLOSING_PRICES, MIXED_PRICES])
+    def test_the_oracle_schedule_replays_identically(self, paper, calendar, cycles,
+                                                      prices):
+        schedule = dp.solve(prices, paper, initialSoc=config.initial_soc,
+                            calendar=calendar, cycles=cycles, endEmpty=True)
+        env = makeEnv(paper, values=prices, calendar=calendar, cycleBudget=cycles,
+                      endEmpty=True)
+        env.reset(seed=0)
+        infos = rollout(env, actionsFrom(schedule))
+        for got, want in zip([info["soc"] for info in infos], schedule.soc):
+            assert got == pytest.approx(want, abs=1e-9)
+        assert infos[-1]["episode_totals"]["profit"] == pytest.approx(
+            schedule.profit, abs=1e-9)
+        assert infos[-1]["episode_totals"]["cycles"] == pytest.approx(
+            schedule.cyclesUsed, abs=1e-9)
+
+    @pytest.mark.parametrize("cycles", [None, 0.05, 0.3])
+    def test_any_policy_ends_empty_inside_the_budget(self, paper, cycles):
+        """Random actions with the mask ignored, as DQN acts."""
+        prices = list(np.random.default_rng(1).normal(50, 120, 60))
+        schedule = dp.solve(prices, paper, initialSoc=config.initial_soc,
+                            calendar=False, cycles=cycles, endEmpty=True)
+        env = makeEnv(paper, values=prices, cycleBudget=cycles, endEmpty=True)
+        rng = np.random.default_rng(0)
+        for _ in range(50):
+            env.reset(seed=0)
+            infos = rollout(env, [int(a) for a in rng.integers(0, 3, len(prices))])
+            totals = infos[-1]["episode_totals"]
+            assert infos[-1]["soc"] == pytest.approx(0.0, abs=1e-9)
+            if cycles is not None:
+                assert totals["cycles"] <= cycles + 1e-9
+            assert totals["profit"] <= schedule.dualBound + 1e-9
+
+    def test_a_charge_that_cannot_be_sold_in_time_idles(self, paper):
+        env = makeEnv(paper, values=CLOSING_PRICES, endEmpty=True)
+        env.reset(seed=0)
+        _, _, _, _, info = env.step(CHARGE)
+        assert info["bought"] > 0.0
+        rollout(env, [IDLE] * (len(CLOSING_PRICES) - 3))
+        # Two intervals left. A second charge would leave more than the one discharge
+        # after it can sell, so it idles.
+        _, _, _, _, info = env.step(CHARGE)
+        assert info["bought"] == 0.0
+        assert info["sold"] == 0.0
+        # The last interval. An idle would close holding energy, so it discharges.
+        _, _, _, _, info = env.step(IDLE)
+        assert info["sold"] > 0.0
+        assert info["soc"] == pytest.approx(0.0, abs=1e-12)
+
+    def test_the_mask_agrees_with_the_override(self, paper):
+        """Every action the mask allows is the move made, and every one it forbids is
+        changed or moves nothing."""
+        prices = list(np.random.default_rng(3).normal(50, 120, 40))
+        env = makeEnv(paper, values=prices, cycleBudget=0.2, endEmpty=True)
+        rng = np.random.default_rng(4)
+        for _ in range(20):
+            env.reset(seed=0)
+            for _ in range(len(prices)):
+                mask = env.action_masks()
+                assert mask.any()
+                for action in (CHARGE, IDLE, DISCHARGE):
+                    if mask[action]:
+                        assert env._closingAction(action) == action
+                env.step(int(rng.integers(0, 3)))
+
+    def test_off_changes_nothing(self, paper):
+        actions = [CHARGE, CHARGE, IDLE, DISCHARGE, CHARGE, IDLE, CHARGE, CHARGE]
+        old = makeEnv(paper, values=CLOSING_PRICES)
+        off = makeEnv(paper, values=CLOSING_PRICES, endEmpty=False)
+        old.reset(seed=0)
+        off.reset(seed=0)
+        assert [i["soc"] for i in rollout(old, actions)] == [
+            i["soc"] for i in rollout(off, actions)]

@@ -566,7 +566,7 @@ def bruteForce(prices, model, cycles, initialSoc=config.initial_soc, calendar=Fa
 
 
 def exactBudgeted(prices, model, cycles, initialSoc=config.initial_soc, calendar=False,
-                  dtHours=nem_interval_hours):
+                  dtHours=nem_interval_hours, endEmpty=False):
     """An exact DP over the joint (energy, energy removed) state, as the second reference.
 
     This is what `dp.solve(cycles=...)` deliberately does not do: the usage dimension does
@@ -599,6 +599,8 @@ def exactBudgeted(prices, model, cycles, initialSoc=config.initial_soc, calendar
                 if nextKey not in nxt or nxt[nextKey][0] < total + gained:
                     nxt[nextKey] = (total + gained, new, nextUsed)
         states = nxt
+    if endEmpty:
+        states = {key: state for key, state in states.items() if key[0] == 0}
     return max(total for total, _, _ in states.values())
 
 
@@ -856,3 +858,84 @@ class TestWhichSolverPricesTheBudget:
         capped = dp.solve(MIXED_PRICES, paper, initialSoc=config.initial_soc,
                           calendar=False, cycles=100.0)
         assert capped.cyclePrice == 0.0
+
+
+# --- the pack empty at the close -----------------------------------------------------
+
+# Ends on prices that pay the pack to charge, so an oracle free to close holding energy
+# buys some and keeps it. The sell-off rule is what stops that.
+CLOSING_PRICES = [20.0, -50.0, 10.0, 300.0, -80.0, 9.0, -200.0, -150.0]
+
+
+def closingEnergy(model, actions, initialSoc=config.initial_soc,
+                  dtHours=nem_interval_hours):
+    stored = initialSoc * model.MWh
+    for action in actions:
+        stored, _, _ = dp.move(stored, action, model, dtHours)
+    return stored
+
+
+class TestEndEmpty:
+    """`solve(endEmpty=True)` closes every episode with the pack empty."""
+
+    def test_the_rule_binds_on_these_prices(self, paper):
+        free = dp.solve(CLOSING_PRICES, paper, initialSoc=config.initial_soc,
+                        calendar=False)
+        assert free.soc[-1] > 0.01
+
+    @pytest.mark.parametrize("prices", [CLOSING_PRICES, MIXED_PRICES[:8],
+                                        NEGATIVE_PRICES, FALLING_PRICES])
+    def test_equals_the_best_of_every_policy_that_closes_empty(self, paper, prices):
+        exact = dp.solve(prices, paper, initialSoc=config.initial_soc, calendar=False,
+                         endEmpty=True)
+        best = max(
+            rollProfit(prices, paper, actions)
+            for actions in itertools.product((CHARGE, IDLE, DISCHARGE),
+                                             repeat=len(prices))
+            if closingEnergy(paper, actions) <= dp.emptyTolerance * paper.MWh
+        )
+        assert exact.profit == pytest.approx(best, abs=1e-12)
+        assert exact.soc[-1] == pytest.approx(0.0, abs=1e-12)
+
+    def test_costs_money_where_it_binds(self, paper):
+        free = dp.solve(CLOSING_PRICES, paper, initialSoc=config.initial_soc,
+                        calendar=False)
+        empty = dp.solve(CLOSING_PRICES, paper, initialSoc=config.initial_soc,
+                         calendar=False, endEmpty=True)
+        assert empty.profit < free.profit
+
+    @pytest.mark.parametrize("cycles", [0.02, 0.05, 0.1])
+    def test_a_budget_and_the_rule_together_are_sandwiched(self, paper, cycles):
+        exact = dp.solve(CLOSING_PRICES, paper, initialSoc=config.initial_soc,
+                         calendar=False, cycles=cycles, endEmpty=True)
+        best = exactBudgeted(CLOSING_PRICES, paper, cycles, endEmpty=True)
+        assert exact.profit <= best + 1e-12
+        assert best <= exact.dualBound + 1e-12
+        assert exact.cyclesUsed <= cycles + 1e-9
+        assert exact.soc[-1] == pytest.approx(0.0, abs=1e-12)
+
+    @pytest.mark.parametrize("prices", [CLOSING_PRICES, MIXED_PRICES, NEGATIVE_PRICES])
+    def test_agrees_with_the_milp(self, paper, prices):
+        exact = dp.solve(prices, paper, initialSoc=config.initial_soc, calendar=False,
+                         endEmpty=True)
+        milp = solve(prices, paper, initialSoc=config.initial_soc, calendar=False,
+                     discretePower=True, endEmpty=True)
+        assert exact.profit == pytest.approx(milp.profit, abs=1e-9)
+        assert milp.soc[-1] == pytest.approx(0.0, abs=1e-9)
+
+    def test_off_is_the_old_oracle(self, paper):
+        old = dp.solve(CLOSING_PRICES, paper, initialSoc=config.initial_soc,
+                       calendar=False)
+        off = dp.solve(CLOSING_PRICES, paper, initialSoc=config.initial_soc,
+                       calendar=False, endEmpty=False)
+        assert off.profit == old.profit
+        assert off.soc == old.soc
+
+    def test_the_top_rent_spends_nothing_when_prices_pay_to_charge(self, paper):
+        """A budget below one round trip, on prices that pay the pack to charge. The top
+        of the bisection bracket must be inside the budget, or nothing replaces it."""
+        for endEmpty in (False, True):
+            capped = dp.solve(CLOSING_PRICES, paper, initialSoc=config.initial_soc,
+                              calendar=False, cycles=0.02, endEmpty=endEmpty)
+            assert capped.cyclesUsed <= 0.02 + 1e-9
+            assert capped.profit <= capped.dualBound + 1e-12

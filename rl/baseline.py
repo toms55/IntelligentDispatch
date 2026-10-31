@@ -49,7 +49,7 @@ def chunkWindows(length, horizon=config.episode_intervals):
 
 
 def cacheKey(region, start, horizon, calendar, discretePower, model, initialSoc,
-             gap=None, cycles=None, terminalPrice=0.0):
+             gap=None, cycles=None, terminalPrice=0.0, endEmpty=False):
     parts = [
         region,
         start.isoformat(),
@@ -70,6 +70,9 @@ def cacheKey(region, start, horizon, calendar, discretePower, model, initialSoc,
         f"cycles={cycles!r}",
         f"terminal={terminalPrice!r}",
     ]
+    # Only when set, so every record from before the sell-off rule keeps its key.
+    if endEmpty:
+        parts.append("endEmpty=1")
     digest = hashlib.sha1("|".join(parts).encode()).hexdigest()[:16]
     return f"{region}_{start.date()}_{start.strftime('%H%M')}_{digest}.json"
 
@@ -79,11 +82,11 @@ def solveWindow(prices, timestamps, region, horizon=config.episode_intervals,
                 initialSoc=config.initial_soc, dtHours=nem_interval_hours,
                 timeLimit=config.oracle_time_limit, gap=config.oracle_gap,
                 threads=None, cacheDir=None, cycles=config.cycle_budget,
-                terminalPrice=0.0):
+                terminalPrice=0.0, endEmpty=False):
     """One window's oracle solution, from cache when it is there."""
     model = model or _defaultModel()
     name = cacheKey(region, timestamps[0], horizon, calendar, discretePower, model,
-                    initialSoc, gap, cycles, terminalPrice)
+                    initialSoc, gap, cycles, terminalPrice, endEmpty)
     found = findRecord(name, cacheDir)
     if found is not None:
         return json.loads(found)
@@ -95,12 +98,12 @@ def solveWindow(prices, timestamps, region, horizon=config.episode_intervals,
         # apply: there is no search to cut short, so no fallback either.
         schedule = dp.solve(list(prices), model, initialSoc=initialSoc,
                             dtHours=dtHours, calendar=calendar, cycles=cycles,
-                            terminalPrice=terminalPrice)
+                            terminalPrice=terminalPrice, endEmpty=endEmpty)
         fallback = None
     else:
         common = dict(initialSoc=initialSoc, dtHours=dtHours, calendar=calendar,
                       timeLimit=timeLimit, gap=gap, threads=threads, cycles=cycles,
-                      terminalPrice=terminalPrice)
+                      terminalPrice=terminalPrice, endEmpty=endEmpty)
         schedule, fallback = _solveWithFallback(list(prices), model, False, common)
     # The oracle is the bound the agent is scored against, so an over-budget oracle
     # would quietly excuse an over-budget agent. Refuse it before it reaches the cache,
@@ -212,7 +215,7 @@ def buildBaseline(prices, region=config.default_region,
                   model=None, initialSoc=config.initial_soc,
                   timeLimit=config.oracle_time_limit, gap=config.oracle_gap,
                   workers=1, cacheDir=None, onDone=None, cycles=config.cycle_budget,
-                  terminalPrice=0.0):
+                  terminalPrice=0.0, endEmpty=False):
     """Solve every window of `prices` and return the records in window order."""
     model = model or _defaultModel()
     starts = chunkWindows(len(prices), horizon)
@@ -227,7 +230,7 @@ def buildBaseline(prices, region=config.default_region,
                   discretePower=discretePower, model=model, initialSoc=initialSoc,
                   timeLimit=timeLimit, gap=gap, cacheDir=cacheDir,
                   threads=1 if workers > 1 else None, cycles=cycles,
-                  terminalPrice=terminalPrice)
+                  terminalPrice=terminalPrice, endEmpty=endEmpty)
 
     if workers <= 1:
         records = []

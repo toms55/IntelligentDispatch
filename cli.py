@@ -114,6 +114,11 @@ def _sharedParser():
                              "worth, in $/MWh. Zero values it at nothing, so the last "
                              "interval's best move is always to sell whatever is left "
                              "(default: 0.0)")
+    parser.add_argument("--end-empty", action="store_true",
+                        help="the pack must be empty at every episode's close. The "
+                             "environment overrides a charge or an idle that would leave "
+                             "too much to sell in time, and the oracle faces the same "
+                             "terminal condition (default: off)")
     parser.add_argument("--csv", nargs="?", const=DEFAULT_PATH, metavar="PATH",
                         help="write the per-interval trajectory as CSV; "
                              "PATH defaults to <module>_<region>_<start>.csv in the cwd")
@@ -256,6 +261,7 @@ def _runLp(args):
         timeLimit=args.time_limit,
         cycles=args.cycles,
         terminalPrice=args.terminal_price,
+        endEmpty=args.end_empty,
     )
     _report(prices, schedule, args)
     if args.discrete_power:
@@ -299,6 +305,7 @@ def _runBaseline(args):
         gap=args.gap, timeLimit=args.time_limit, workers=args.workers,
         cacheDir=args.cache_dir, onDone=progress if args.verbose else None,
         cycles=args.cycles, terminalPrice=args.terminal_price,
+        endEmpty=args.end_empty,
     )
     profit = sum(record["profit"] for record in records)
     bound = sum(record["dualBound"] for record in records)
@@ -329,6 +336,7 @@ def _runTrain(args):
                 invalidPenalty=args.invalid_penalty, outDir=args.out,
                 scaler=scaler, initialSoc=args.initial_soc,
                 cycleBudget=args.cycles, terminalPrice=args.terminal_price,
+                endEmpty=args.end_empty,
             )
         print(f"wrote          {path}.zip")
         # One fit from fresh weights is a cold agent, which is the train mode the
@@ -355,6 +363,7 @@ def _runEval(args):
         discretePower=args.baseline_oracle == "discrete",
         gap=args.gap, timeLimit=args.time_limit, workers=args.workers,
         cycles=args.cycles, terminalPrice=args.terminal_price,
+        endEmpty=args.end_empty,
     )
     baselines = baseline.profitPerInterval(records)
     # Never the summed per-interval profit: a timed-out window can contribute zeros.
@@ -414,6 +423,7 @@ def _runEval(args):
         rewardScale=args.reward_scale, forecasts=forecasts, bounds=bounds,
         initialSoc=args.initial_soc, invalidPenalty=args.invalid_penalty,
         cycleBudget=args.cycles, terminalPrice=args.terminal_price,
+        endEmpty=args.end_empty,
     )
     summary = evaluate.acrossSeeds(results)
     _reportEval(summary, results, args)
@@ -483,6 +493,7 @@ def _rolling(args):
         forecastEvery=_refreshIntervals(args, args.horizon),
         horizon=args.horizon, cycleBudget=args.cycles,
         terminalPrice=args.terminal_price,
+        endEmpty=args.end_empty,
         rewardScale=args.reward_scale,
         invalidPenalty=args.invalid_penalty,
         initialSoc=args.initial_soc, calendar=not args.no_calendar,
