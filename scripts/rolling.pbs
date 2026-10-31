@@ -2,13 +2,16 @@
 # scripts/rolling.sh as a PBS job, one region per job.
 #
 #     qsub -N efc7-SA1 -v REGION=SA1 scripts/rolling.pbs
+#     qsub -v REGION=SA1,STAGE=oracle scripts/rolling.pbs     # then folds per ALGO, afterok
+#
+# One process: training is serial over seeds and the discrete oracle is single-threaded.
 #
 # Submit from a checkout nobody edits while the job queues or runs: the job reads the
 # code from the submit directory when it starts and again at every import.
 
 #PBS -q medq
-#PBS -l ncpus=6
-#PBS -l mem=48GB
+#PBS -l ncpus=1
+#PBS -l mem=8GB
 #PBS -l walltime=96:00:00
 #PBS -j oe
 
@@ -17,4 +20,4 @@ cd "${PBS_O_WORKDIR:-$PWD}"
 export PATH="$HOME/.local/bin:$PATH" OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONWARNINGS=ignore
 # Five jobs share one .venv; a sync in each would race.
 export UV_NO_SYNC=1
-REGION=${REGION:?pass -v REGION=NSW1 etc.} bash scripts/rolling.sh
+REGION=${REGION:?pass -v REGION=NSW1 etc.} ALGO=${ALGO:-maskableppo} STAGE=${STAGE:-all} bash scripts/rolling.sh
