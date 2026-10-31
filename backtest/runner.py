@@ -61,6 +61,8 @@ class RollingConfig(NamedTuple):
     # published run was scored under.
     cycleBudget: Optional[float] = config.cycle_budget
     terminalPrice: float = 0.0
+    # The pack must be empty at every episode's close, the agent's and the oracle's.
+    endEmpty: bool = False
     rewardScale: float = config.reward_scale
     initialSoc: float = config.initial_soc
     calendar: bool = False
@@ -119,6 +121,8 @@ def manifestOf(cfg):
         skip.add("cycleBudget")
     if not cfg.terminalPrice:
         skip.add("terminalPrice")
+    if not cfg.endEmpty:
+        skip.add("endEmpty")
     # Checkpoints trained against the old oracle-baselined reward carry no such key, so
     # this keeps a resumed run from mixing the two rewards in one result set.
     return {**{key: value for key, value in cfg._asdict().items() if key not in skip},
@@ -156,6 +160,7 @@ def _plan(cfg):
         discretePower=cfg.discretePower, model=model, initialSoc=cfg.initialSoc,
         gap=cfg.gap, timeLimit=cfg.timeLimit, workers=cfg.workers,
         cycles=cfg.cycleBudget, terminalPrice=cfg.terminalPrice,
+        endEmpty=cfg.endEmpty,
     )
     # Volatility is reported per trading day; a forecast is read per episode, because one
     # refresh matrix row is one episode.
@@ -288,7 +293,7 @@ def auditPlan(cfg):
     missing = [day for day in days if not (cacheRoot / cacheKey(
         cfg.region, day + nem_interval, cfg.horizon, cfg.calendar, cfg.discretePower,
         model, cfg.initialSoc, cfg.gap, cfg.cycleBudget,
-        cfg.terminalPrice)).exists()]
+        cfg.terminalPrice, cfg.endEmpty)).exists()]
     return {"folds": len(everyFold), "selected": len(selected),
             "episodes": len(days), "missing": len(missing),
             "leftoverDays": folds.leftoverDays(everyFold, cfg.end),
@@ -341,7 +346,7 @@ def _ensureTrained(cfg, fold, trainMode, algo, seed, parent, trainPrices, scaler
         outDir=directory.parent, scaler=scaler, warmFrom=warmFrom,
         forecasts=None if trainForecasts is None else trainForecasts(),
         initialSoc=cfg.initialSoc, cycleBudget=cfg.cycleBudget,
-        terminalPrice=cfg.terminalPrice,
+        terminalPrice=cfg.terminalPrice, endEmpty=cfg.endEmpty,
     )
     return directory
 
@@ -458,7 +463,7 @@ def runRolling(cfg, onProgress=None):
                         algoName=algo, calendar=cfg.calendar, horizon=cfg.horizon,
                         rewardScale=cfg.rewardScale, forecasts=forecasts, bounds=bounds,
                         initialSoc=cfg.initialSoc, cycleBudget=cfg.cycleBudget,
-                        terminalPrice=cfg.terminalPrice,
+                        terminalPrice=cfg.terminalPrice, endEmpty=cfg.endEmpty,
                     )
                     rows += _resultRows(cfg, plan, fold, algo, trainMode, source,
                                         results, position, testRecords, episodes)

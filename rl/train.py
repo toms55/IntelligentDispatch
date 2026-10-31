@@ -58,7 +58,8 @@ def trainOne(algoName, prices, model, seed=0,
              timesteps=100000, calendar=True, horizon=config.episode_intervals,
              rewardScale=config.reward_scale, outDir="runs", scaler=None,
              warmFrom=None, forecasts=None, initialSoc=config.initial_soc,
-             cycleBudget=config.cycle_budget, terminalPrice=0.0, **overrides):
+             cycleBudget=config.cycle_budget, terminalPrice=0.0, endEmpty=False,
+             **overrides):
     """Train `algoName` on `prices` and write a checkpoint. Returns (agent, path).
 
     `warmFrom` is a previous checkpoint directory to continue from, which is how a
@@ -81,7 +82,8 @@ def trainOne(algoName, prices, model, seed=0,
         BessEnv(prices, model, calendar=calendar, horizon=horizon,
                 rewardScale=rewardScale, shuffle=True, scaler=scaler,
                 forecasts=forecasts, initialSoc=initialSoc,
-                cycleBudget=cycleBudget, terminalPrice=terminalPrice),
+                cycleBudget=cycleBudget, terminalPrice=terminalPrice,
+                endEmpty=endEmpty),
         filename=str(directory / "monitor.csv"),
     )
     agent = (algos.build(algoName, env, seed=seed, **overrides) if warmFrom is None

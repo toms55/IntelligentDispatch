@@ -38,7 +38,7 @@ class BessEnv(gymnasium.Env):
                  initialSoc=config.initial_soc, dtHours=nem_interval_hours,
                  calendar=True, rewardScale=config.reward_scale, shuffle=False,
                  forecasts=None, scaler=None, cycleBudget=config.cycle_budget,
-                 terminalPrice=0.0):
+                 terminalPrice=0.0, endEmpty=False):
         self.prices = prices.to_numpy(dtype=float)
         self.timestamps = prices.index
         # One cap for the whole run, from the last timestamp. Pass `scaler` to reuse the
@@ -66,6 +66,11 @@ class BessEnv(gymnasium.Env):
         # What the pack still holds at the close is worth. Zero is the old environment,
         # where the last interval's best move is always to sell whatever is left.
         self.terminalPrice = terminalPrice
+        # The pack must be empty at the close. Enforced in `_applyAction` by overriding
+        # the move, as the budget is, so it binds under DQN and A2C, which read no mask:
+        # a charge that would leave too much to sell in time idles, and an idle that
+        # would do the same discharges.
+        self.endEmpty = endEmpty
 
         self.windows = list(range(0, len(self.prices) - horizon + 1, horizon))
         if not self.windows:
@@ -75,6 +80,8 @@ class BessEnv(gymnasium.Env):
 
         self.fullStep = model.chargePower * dtHours
         self.tolerance = 1e-9 * self.fullStep
+        # What one full-rate discharge removes, cell-side.
+        self.fullRemoval = self.fullStep / model.dischargeEfficiency
 
         low, high = features.observationBounds(self.scaler)
         self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
@@ -108,7 +115,7 @@ class BessEnv(gymnasium.Env):
     def step(self, action):
         price = self.prices[self._offset()]
         socPrev = self.stored / self.model.MWh
-        boughtMWh, soldMWh = self._applyAction(int(action))
+        boughtMWh, soldMWh = self._applyAction(self._closingAction(int(action)))
         socNew = self.stored / self.model.MWh
 
         revenue = price * (soldMWh - boughtMWh)
@@ -151,11 +158,13 @@ class BessEnv(gymnasium.Env):
         return self._observation(), reward, False, truncated, info
 
     def action_masks(self):
-        """MaskablePPO reads this by name. Masked only when zero energy would move."""
+        """MaskablePPO reads this by name. Masked when zero energy would move, or when
+        `_closingAction` would override the move."""
         return np.array(
             [
-                self._chargeHeadroom() > self.tolerance,
-                True,
+                self._chargeHeadroom() > self.tolerance
+                and self._closingAction(CHARGE) == CHARGE,
+                self._closingAction(IDLE) == IDLE,
                 self._dischargeRoom() > self.tolerance,
             ],
             dtype=bool,
@@ -186,6 +195,33 @@ class BessEnv(gymnasium.Env):
         """
         return min(self._dischargeHeadroom(),
                    self._budgetHeadroom() * self.model.dischargeEfficiency)
+
+    def _emptiable(self, stored, intervals):
+        """Whether `stored`, cell-side, can still be sold off in `intervals` full-rate
+        discharges without overrunning the cycle budget. Charging spends no budget, so
+        the headroom read here is the one the discharges would draw on."""
+        return (stored <= intervals * self.fullRemoval + self.tolerance
+                and stored <= self._budgetHeadroom() + self.tolerance)
+
+    def _closingAction(self, action):
+        """The move actually made under `endEmpty`. Unchanged without it.
+
+        From an emptiable state a discharge always stays emptiable, so the override never
+        runs out of moves. `optimisation.dp` reaches the same rule from the other end, by
+        valuing every non-empty closing state at minus infinity.
+        """
+        if not self.endEmpty:
+            return action
+        after = max(self.horizon - self.stepIndex - 1, 0)
+        if action == CHARGE:
+            charged = min(self.stored + self.model.chargeEfficiency
+                          * min(self.fullStep, max(0.0, self._chargeHeadroom())),
+                          self.model.MWh)
+            if not self._emptiable(charged, after):
+                action = IDLE
+        if action == IDLE and not self._emptiable(self.stored, after):
+            action = DISCHARGE
+        return action
 
     def _applyAction(self, action):
         """Move energy, clipped to what fits. Returns meter-side (bought, sold)."""

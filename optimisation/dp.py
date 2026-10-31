@@ -34,6 +34,9 @@ _actions = (CHARGE, IDLE, DISCHARGE)
 # two different states are at least (F / nu_D) / 400 apart, around 1.3e-5 MWh. Float
 # noise over 288 intervals stays near 1e-16. Anything between those two bounds works.
 quantum = 1e-9
+# A closing energy at or below this fraction of capacity counts as empty. A full discharge
+# out of a partial state lands within float noise of zero, never exactly on it.
+emptyTolerance = 1e-9
 
 
 def move(stored, action, model, dtHours):
@@ -129,7 +132,8 @@ def stateSpace(model, initialSoc, dtHours, horizon):
 
 
 def valueFunction(prices, model, initialSoc=0.5, dtHours=nem_interval_hours,
-                  calendar=True, space=None, cyclePrice=0.0, terminalPrice=0.0):
+                  calendar=True, space=None, cyclePrice=0.0, terminalPrice=0.0,
+                  endEmpty=False):
     """The optimal value of every state at every interval, and the action that gets it.
 
     Returns (value, action, space). `value[t][i]` is the most profit obtainable over
@@ -141,6 +145,8 @@ def valueFunction(prices, model, initialSoc=0.5, dtHours=nem_interval_hours,
     the rent `solve` bisects on to meet a cycle budget, and it is not a real cost, so a
     value read out of here is a value after rent, not a profit. `terminalPrice` values
     whatever the pack still holds at the close, so `value[horizon]` stops being zeros.
+    `endEmpty` values every closing state but the empty one at minus infinity, which is
+    `rl.env.BessEnv`'s forced sell-off stated as a terminal condition.
     """
     space = space or stateSpace(model, initialSoc, dtHours, len(prices))
     horizon = len(prices)
@@ -151,6 +157,8 @@ def valueFunction(prices, model, initialSoc=0.5, dtHours=nem_interval_hours,
     value = np.zeros((horizon + 1, len(space.energy)), dtype=float)
     if terminalPrice:
         value[horizon] = [model.terminalValue(e, terminalPrice) for e in space.energy]
+    if endEmpty:
+        value[horizon][space.energy > emptyTolerance * model.MWh] = -np.inf
     action = np.zeros((horizon, len(space.energy)), dtype=np.int8)
     for t in range(horizon - 1, -1, -1):
         candidates = (prices[t] * space.throughput - degradation
@@ -219,7 +227,8 @@ def _rollout(prices, model, action, space, initialSoc, calendar, terminalPrice):
 
 
 def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=True,
-          cycles=None, terminalPrice=0.0, dualGap=config.cycle_dual_gap):
+          cycles=None, terminalPrice=0.0, dualGap=config.cycle_dual_gap,
+          endEmpty=False):
     """The exact discrete-power oracle, as a `Schedule`.
 
     Drop-in for `optimisation.lp.solve(..., discretePower=True)`. With no cycle budget
@@ -236,6 +245,9 @@ def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=Tr
     bought the incumbent, in $ per MWh cell-side. The two never meet exactly: the battery
     discharges in whole intervals, so realised usage steps and no rent lands on the
     budget.
+
+    `endEmpty` requires the pack to be empty at the close. A schedule inside the budget
+    then never meets `rl.env.BessEnv`'s override, so the two stay one problem.
     """
     prices = np.asarray(prices, dtype=float)
     space = stateSpace(model, initialSoc, dtHours, len(prices))
@@ -243,7 +255,8 @@ def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=Tr
     def at(cyclePrice):
         value, action, _ = valueFunction(prices, model, initialSoc, dtHours, calendar,
                                          space=space, cyclePrice=cyclePrice,
-                                         terminalPrice=terminalPrice)
+                                         terminalPrice=terminalPrice,
+                                         endEmpty=endEmpty)
         schedule = _rollout(prices, model, action, space, initialSoc, calendar,
                             terminalPrice)
         return schedule, float(value[0][0])
@@ -254,8 +267,11 @@ def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=Tr
 
     budget = cycles * model.MWh
     # Above this rent a discharge can never pay for itself, so usage is zero and the
-    # bracket's upper end is feasible by construction.
-    ceiling = max(float(prices.max()), 0.0) * model.dischargeEfficiency + 1.0
+    # bracket's upper end is feasible by construction. A negative price pays the pack to
+    # charge, and a discharge that frees room for another paid charge earns that too, so
+    # the most a round trip can earn per MWh removed cell-side is both terms.
+    ceiling = (max(float(prices.max()), 0.0) * model.dischargeEfficiency
+               + max(-float(prices.min()), 0.0) / model.chargeEfficiency + 1.0)
     best, rented = at(ceiling)
     bestPrice = ceiling
     bound = min(freeValue, rented + ceiling * budget)

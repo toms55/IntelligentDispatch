@@ -87,7 +87,7 @@ def evaluatePolicy(agent, env, algoName=None, masking=None, bounds=None):
 def evaluateSeeds(checkpoints, prices, model, baselines=None, algoName="maskableppo",
                   calendar=True, horizon=None, rewardScale=None, forecasts=None,
                   bounds=None, initialSoc=config.initial_soc,
-                  cycleBudget=config.cycle_budget, terminalPrice=0.0):
+                  cycleBudget=config.cycle_budget, terminalPrice=0.0, endEmpty=False):
     """One evaluation per seed, over the same windows. Returns {seed: records}.
 
     Each env uses the price transform its own checkpoint trained under, read from
@@ -105,7 +105,7 @@ def evaluateSeeds(checkpoints, prices, model, baselines=None, algoName="maskable
         env = BessEnv(prices, model, baseline=baselines, calendar=calendar,
                       forecasts=forecasts, scaler=loadScaler(Path(path).parent),
                       initialSoc=initialSoc, cycleBudget=cycleBudget,
-                      terminalPrice=terminalPrice, **extra)
+                      terminalPrice=terminalPrice, endEmpty=endEmpty, **extra)
         agent = algos.load(algoName, str(path), env=None)
         results[seed] = evaluatePolicy(agent, env, algoName=algoName, bounds=bounds)
     return results

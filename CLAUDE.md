@@ -103,13 +103,9 @@ Rules:
 5. Working state stays out. The rolling backtest keeps one checkpoint per fold under
    `--out` (`runs/rolling`), because it warm starts the next fold from the last one.
    Those are not published, and nothing reads them across machines.
-6. `trainedPolicies/` is gitignored. Move it with `rsync` or `scp`, not with git.
-
-To move a trained agent to the dashboard machine, copy one region directory:
-
-```bash
-rsync -a trainedPolicies/NSW1/ dashboard-host:~/IntelligentDispatch/trainedPolicies/NSW1/
-```
+6. `trainedPolicies/` is tracked by git, and git is how it moves between machines.
+   Commit the published agents and pull them on the dashboard machine. Do not use
+   `rsync` or `scp`.
 
 ### A dashboard backtest lives in `results/backtestResults/`
 

@@ -77,17 +77,18 @@ def defaultSolver(verbose=False, timeLimit=None, gap=None, threads=None, options
 
 def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=True,
           solver=None, discretePower=False, timeLimit=None, gap=None, threads=None,
-          options=None, cycles=None, terminalPrice=0.0):
+          options=None, cycles=None, terminalPrice=0.0, endEmpty=False):
     """Best possible dispatch against a known price series.
 
     prices: $/MWh per interval. model: a SchadeDegradation. discretePower restricts
     every interval to full rate or nothing. options are extra HiGHS settings.
 
     `cycles` caps the equivalent full cycles the schedule may spend, as one exact
-    constraint row. `terminalPrice` values whatever the pack still holds at the close.
-    Both are here to cross-check `optimisation.dp` on short horizons. Do not wire this
-    path into the backtest: the cycle row couples every interval, and a 288-interval
-    discrete solve already took 1555 s to prove.
+    constraint row. `terminalPrice` values whatever the pack still holds at the close,
+    and `endEmpty` requires it to hold nothing. All three are here to cross-check
+    `optimisation.dp` on short horizons. Do not wire this path into the backtest: the
+    cycle row couples every interval, and a 288-interval discrete solve already took
+    1555 s to prove.
     """
     intervals = range(len(prices))
     segmentCapacity = model.segmentCapacities
@@ -144,6 +145,8 @@ def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=Tr
     # less the cost of releasing it. segmentCost is already $ per MWh sold out of each
     # segment, so the release cost is linear in `stored` and no new binaries appear.
     last = len(prices) - 1
+    if endEmpty:
+        problem += storedEnergy[last] == 0
     terminalExpr = pulp.lpSum(
         dischargeEff * (terminalPrice - segmentCost[s]) * stored[s][last]
         for s in segments
