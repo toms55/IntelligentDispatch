@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Rolling-origin backtest over two years of NSW1, 52-week train, 1-week test.
+# Rolling-origin backtest over 2023-01 to 2026-09 (143 weekly folds, as the 2023 runs),
+# 52-week train, 1-week test. REGION=SA1 bash scripts/rolling.sh for another region.
 #
 #     bash scripts/rolling.sh 2>&1 | tee runs/rolling.log
 #
@@ -7,13 +8,14 @@
 # is skipped once its rows are in the fold CSV.
 set -euo pipefail
 
-REGION=NSW1
-SPAN="all=2024-01-01T04:00..2026-01-01T04:00"
+REGION=${REGION:-NSW1}
+# 195 whole weeks from the 2023 runs' start, so the last episode is a full week.
+SPAN="all=2023-01-01T04:00..2026-09-27T04:00"
 WORKERS=6
 GAP=0.02
 LIMIT=1800
 TRAIN_WEEKS=52
-CAP_DATE="2026-01-01T04:00"
+CAP_DATE="2026-10-01T04:00"
 # The cycle warranty, and what the pack still holds at the week's close is worth. The
 # budget is weekly, so an episode is a week: see config.episode_intervals. The terminal
 # price is the region's own, out of config.terminal_energy_price, because the median RRP
@@ -55,7 +57,7 @@ uv run python -u -m cli rolling --split "$SPAN" --region "$REGION" \
   --algo maskableppo --cap-date "$CAP_DATE" \
   --baseline-oracle discrete --no-calendar \
   --cycles "$CYCLES" --terminal-price "$TERMINAL_PRICE" \
-  --policy-tag "$TAG" --results "results/${RUN}_${REGION}" \
+  --policy-tag "$TAG" --results "results/${RUN}_${REGION}" --out "runs/${RUN}_${REGION}" \
   --gap "$GAP" --time-limit "$LIMIT" --workers "$WORKERS" \
   --price-source both --allow-solve
 
