@@ -3,9 +3,10 @@
 MaskablePPO reads the action mask natively, and `MaskableDQN` below reads it when it
 acts. A2C relies on the environment's clipping instead.
 
-PPO and A2C run undiscounted: an episode is one week of profit, and every interval of it
-counts the same. DQN does not, because it bootstraps from a max over its own estimates
-and that overestimation compounds over every undiscounted step.
+Every algorithm runs undiscounted: an episode is one week of profit, and every interval
+of it counts the same. A discount is worse than it looks here: an episode opens empty, so
+every trade is a cost now against a sale hours later, and gamma 0.995 left DQN idle on up
+to two days in three.
 
 The rollout buffer and the replay warm-up are pinned to one trading day, not to the
 episode. An episode became a week when the cycle budget arrived, and scaling these with
@@ -21,11 +22,6 @@ from sb3_contrib import MaskablePPO
 import config
 
 maskingAlgorithms = frozenset({"maskableppo", "dqn"})
-# A half-life of about 11.5 hours, long enough to carry a midday charge to the evening
-# peak, short enough that the bootstrapped targets stay bounded.
-dqnGamma = 0.995
-# SB3's 10000 refreshes the target network three times in a 30k-step warm fold.
-dqnTargetUpdate = 1000
 
 
 class MaskableDQN(DQN):
@@ -77,9 +73,8 @@ def _maskablePpo(env, seed, overrides):
 
 
 def _dqn(env, seed, overrides):
-    settings = dict(policy="MlpPolicy", env=env, seed=seed, gamma=dqnGamma,
-                    learning_starts=config.observation_intervals,
-                    target_update_interval=dqnTargetUpdate, verbose=0)
+    settings = dict(policy="MlpPolicy", env=env, seed=seed, gamma=config.gamma,
+                    learning_starts=config.observation_intervals, verbose=0)
     settings.update(overrides)
     return MaskableDQN(**settings)
 

@@ -52,13 +52,10 @@ class TestRegistry:
         assert algos.supportsMasking("dqn") is True
         assert algos.supportsMasking("a2c") is False
 
-    @pytest.mark.parametrize("name", ["maskableppo", "a2c"])
+    @pytest.mark.parametrize("name", ["maskableppo", "dqn", "a2c"])
     def test_runs_undiscounted(self, paper, series, name):
         agent = algos.build(name, makeEnv(paper, series), seed=0)
         assert agent.gamma == config.gamma == 1.0
-
-    def test_dqn_discounts(self, paper, series):
-        assert algos.build("dqn", makeEnv(paper, series), seed=0).gamma == algos.dqnGamma < 1
 
 
 class TestMaskableDqn:
