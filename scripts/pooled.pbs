@@ -1,0 +1,48 @@
+#!/bin/bash
+# backtest/pooled.py as PBS jobs: one shared agent over all five regions, fine-tuned per
+# region, in the daily end-empty setup (one-day episode, 1 EFC, empty at the close,
+# 5-minute forecast refresh), so it compares directly with rolling_daily_empty_efc1.
+#
+# One job per seed, because the shared agent needs every region, then one merge job per
+# algorithm that waits on its five seeds and publishes the five regions:
+#
+#     qsub -N pool-s0 -v SEED=0,ALGO=maskableppo scripts/pooled.pbs
+#     qsub -N pool-merge -v MERGE=1,ALGO=maskableppo -W depend=afterok:<full ids> scripts/pooled.pbs
+#
+# Every seed passes --resume, because a later seed finds the actions CSV an earlier one
+# began. Check the name is free once, before submitting:
+#
+#     .venv/bin/python -c 'from backtest.actions import refuseExisting as r; [r(f"results/RUN_{g}", g) for g in ("NSW1","QLD1","SA1","TAS1","VIC1")]'
+#
+# The oracle cache must already hold every test episode (de1or-<R> built it). Submit from
+# a checkout nobody edits while the job queues or runs.
+
+#PBS -q medq
+#PBS -l ncpus=1
+#PBS -l mem=20GB
+#PBS -l walltime=48:00:00
+#PBS -j oe
+
+set -euo pipefail
+cd "${PBS_O_WORKDIR:-$PWD}"
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONWARNINGS=ignore
+PY=.venv/bin/python
+
+ALGO=${ALGO:-maskableppo}
+RUN=${RUN:-rolling_pooled_daily_empty_efc1}
+# PPO keeps the plain name; another algorithm adds its own, as scripts/rolling.sh does.
+[ "$ALGO" = maskableppo ] || RUN="${RUN}_${ALGO}"
+TAG=${TAG:-pooled_daily_empty_efc1}
+
+if [ "${MERGE:-0}" = 1 ]; then
+  $PY -u -m backtest.pooled --run "$RUN" --merge --seeds ${SEEDS:-0 1 2 3 4}
+  $PY -u -m backtest.publish results/"$RUN"_{NSW1,QLD1,SA1,TAS1,VIC1}
+  echo "published to results/backtestResults/; commit it with: git add results/backtestResults results/actions"
+  exit 0
+fi
+
+SEED=${SEED:?pass -v SEED=0 etc.}
+$PY -u -m backtest.pooled --run "$RUN" --algo "$ALGO" --seed "$SEED" --end-empty \
+  --cycles 1.0 --terminal-price 0 --horizon 288 --forecast-refresh 5 \
+  --pooled-warm 150000 --pooled-cold 1500000 --fine-tune 30000 \
+  --policy-tag "$TAG" --resume

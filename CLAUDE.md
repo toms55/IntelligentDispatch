@@ -330,6 +330,11 @@ cover.
   trading days. The oracle is solved one record per episode, and `_foldRecords` indexes
   it with `episodeOffset`. `evaluate.perDay` then splits one episode's trajectory into
   its trading days, so a weekly fold still writes seven result rows per seed.
+  `pooled.py` is the pooled-regions variant: each fold trains one shared agent on every
+  region's training window end to end, warm from the last fold's shared agent, then
+  fine-tunes a fresh copy per region. Both are scored, as trainMode `pooled` and
+  `finetune`, and both are published. `scripts/pooled.pbs` runs one seed per job, then
+  merges and publishes.
 
 - **`config.py`** — experiment design pinned in one place: episode horizon, observation
   horizon, SoC reset, the cycle budget, seeds, splits, the observation layout constants,
