@@ -1,0 +1,20 @@
+{
+  "region": "QLD1",
+  "algo": "maskableppo",
+  "trainMode": "warm",
+  "seed": 2,
+  "label": "maskableppo-warm-profit-s2",
+  "source": "runs/rolling2023_profit_warm_QLD1/QLD1/fold142/warm/maskableppo_seed2",
+  "publishedAt": "2026-10-29T08:32:54+00:00",
+  "command": "rolling",
+  "fold": 142,
+  "trainWindow": [
+    "2025-09-21T04:00:00",
+    "2026-09-20T04:00:00"
+  ],
+  "testWindow": [
+    "2026-09-20T04:00:00",
+    "2026-09-27T04:00:00"
+  ],
+  "capDate": "2026-10-01T04:00:00"
+}

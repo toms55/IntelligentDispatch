@@ -1,0 +1,20 @@
+{
+  "region": "NSW1",
+  "algo": "maskableppo",
+  "trainMode": "warm",
+  "seed": 4,
+  "label": "maskableppo-warm-s4",
+  "source": "/shared/homes/u168687/IntelligentDispatch/runs/rolling2023_fctrain_NSW1/NSW1/fold142/warm/maskableppo_seed4",
+  "publishedAt": "2026-10-24T07:27:35+00:00",
+  "command": "rolling",
+  "fold": 142,
+  "trainWindow": [
+    "2025-09-21T04:00:00",
+    "2026-09-20T04:00:00"
+  ],
+  "testWindow": [
+    "2026-09-20T04:00:00",
+    "2026-09-27T04:00:00"
+  ],
+  "capDate": "2026-10-01T04:00:00"
+}
