@@ -1,0 +1,22 @@
+{
+  "region": "QLD1",
+  "algo": "dqn",
+  "trainMode": "warm",
+  "seed": 1,
+  "label": "dqn-warm-daily_empty_efc1-s1",
+  "source": "runs/rolling_daily_empty_efc1_dqn_QLD1/QLD1/fold142/warm/dqn_seed1",
+  "observationSize": 62,
+  "cycleBudget": 7.0,
+  "publishedAt": "2026-10-31T06:33:16+00:00",
+  "command": "rolling",
+  "fold": 142,
+  "trainWindow": [
+    "2025-09-21T04:00:00",
+    "2026-09-20T04:00:00"
+  ],
+  "testWindow": [
+    "2026-09-20T04:00:00",
+    "2026-09-27T04:00:00"
+  ],
+  "capDate": "2026-10-01T04:00:00"
+}

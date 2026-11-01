@@ -1,0 +1,29 @@
+{
+  "region": "NSW1",
+  "algo": "maskableppo",
+  "trainMode": "finetune",
+  "seed": 1,
+  "label": "maskableppo-finetune-pooled_daily_empty_efc1-s1",
+  "source": "runs/rolling_pooled_daily_empty_efc1_NSW1/NSW1/fold142/finetune/maskableppo_seed1",
+  "observationSize": 62,
+  "cycleBudget": 7.0,
+  "publishedAt": "2026-10-31T20:08:47+00:00",
+  "command": "pooled",
+  "fold": 142,
+  "pooledRegions": [
+    "NSW1",
+    "QLD1",
+    "SA1",
+    "TAS1",
+    "VIC1"
+  ],
+  "trainWindow": [
+    "2025-09-21T04:00:00",
+    "2026-09-20T04:00:00"
+  ],
+  "testWindow": [
+    "2026-09-20T04:00:00",
+    "2026-09-27T04:00:00"
+  ],
+  "capDate": "2026-10-01T04:00:00"
+}

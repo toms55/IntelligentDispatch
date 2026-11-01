@@ -30,6 +30,8 @@ lp_*.csv
 *.xls
 *.xlsx
 *.zip
+# ...but a published agent's weights travel by git (see trainedPolicies/ in CLAUDE.md)
+!trainedPolicies/*/*/agent.zip
 *.o*
 
 # --- local helper and PBS job logs ---
