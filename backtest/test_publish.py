@@ -1,4 +1,6 @@
 """Tests for backtest/publish.py. Run with: uv run pytest backtest/ -q"""
+import json
+
 import pandas as pd
 import pytest
 
@@ -37,8 +39,8 @@ class TestPublish:
     def test_one_csv_per_region(self, results, root):
         for region in ("NSW1", "SA1"):
             publish.publish(finishedRun(results, f"rolling_{region}", region), root)
-        assert sorted(path.name for path in root.iterdir()) == ["rolling_NSW1.csv",
-                                                                 "rolling_SA1.csv"]
+        assert sorted(path.name for path in root.glob("*.csv")) == ["rolling_NSW1.csv",
+                                                                     "rolling_SA1.csv"]
         assert data.availableRegions(root / "rolling") == ["NSW1", "SA1"]
         assert data.findResults(None, root=root) == root / "rolling"
 
@@ -57,7 +59,7 @@ class TestPublish:
         writeActions(results, "rolling")
         publish.publish(finishedRun(results, "rolling", sources=("forecast",)), root)
         assert data.actionsFile(root / "rolling", REGION).parent == results / "actions"
-        assert [path.name for path in root.iterdir()] == [f"rolling_{REGION}.csv"]
+        assert [path.name for path in root.glob("*.csv")] == [f"rolling_{REGION}.csv"]
 
     # The CSV the backtest appended to as it ran becomes the Parquet the dashboard reads,
     # every row kept, and the CSV stays as the backtest left it.
@@ -109,6 +111,47 @@ class TestPublish:
         loaded = data.loadRun(REGION, root / "old").days
         assert "arm" not in loaded and set(loaded.trainMode) == {"warm"}
         assert len(loaded) == 14
+
+
+class TestContext:
+    """The manifest and a description travel with the published CSV, because the raw
+    results never leave the machine that ran them."""
+
+    def test_the_manifest_and_description_sit_beside_the_csv(self, results, root):
+        run = finishedRun(results, "rolling")
+        publish.publish(run, root, description="daily, end empty")
+        context = json.loads((root / f"rolling_{REGION}.json").read_text())
+        assert context["description"] == "daily, end empty"
+        assert context["manifest"] == {"region": REGION, "forecastEvery": 48}
+        assert context["rawResults"] == str(run)
+
+    def test_a_republish_keeps_the_description(self, results, root):
+        run = finishedRun(results, "rolling")
+        publish.publish(run, root, description="daily, end empty")
+        publish.publish(run, root)
+        context = json.loads((root / f"rolling_{REGION}.json").read_text())
+        assert context["description"] == "daily, end empty"
+
+    def test_the_index_lists_every_run(self, results, root):
+        publish.publish(finishedRun(results, "described"), root, description="one | two")
+        publish.publish(finishedRun(results, "bare"), root)
+        index = (root / "README.md").read_text()
+        assert f"| `described` | {REGION} | one \\| two |" in index
+        assert f"| `bare` | {REGION} | no description recorded |" in index
+
+    def test_context_only_writes_no_rows(self, results, root):
+        run = finishedRun(results, "rolling")
+        publish.publish(run, root)
+        before = (root / f"rolling_{REGION}.csv").stat().st_mtime_ns
+        publish.main([str(run), "--root", str(root), "--context-only",
+                      "--description", "later"])
+        assert (root / f"rolling_{REGION}.csv").stat().st_mtime_ns == before
+        assert json.loads((root / f"rolling_{REGION}.json").read_text())[
+            "description"] == "later"
+
+    def test_context_for_an_unpublished_run_is_refused(self, results, root):
+        with pytest.raises(ValueError, match="no published"):
+            publish.writeContext(finishedRun(results, "rolling"), root)
 
 
 class TestCycleBudget:

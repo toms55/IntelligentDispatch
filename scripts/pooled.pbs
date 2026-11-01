@@ -36,7 +36,8 @@ TAG=${TAG:-pooled_daily_empty_efc1}
 
 if [ "${MERGE:-0}" = 1 ]; then
   $PY -u -m backtest.pooled --run "$RUN" --merge --seeds ${SEEDS:-0 1 2 3 4}
-  $PY -u -m backtest.publish results/"$RUN"_{NSW1,QLD1,SA1,TAS1,VIC1}
+  $PY -u -m backtest.publish results/"$RUN"_{NSW1,QLD1,SA1,TAS1,VIC1} \
+    ${DESCRIPTION:+--description "$DESCRIPTION"}
   echo "published to results/backtestResults/; commit it with: git add results/backtestResults results/actions"
   exit 0
 fi
