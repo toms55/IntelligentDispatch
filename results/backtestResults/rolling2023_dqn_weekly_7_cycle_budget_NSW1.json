@@ -1,0 +1,53 @@
+{
+  "run": "rolling2023_dqn_weekly_7_cycle_budget",
+  "region": "NSW1",
+  "description": "DQN (unmasked) on the weekly 7-cycle setup of rolling2023_weekly_7_cycle_budget.",
+  "rawResults": "results/rolling_efc7_dqn_NSW1",
+  "contextWrittenAt": "2026-11-01T03:52:45+00:00",
+  "manifest": {
+    "actionsFile": "results/actions/rolling_efc7_dqn_NSW1.csv",
+    "algos": [
+      "dqn"
+    ],
+    "battery": [
+      0.06,
+      0.1,
+      150000.0
+    ],
+    "calendar": false,
+    "capDate": "2026-10-01 04:00:00",
+    "coldTimesteps": 300000,
+    "cycleBudget": 7.0,
+    "discretePower": true,
+    "end": "2026-09-27 04:00:00",
+    "forecastEvery": 48,
+    "gap": 0.02,
+    "horizon": 2016,
+    "initialSoc": 0.0,
+    "policyRoot": "trainedPolicies",
+    "priceSources": [
+      "realised",
+      "forecast"
+    ],
+    "region": "NSW1",
+    "reward": "profit",
+    "rewardScale": 20.0,
+    "seeds": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "start": "2023-01-01 04:00:00",
+    "stepWeeks": 1,
+    "terminalPrice": 86.0,
+    "testWeeks": 1,
+    "trainModes": [
+      "warm"
+    ],
+    "trainWeeks": 52,
+    "trajectorySeed": 0,
+    "warmTimesteps": 30000
+  }
+}
