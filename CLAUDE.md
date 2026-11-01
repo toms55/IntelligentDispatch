@@ -161,6 +161,9 @@ results/backtestResults/<run>_<region>.csv   one row per seed, price source and 
                                              day, every fold, plus forecastEvery
 results/actions/<run>_<region>.parquet       one row per agent decision, every seed and
                                              price source; the day view draws it
+results/backtestResults/<run>_<region>.json  the run's manifest and a one-line
+                                             description of what it tested
+results/backtestResults/README.md            the index: every published run, one line
 ```
 
 The actions export is Parquet because GitHub refuses a file over 100 MB, and every seed
@@ -184,7 +187,12 @@ Rules:
 3. A region is published only if `data.loadRun` can read it, so a run the dashboard
    cannot draw is refused at publish time.
 4. `forecastEvery` is the one manifest value the dashboard reads, so it travels as a
-   column. The manifest and the fold trajectories stay with the raw results.
+   column. The whole manifest travels too, in the JSON beside the CSV, with a
+   `--description` saying what the run tested and against which run, because the raw
+   results never leave the machine that ran them. Always pass `--description` on a
+   first publish. A republish without one keeps the old description, and
+   `--context-only` adds context to a run already published. The fold trajectories
+   stay with the raw results.
 5. Publishing commits nothing. Commit `results/backtestResults/` and `results/actions/`
    after a backtest.
 6. A day row carries `episodeStart` and `cycleBudget` beside `testDay`, and
