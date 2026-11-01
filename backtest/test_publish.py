@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from backtest import publish, records
+from rl import oracleArchive
 from visualise.dashboard import data
 from visualise.dashboard.test_data import REGION, dayRows, publishRun, writeActions
 
@@ -151,6 +152,14 @@ class TestRestampOracle:
         keep = [column for column in after.columns
                 if column not in ("oracleDualBound", "oracleGap")]
         pd.testing.assert_frame_equal(after[keep], before[keep])
+
+    def test_a_packed_corpus_restamps_the_same(self, results, tmp_path):
+        """oracleResults/<set> is one Parquet per region, not one JSON per day."""
+        path = self.published(results)
+        rows = records.readDayFile(path)
+        loose = corpus(tmp_path, rows.testDay)
+        oracleArchive.pack(sorted(loose.glob("*.json")), tmp_path / "packed")
+        assert publish.restampOracle(path, tmp_path / "packed") == (40.0 * 14, 38.0 * 14)
 
     def test_a_missing_day_refuses_the_file(self, results, tmp_path):
         path = self.published(results)

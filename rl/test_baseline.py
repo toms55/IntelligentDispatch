@@ -10,7 +10,7 @@ import pytest
 import config
 from degradation.schade import SchadeDegradation
 from optimisation.lp import Schedule
-from rl import baseline
+from rl import baseline, oracleArchive
 from rl.env import BessEnv
 
 
@@ -183,6 +183,20 @@ class TestReadRoots:
         assert self.solve(paper, series) == solved
         assert len(fakeSolve) == 1  # served from the corpus
         assert not list(write.iterdir())  # and nothing was written beside it
+
+    def test_a_packed_record_is_read_and_nothing_written(self, paper, series, fakeSolve,
+                                                         tmp_path, monkeypatch):
+        """A tracked set is one Parquet per region, served without unpacking it."""
+        loose, packed, write = tmp_path / "loose", tmp_path / "dp", tmp_path / "new"
+        loose.mkdir()
+        write.mkdir()
+        solved = self.solve(paper, series, cacheDir=loose)
+        oracleArchive.pack(sorted(loose.glob("*.json")), packed)
+        monkeypatch.setattr(baseline, "readRoots", (write, packed))
+        monkeypatch.setattr(baseline, "cacheRoot", write)
+        assert self.solve(paper, series) == solved
+        assert len(fakeSolve) == 1  # served from the Parquet
+        assert not list(write.iterdir())
 
     def test_a_new_window_is_written_to_the_first_root(self, paper, series, fakeSolve,
                                                        tmp_path, monkeypatch):

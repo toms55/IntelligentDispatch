@@ -40,7 +40,7 @@ from pathlib import Path
 
 from backtest import records
 from backtest.actions import exportName, liveFile, readLive, writeExport
-from rl import baseline
+from rl import baseline, oracleArchive
 from visualise.dashboard import data
 
 
@@ -98,16 +98,19 @@ def publish(runDir, root=data.backtestRoot, name=None):
 def corpusDays(corpus, region):
     """One region's records in `corpus`, by trading date. A corpus holds thousands of
     files, and a run asks for a thousand days, so the directory is read once."""
+    names = {path.name for path in Path(corpus).glob(f"{region}_*.json")}
+    names |= set(oracleArchive.regionRecords(corpus, region))
     index = {}
-    for path in sorted(Path(corpus).glob(f"{region}_*.json")):
-        index.setdefault(path.name.split("_")[1], []).append(path)
+    for name in sorted(names):
+        index.setdefault(name.split("_")[1], []).append(name)
     return index
 
 
 def corpusRecord(corpus, region, day):
     """The one record `corpus` holds for a region and a trading day, as a dict.
 
-    A record is named <region>_<date>_<time>_<key>.json, and the key states the
+    A record is named <region>_<date>_<time>_<key>.json, as a loose file or as a row
+    of the region's Parquet (rl/oracleArchive.py), and the key states the
     parameters of its solve. One corpus is one setting, so the region and the date name
     one record in it. Two would mean two settings, which no caller can tell apart.
     """
@@ -120,10 +123,10 @@ def corpusRecord(corpus, region, day):
     if len(found) > 1:
         raise ValueError(
             f"{corpus} holds {len(found)} oracle records for {region} on "
-            f"{day:%Y-%m-%d}: {[path.name for path in found]}. They were solved at "
+            f"{day:%Y-%m-%d}: {found}. They were solved at "
             "different settings, and the file does not say which one it was scored "
             "against")
-    return json.loads(found[0].read_text())
+    return json.loads(baseline.findRecord(found[0], cacheDir=corpus))
 
 
 def restampOracle(path, corpus=baseline.dpRoot):

@@ -311,14 +311,21 @@ cover.
   - `env.py` — `BessEnv`, three actions, masking plus clipping at the SoC boundary.
     Takes a price `Series` rather than a date range, which is what keeps tests off the
     network. `forecasts=` swaps what the agent sees without touching what it is paid.
-  - `baseline.py` — per-window oracle solutions, read from one of three directories and
-    written to the first. `findRecord` is the lookup: `data_cache/lp_baseline`, then
-    `oracleResults/dp`, then `oracleResults/`. `oracleResults/dp` is the corpus git
-    tracks, the discrete oracle solved exactly by `optimisation/dp.py` for every trading
-    day of all five regions, 2023-01-01 to 2026-09-26. A cache key states every parameter
-    of its solve, the solver included, so a key matches a record of the same problem only,
-    whichever directory holds it. `--cache-dir` names one directory and then reads that
-    one alone.
+  - `baseline.py` — per-window oracle solutions, read from one of four places and
+    written to the first. `findRecord` is the lookup: `data_cache/lp_baseline`, then the
+    tracked sets `oracleResults/dp`, `oracleResults/dp_soc0` and `oracleResults/milp`.
+    `oracleResults/dp` is the discrete oracle solved exactly by `optimisation/dp.py` for
+    every trading day of all five regions, 2023-01-01 to 2026-09-26; `milp` is the MILP
+    corpus from before it. A cache key states every parameter of its solve, the solver
+    included, so a key matches a record of the same problem only, whichever set holds
+    it. `--cache-dir` names one directory and then reads that one alone.
+  - `oracleArchive.py` — the format of a tracked set: one Parquet per region
+    (`oracleResults/<set>/<REGION>.parquet`), never one JSON per day, because 21,206
+    small files made every checkout crawl on the shared filesystem. Each row keeps the
+    cache file's name and its JSON text, so `findRecord` serves a record straight out of
+    the Parquet and writes nothing. `python -m rl.oracleArchive pack <json folder>
+    oracleResults/<set>` merges solves into a set, a new record replacing an old one of
+    the same key, and `unpack` writes byte-identical cache JSONs back out.
   - `algos.py` — the `--algo` registry: MaskablePPO, DQN, A2C.
   - `train.py`, `evaluate.py` — one run per seed, and regret against the oracle.
   - `policies.py` — `trainedPolicies/`: the layout of a finished agent, and the only
@@ -433,8 +440,10 @@ cover.
   more.** The corpus bounds the published `rolling2023` runs, which were scored at 0.5,
   and `--restamp-oracle` wrote those bounds into `results/backtestResults/`. A run at
   today's 0.0 start misses every record in it and solves its own, which the DP does in
-  milliseconds. Resolve the corpus at 0.0 before the next experiment quotes it:
-  `cli baseline --split ... --no-calendar --gap 0.02 --cache-dir oracleResults/dp`.
+  milliseconds. The 0.0-start corpus is `oracleResults/dp_soc0`, and `findRecord` reads
+  it too. To add solves to a set, solve into a scratch folder and pack it in:
+  `cli baseline --split ... --no-calendar --gap 0.02 --cache-dir /tmp/solves`, then
+  `python -m rl.oracleArchive pack /tmp/solves oracleResults/dp_soc0`.
 - **`cacheKey` does not record the solver time limit.** A window that stops on the limit
   writes a loose dual bound, and `solveWindow` then serves that record from cache for
   good. Raising `--time-limit` later cannot reach it, so delete the files to redo them.

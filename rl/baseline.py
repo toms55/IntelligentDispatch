@@ -9,28 +9,37 @@ import config
 from degradation.schade import SchadeDegradation
 from optimisation import dp
 from optimisation.lp import solve
+from rl import oracleArchive
 from utils import nem_interval_hours
 
 _repo = Path(__file__).resolve().parent.parent
 # New records are written here.
 cacheRoot = _repo / "data_cache" / "lp_baseline"
-# The solved corpora git tracks: oracleResults/dp holds the discrete oracle solved
-# exactly by optimisation/dp.py, every trading day of every region, and oracleResults/
-# itself holds the MILP records from before it.
+# The solved corpora git tracks, each one Parquet per region (rl/oracleArchive.py):
+# oracleResults/dp holds the discrete oracle solved exactly by optimisation/dp.py, every
+# trading day of every region from a 0.5 start, dp_soc0 the same from empty, and milp the
+# MILP records from before them.
 oracleRoot = _repo / "oracleResults"
 dpRoot = oracleRoot / "dp"
 # Where a record is looked up, in order, and the first entry is where a new one lands.
 # A cache key states every parameter of its solve, the solver included, so a key only
 # ever matches a record of the same problem whichever directory holds it.
-readRoots = (cacheRoot, dpRoot, oracleRoot)
+readRoots = (cacheRoot, dpRoot, oracleRoot / "dp_soc0", oracleRoot / "milp")
 
 
 def findRecord(name, cacheDir=None):
-    """The path of the cached record `name`, or None when no directory holds it."""
+    """The JSON text of the cached record `name`, or None when nothing holds it.
+
+    A directory serves a loose cache JSON first, then the record its region's Parquet
+    holds under the same name, so the tracked sets are read without unpacking them.
+    """
     for directory in ((Path(cacheDir),) if cacheDir else readRoots):
-        path = directory / name
+        path = Path(directory) / name
         if path.exists():
-            return path
+            return path.read_text()
+        text = oracleArchive.lookup(directory, name)
+        if text is not None:
+            return text
     return None
 
 
@@ -72,7 +81,7 @@ def solveWindow(prices, timestamps, region, horizon=config.episode_intervals,
                     initialSoc, gap)
     found = findRecord(name, cacheDir)
     if found is not None:
-        return json.loads(found.read_text())
+        return json.loads(found)
     directory = Path(cacheDir) if cacheDir else cacheRoot
     path = directory / name
 
