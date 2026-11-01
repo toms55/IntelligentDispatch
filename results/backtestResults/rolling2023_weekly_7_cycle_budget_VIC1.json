@@ -1,0 +1,53 @@
+{
+  "run": "rolling2023_weekly_7_cycle_budget",
+  "region": "VIC1",
+  "description": "MaskablePPO, weekly episode (2016 intervals) with a budget of 7 equivalent full cycles per week and the region's terminal price on closing stock; forecast refreshed every 4 h; 30k warm / 300k cold steps. Tests weekly against daily episodes: compare with rolling2023_daily_1_cycle_end_empty.",
+  "rawResults": "results/rolling_efc7_VIC1",
+  "contextWrittenAt": "2026-11-01T03:52:27+00:00",
+  "manifest": {
+    "actionsFile": "results/actions/rolling_efc7_VIC1.csv",
+    "algos": [
+      "maskableppo"
+    ],
+    "battery": [
+      0.06,
+      0.1,
+      150000.0
+    ],
+    "calendar": false,
+    "capDate": "2026-10-01 04:00:00",
+    "coldTimesteps": 300000,
+    "cycleBudget": 7.0,
+    "discretePower": true,
+    "end": "2026-09-27 04:00:00",
+    "forecastEvery": 48,
+    "gap": 0.02,
+    "horizon": 2016,
+    "initialSoc": 0.0,
+    "policyRoot": "trainedPolicies",
+    "priceSources": [
+      "realised",
+      "forecast"
+    ],
+    "region": "VIC1",
+    "reward": "profit",
+    "rewardScale": 20.0,
+    "seeds": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "start": "2023-01-01 04:00:00",
+    "stepWeeks": 1,
+    "terminalPrice": 53.5,
+    "testWeeks": 1,
+    "trainModes": [
+      "warm"
+    ],
+    "trainWeeks": 52,
+    "trajectorySeed": 0,
+    "warmTimesteps": 30000
+  }
+}
