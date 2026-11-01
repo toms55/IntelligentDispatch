@@ -1,0 +1,66 @@
+{
+  "run": "rolling2023_pooled_daily_1_cycle_end_empty",
+  "region": "SA1",
+  "description": "One MaskablePPO agent trained on all five regions end to end (150k warm / 1.5M cold steps per fold), then a fresh 30k-step fine-tune per region each fold. trainMode pooled is the shared agent, finetune the regional copy. Daily 1-cycle end-empty setup: compare with rolling2023_daily_1_cycle_end_empty.",
+  "rawResults": "results/rolling_pooled_daily_empty_efc1_SA1",
+  "contextWrittenAt": "2026-11-01T03:54:40+00:00",
+  "manifest": {
+    "actionsFile": "results/actions/rolling_pooled_daily_empty_efc1_SA1.csv",
+    "algos": [
+      "maskableppo"
+    ],
+    "battery": [
+      0.06,
+      0.1,
+      150000.0
+    ],
+    "calendar": false,
+    "capDate": "2026-10-01 04:00:00",
+    "coldTimesteps": 1500000,
+    "cycleBudget": 1.0,
+    "discretePower": true,
+    "end": "2026-09-27 04:00:00",
+    "endEmpty": true,
+    "forecastEvery": 1,
+    "gap": 0.02,
+    "horizon": 288,
+    "initialSoc": 0.0,
+    "policyRoot": "trainedPolicies",
+    "pooled": {
+      "fineTune": 30000,
+      "pooledCold": 1500000,
+      "pooledWarm": 150000,
+      "regions": [
+        "NSW1",
+        "QLD1",
+        "SA1",
+        "TAS1",
+        "VIC1"
+      ]
+    },
+    "priceSources": [
+      "realised",
+      "forecast"
+    ],
+    "region": "SA1",
+    "reward": "profit",
+    "rewardScale": 20.0,
+    "seeds": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "start": "2023-01-01 04:00:00",
+    "stepWeeks": 1,
+    "testWeeks": 1,
+    "trainModes": [
+      "pooled",
+      "finetune"
+    ],
+    "trainWeeks": 52,
+    "trajectorySeed": null,
+    "warmTimesteps": 30000
+  }
+}
