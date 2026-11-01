@@ -68,16 +68,20 @@ def requireWithinBudget(days, region):
     if "cycleBudget" not in days or days.cycleBudget.isna().all():
         return
     agent = days[days.algo != "oracle"]
-    spent = agent.groupby(["seed", "priceSource", "episodeStart"]).agg(
+    # One episode per algorithm and train mode too: a pooled run scores the shared agent
+    # and its fine-tuned copy on the same episode, and their cycles must not add up.
+    keys = [key for key in ("algo", "trainMode", "seed", "priceSource", "episodeStart")
+            if key in agent]
+    spent = agent.groupby(keys).agg(
         cycles=("agentCycles", "sum"), budget=("cycleBudget", "max"))
     over = spent[spent.cycles > spent.budget + 1e-9]
     if len(over):
-        seed, source, episode = over.index[0]
+        first = dict(zip(keys, over.index[0]))
         worst = over.iloc[0]
         raise ValueError(
             f"{region} has {len(over)} episode(s) over the cycle budget; the first is "
-            f"seed {seed}, {source} prices, the episode starting {episode}, which spent "
-            f"{worst.cycles:.6f} of {worst.budget} cycles"
+            + ", ".join(f"{key} {value}" for key, value in first.items())
+            + f", which spent {worst.cycles:.6f} of {worst.budget} cycles"
         )
 
 
