@@ -10,9 +10,6 @@ data_cache/
 model/
 runs/
 
-# --- the published agents: binary weights, moved between machines with rsync ---
-trainedPolicies/
-
 # --- experiment outputs: only the published runs (one CSV) and their actions exports
 # --- (one Parquet) per run per region. The live actions CSV a backtest appends to stays out ---
 results/**

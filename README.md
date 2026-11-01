@@ -52,8 +52,8 @@ trainedPolicies/<region>/<algo>-<trainMode>-s<seed>/
     policy.json    which command wrote it, from which window, and when
 ```
 
-The directory name is the label the dashboard shows. `trainedPolicies/` is gitignored,
-so an agent never travels by git.
+The directory name is the label the dashboard shows. `trainedPolicies/` is tracked by
+git, so an agent travels with a commit.
 
 `cli train` and `cli rolling` publish their own agents at the end of a run. Use
 `cli publish` for an agent trained before that rule, or for one that arrived from
@@ -89,11 +89,8 @@ different cap mean something else.
 
 To remove an agent, delete its directory.
 
-To move an agent to the dashboard machine, copy one region directory:
-
-```bash
-rsync -a trainedPolicies/NSW1/ dashboard-host:~/IntelligentDispatch/trainedPolicies/NSW1/
-```
+`trainedPolicies/` is tracked by git. Commit a finished agent to move it to the
+dashboard machine.
 
 The current forecast screen lists the agents in `trainedPolicies/` and nothing else. An
 agent that is not published there cannot run live.

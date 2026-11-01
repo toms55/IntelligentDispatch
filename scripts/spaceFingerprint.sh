@@ -64,6 +64,6 @@ describe() {
   # stay out: republishing one must not look like a change to the Space.
   while read -r region seed; do
     directory="$POLICIES/$region/$ALGO-$TRAIN_MODE-s$seed"
-    [[ -d "$directory" ]] && find "$directory" -type f | sort | describe
+    if [[ -d "$directory" ]]; then find "$directory" -type f | sort | describe; fi
   done < <(bash "$(dirname "$0")/bestSeeds.sh")
 } | sha256sum | cut -d' ' -f1
