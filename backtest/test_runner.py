@@ -132,6 +132,14 @@ class TestSpanWideWork:
         assert windows[0].index[0] == first.testStart + nem_interval
         assert all("baselines" not in call for call in spy["train"])
 
+    # The agent starts where the oracle starts. A start SoC that reaches the oracle but
+    # not the agent's env pairs one episode's profit with another episode's bound.
+    def test_the_agent_starts_at_the_oracle_soc(self, config, spy):
+        runner.runRolling(config._replace(initialSoc=0.5))
+        assert spy["baseline"][0]["initialSoc"] == 0.5
+        assert {call["initialSoc"] for call in spy["train"]} == {0.5}
+        assert {call["initialSoc"] for call in spy["evaluate"]} == {0.5}
+
 
 class TestFoldWindows:
     # Each fold trains on its own sliding window, starting one interval after its 04:00

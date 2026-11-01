@@ -107,8 +107,8 @@ uv run python -m visualise.dashboard --results results/backtestResults/rolling20
 ```
 
 `results/backtestResults/` holds the backtests the dashboard draws, one CSV per run per
-region, and git tracks it. The dispatch each day draws comes from the matching CSV in
-`results/actions/`. A finished backtest gets there through `uv run python -m
+region, and git tracks it. The dispatch each day draws comes from the matching Parquet
+file in `results/actions/`. A finished backtest gets there through `uv run python -m
 backtest.publish results/<run>`, which the folds job runs for you.
 
 I host it with some models I've trained here: https://huggingface.co/spaces/toms55/IntelligentDispatch

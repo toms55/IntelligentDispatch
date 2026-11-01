@@ -12,7 +12,7 @@ from typing import NamedTuple
 import pandas as pd
 
 from backtest import records
-from backtest.actions import exportName
+from backtest.actions import exportFile, exportName
 
 resultsRoot = Path("results")
 # The runs the dashboard draws, one CSV per run and region, <run>_<region>.csv, beside
@@ -168,22 +168,22 @@ def availableRegions(resultsDir):
                   if "_" not in path.stem[len(prefix):])
 
 
-def actionsFile(resultsDir, region):
-    """The actions export of the run `resultsDir`, or None when it was not exported.
+def actionsPath(resultsDir, region):
+    """Where the actions export of the run `resultsDir` lives, written or not.
 
-    `backtest.actions` names its CSV after the run, as `backtest.publish` names the
-    run's own, so the export of results/backtestResults/<run> is
-    results/actions/<run>_<region>.csv, and pointing the dashboard at another run
-    changes the forecast numbers with every other number. The Space carries it gzipped,
-    which pandas reads the same way.
+    `backtest.publish` names it after the run, as it names the run's own CSV, so the
+    export of results/backtestResults/<run> is results/actions/<run>_<region>.parquet,
+    and pointing the dashboard at another run changes the forecast numbers with every
+    other number. The live CSV beside it is a backtest still writing, and is not read.
     """
     resultsDir = Path(resultsDir)
-    name = exportName(resultsDir.name, region)
-    folder = resultsDir.parent.parent / "actions"
-    for path in (folder / name, folder / f"{name}.gz"):
-        if path.exists():
-            return path
-    return None
+    return resultsDir.parent.parent / "actions" / exportFile(resultsDir.name, region)
+
+
+def actionsFile(resultsDir, region):
+    """The actions export of the run `resultsDir`, or None when it was not exported."""
+    path = actionsPath(resultsDir, region)
+    return path if path.exists() else None
 
 
 actionColumns = ("forecastRunTime", "intervalTime", "action", "soc", "forecastPrice",
@@ -194,8 +194,7 @@ actionColumns = ("forecastRunTime", "intervalTime", "action", "soc", "forecastPr
 def _readActions(path, modified):
     # `modified` is only in the key, so a re-export is read again rather than served
     # from the cache.
-    return pd.read_csv(path, parse_dates=["forecastRunTime", "intervalTime"],
-                       usecols=list(actionColumns), float_precision="round_trip")
+    return pd.read_parquet(path, columns=list(actionColumns))
 
 
 forecastColumns = ("settlementdate", "forecastPrice", "forecastRunTime")

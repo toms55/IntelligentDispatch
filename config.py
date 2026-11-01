@@ -58,6 +58,20 @@ high_vol_intensity = 1.20
 # is what makes the forecast horizon available.
 seeds = (0, 1, 2, 3, 4)
 
+# The seed the hosted dashboard shows, per region. Every seed stays in trainedPolicies/
+# and in the published results, because the thesis reports the spread over seeds. The
+# Space shows one of them, so a reader sees one dispatch per region rather than five
+# that differ only by seed. scripts/publishSpace.sh reads this to pick which rows and
+# which agent to stage, and nothing else reads it: a local dashboard offers every seed.
+#
+# Each entry is the seed with the highest total agentProfit on forecast prices, over the
+# test days of the run the Space opens on, which is rolling2023_profit_fc5m.
+# `scripts/rankSeeds.py` derives it and prints this line. The winner is specific to the
+# run: only QLD1 keeps its seed across the three profit runs, so re-derive this whenever
+# the Space opens on another run. Measured gain over seed 0 runs from nothing in QLD1 to
+# $1293 of $19685 in SA1, against a spread over seeds of up to $2929.
+best_seed = {"NSW1": 1, "QLD1": 0, "SA1": 4, "TAS1": 2, "VIC1": 1}
+
 # How often the agent's forecast is replaced by AEMO's latest run inside an episode, in
 # dispatch intervals. 48 is every four hours: 04:00, 08:00, 12:00, 16:00, 20:00 and
 # 00:00. Every PREDISPATCH run reaches the end of its trading day, which is the episode's

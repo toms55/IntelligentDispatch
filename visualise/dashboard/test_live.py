@@ -90,6 +90,12 @@ class TestCheckpoints:
     def test_the_price_source_is_dropped(self):
         assert live.checkpointKey("maskableppo-warm-s0-forecast") == "maskableppo-warm-s0"
 
+    # A tagged agent keeps its tag, and a forecast screen label has no source to drop.
+    @pytest.mark.parametrize("label", ["maskableppo-warm-start_at_0_SoC-s0",
+                                       "maskableppo-warm-s0"])
+    def test_a_published_name_is_kept_whole(self, label):
+        assert live.checkpointKey(label) == label
+
     # The screen reads trainedPolicies/, which is what training publishes.
     def test_it_reads_what_training_published(self, tmp_path):
         source = tmp_path / "fold51"

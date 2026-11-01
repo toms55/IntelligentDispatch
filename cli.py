@@ -291,7 +291,7 @@ def _runTrain(args):
                 args.algo, prices, model, seed=seed,
                 timesteps=args.timesteps, calendar=not args.no_calendar,
                 horizon=args.horizon, rewardScale=args.reward_scale, outDir=args.out,
-                scaler=scaler,
+                scaler=scaler, initialSoc=args.initial_soc,
             )
         print(f"wrote          {path}.zip")
         # One fit from fresh weights is a cold agent, which is the train mode the
@@ -369,6 +369,7 @@ def _runEval(args):
         checkpoints, prices, model, baselines=baselines, algoName=args.algo,
         calendar=not args.no_calendar, horizon=args.horizon,
         rewardScale=args.reward_scale, forecasts=forecasts, bounds=bounds,
+        initialSoc=args.initial_soc,
     )
     summary = evaluate.acrossSeeds(results)
     _reportEval(summary, results, args)
@@ -445,6 +446,7 @@ def _rolling(args):
         foldFilter=None if args.folds is None else _parseFolds(args.folds),
         allowSolve=args.allow_solve, outDir=Path(args.out),
         resultsDir=Path(args.results), policyRoot=Path(args.policies),
+        policyTag=args.policy_tag,
         actionsFile=actions.liveFile(args.results, args.region),
     )
 
@@ -791,6 +793,9 @@ def main(argv=None):
                          help="continue a backtest of this name; without it a name whose "
                               "actions CSV or published CSV exists is refused, "
                               "so a redo takes a new --results name")
+    rolling.add_argument("--policy-tag", metavar="TAG",
+                         help="publish the final agents as <algo>-<mode>-TAG-s<seed>, "
+                              "beside any already published rather than over them")
     rolling.add_argument("--dry-run", action="store_true",
                          help="print the fold table and the cache audit, run nothing")
     # The cached oracle was solved without calendar aging, so matching it is the

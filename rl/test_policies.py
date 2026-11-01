@@ -35,6 +35,18 @@ class TestPublish:
         assert (directory / policies.agentFile).read_bytes() == b"weights"
         assert json.loads((directory / policies.scalerFile).read_text())["cap"] == 600.0
 
+    # A tag gives another experiment its own directory, so it cannot replace the first.
+    def test_a_tag_publishes_beside_the_untagged_agent(self, tmp_path):
+        plain = policies.publish(checkpoint(tmp_path / "a", weights=b"old"), REGION,
+                                 "maskableppo", "warm", 0, root=tmp_path / "out")
+        tagged = policies.publish(checkpoint(tmp_path / "b", weights=b"new"), REGION,
+                                  "maskableppo", "warm", 0, root=tmp_path / "out",
+                                  tag="start_at_0_SoC")
+        assert tagged.name == "maskableppo-warm-start_at_0_SoC-s0"
+        assert (plain / policies.agentFile).read_bytes() == b"old"
+        assert policies.describe(tagged)["label"] == tagged.name
+        assert set(policies.available(REGION, tmp_path / "out")) == {plain.name, tagged.name}
+
     # policy.json says where the agent came from, because the weights do not.
     def test_it_records_where_the_agent_came_from(self, tmp_path):
         directory = policies.publish(checkpoint(tmp_path / "fold51"), REGION,

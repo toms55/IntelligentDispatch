@@ -16,6 +16,7 @@ Two things differ from a backtest day, and both are stated on the screen.
    the episode reset the oracle and the agent share is zero, and this screen reports a
    real battery part way through a day.
 """
+import re
 from pathlib import Path
 
 import numpy as np
@@ -79,9 +80,10 @@ def checkpointKey(label):
 
     The backtest screen names a model `algo-trainMode-sN-priceSource`, because the same
     agent is scored twice there. One agent trained it, and live there is only the
-    forecast, so the price source is dropped.
+    forecast, so the price source is dropped. It is cut after the seed rather than
+    after a fixed count of parts, because a tagged agent's name has one part more.
     """
-    return "-".join(label.split("-")[:3])
+    return re.sub(r"(-s\d+)-[^-]+$", r"\1", label)
 
 
 def _policy(label, root, region):

@@ -71,7 +71,7 @@ Training runs on one machine and the dashboard runs on another, so the agents ha
 travel. There is exactly one layout for a finished agent:
 
 ```
-trainedPolicies/<region>/<algo>-<trainMode>-s<seed>/
+trainedPolicies/<region>/<algo>-<trainMode>[-<tag>]-s<seed>/
     agent.zip      the weights
     scaler.json    the price transform the weights were trained under
     policy.json    which command wrote it, from which window, and when
@@ -85,7 +85,9 @@ Rules:
    `cli train` publishes each seed. `cli rolling` publishes the last fold of the run.
 3. Always copy `scaler.json` with the weights. The transform is pinned to a market
    price cap. Weights read under a different cap mean something else.
-4. The directory name is the dashboard label. Do not add a second naming scheme.
+4. The directory name is the dashboard label. Do not add a second naming scheme. A run
+   whose agents mean something else (another episode start, say) passes
+   `cli rolling --policy-tag` so it publishes beside the existing agents, not over them.
 5. Working state stays out. The rolling backtest keeps one checkpoint per fold under
    `--out` (`runs/rolling`), because it warm starts the next fold from the last one.
    Those are not published, and nothing reads them across machines.
@@ -100,21 +102,27 @@ rsync -a trainedPolicies/NSW1/ dashboard-host:~/IntelligentDispatch/trainedPolic
 ### A dashboard backtest lives in `results/backtestResults/`
 
 `results/` is working output and git ignores it, apart from the published runs and
-their actions exports. Those are tracked, so every clone can draw them. Each is one CSV
+their actions exports. Those are tracked, so every clone can draw them. Each is one file
 per run per region, named the same way:
 
 ```
 results/backtestResults/<run>_<region>.csv   one row per seed, price source and test
                                              day, every fold, plus forecastEvery
-results/actions/<run>_<region>.csv           one row per agent decision, every seed and
+results/actions/<run>_<region>.parquet       one row per agent decision, every seed and
                                              price source; the day view draws it
 ```
 
+The actions export is Parquet because GitHub refuses a file over 100 MB, and every seed
+under both price sources is about 270 MB of CSV per region (30 to 40 MB as Parquet).
+The CSV beside it, `results/actions/<run>_<region>.csv`, is the live file a backtest
+appends to as it runs. Git ignores it and the dashboard never reads it.
+
 Rules:
 
-1. `backtest/publish.py` is the only code that writes `results/backtestResults/`. Never
-   copy a run in by hand. It also restamps a published run's two oracle columns from a
-   solved corpus: `python -m backtest.publish --restamp-oracle <csv>...` replaces
+1. `backtest/publish.py` is the only code that writes `results/backtestResults/` and
+   turns the live actions CSV into the Parquet export. Never copy a run in by hand.
+   It also restamps a published run's two oracle columns from a solved corpus:
+   `python -m backtest.publish --restamp-oracle <csv>...` replaces
    `oracleDualBound` with the optimum in `oracleResults/dp` and `oracleGap` with zero.
    The agent rows stay as they are, so the run is rescored against a tighter bound and
    not rerun. A day the corpus does not hold, or a bound below a row's `agentProfit`,
@@ -181,6 +189,23 @@ Rules:
    through `SSH_ASKPASS`, and a machine with no working askpass program pushes with
    empty credentials. Hugging Face answers that anonymous push with "You have read
    access but not the required permissions", which names the wrong cause.
+9. The Space carries one seed per region, the one `config.best_seed` names, and every
+   other seed stays on this machine. The thesis reports the spread over seeds, so
+   `trainedPolicies/` holds all of them and the published results hold all of them.
+   The Space shows one, because five dispatch runs that differ only by seed is not a
+   thing a reader can read. `scripts/bestSeeds.sh` is the only reader of that map, and
+   both the publish script and the fingerprint go through it. Stage 2 filters the result
+   rows and the actions export to that seed, and stage 3 stages that seed's agent, so
+   the two screens of the Space name the same model.
+10. The staged runs are the ones `--results` names, once per run, and the first is the
+   one the Space opens. Stage 2 writes `ENV DASHBOARD_RESULTS` into the staged
+   Dockerfile, so a Space variable of that name switches to another staged run with no
+   republish. The screen draws one run at a time, so staging several only buys that
+   switch.
+11. An actions export written by `python -m backtest.actions` holds seed 0 only. Stage 2
+   refuses to stage a seed the export does not hold, because the calendar would draw and
+   every day view would be empty. Either name a seed the export holds, or re-run the
+   backtest, which logs every seed as each fold finishes.
 
 ### One dispatch chart, drawn once
 
@@ -282,6 +307,9 @@ cover.
   oracle cache over the whole span, then the 52 folds.
 - **`scripts/pushMain.sh`** — one push for both remotes: main to GitHub, then the same
   code to the Space through `scripts/publishSpace.sh`.
+- **`scripts/bestSeeds.sh`** — `config.best_seed` as `REGION SEED` lines. It parses the
+  one line with sed rather than starting an interpreter, because the pre-push hook reads
+  it on every push.
 - **`scripts/hooks/prePush`** — the same job on a plain `git push` that updates main.
   `scripts/installHooks.sh` installs it, and `scripts/spaceFingerprint.sh` tells it
   whether anything the Space serves has changed.
@@ -292,7 +320,7 @@ cover.
   `trainedPolicies/`. `--results` names a run as `results/backtestResults/<run>`, the
   path of its CSVs without the region. With no `--results`, `data.findResults` reads
   the one run under `results/backtestResults/`. Two runs there raise and name both.
-  A day view reads the run's actions export, `results/actions/<run>_<region>.csv`
+  A day view reads the run's actions export, `results/actions/<run>_<region>.parquet`
   (see `data.actionsFile`): its rows are the dispatch the chart draws, for either
   price source, and its `forecastRunTime` column is the only source of the forecast
   line, so pointing `--results` at another run changes both along with every other
@@ -309,6 +337,13 @@ cover.
   The current forecast screen refetches and reruns the agent on every NEM dispatch
   interval, at minutes ending in 0 or 5 (`live.refreshSlot`), as a live BESS would
   submit a new action each interval.
+  Either screen hands its numbers over as a CSV. The backtest button downloads the
+  published rows of the region on screen, over the days the two date boxes name. The
+  boxes open on the whole run (`runSpan`), and a date outside it downloads nothing and
+  turns red, as a bad start state of charge does (`downloadRange`). A test day is an
+  04:00 trading day start, so the range matches on the calendar date. The forecast
+  button hands over the intervals already drawn, held in a store by `redrawForecast`,
+  so the file and the chart cannot disagree.
 
 - **`deploy/`** — the hosted dashboard: the Dockerfile, the runtime requirements, the
   WSGI entry point and the Space card. `scripts/publishSpace.sh` stages and pushes it.
@@ -404,7 +439,9 @@ cover.
   used once: a fresh start refuses a name whose actions CSV or
   `results/backtestResults/<run>_<region>.csv` exists, and `--resume` (`RESUME=1` in the
   folds job) continues one without appending a fold twice. `python -m backtest.actions`
-  is only for runs from before this.
+  is only for runs from before this. The CSV is working state: `backtest.publish`
+  writes it out as `results/actions/<run>_<region>.parquet`, which is what git tracks
+  and the dashboard reads.
 - `nemosis` downloads AEMO archive files into `data_cache/` on first use, so the first
   call for a date range is slow and network-bound while later calls are local. The
   directory is gitignored and safe to delete.
