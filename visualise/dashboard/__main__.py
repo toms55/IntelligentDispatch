@@ -324,7 +324,12 @@ def _liveControls(regions, region):
     ])
 
 
+# The region the current forecast screen opens on, when the results hold it.
+liveRegion = "VIC1"
+
+
 def layout(regions, region, day):
+    opening = liveRegion if liveRegion in regions else region
     return html.Div([
         dcc.Store(id="state", data={"region": region, "day": day, "view": "calendar",
                                     "model": None}),
@@ -346,14 +351,14 @@ def layout(regions, region, day):
                      style=panelStyle),
         ]),
         dcc.Store(id="live-state",
-                  data={"screen": "backtest", "region": region, "model": None,
+                  data={"screen": "backtest", "region": opening, "model": None,
                         "clicks": 0, "soc": defaultSoc}),
         html.Div(id="live-screen", style={"display": "none"}, children=[
             # The forecast is fetched over the network, so the screen says so while
             # it waits rather than sitting blank.
             dcc.Loading(
                 children=[
-                    _liveControls(regions, region),
+                    _liveControls(regions, opening),
                     html.Div([dcc.Graph(id="forecast-board",
                                         config={"displayModeBar": False})],
                              style=panelStyle),
