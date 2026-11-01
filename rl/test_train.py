@@ -10,10 +10,12 @@ The one SB3 behaviour worth stating, because it is invisible and wrong by defaul
 """
 import pickle
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 import pytest
 
+import config
 from degradation.schade import SchadeDegradation
 from rl import algos, train
 from rl.features import PriceScaler
@@ -50,13 +52,34 @@ class FakeAgent:
         self.seededWith = seed
 
 
-class FakeOffPolicyAgent(FakeAgent):
-    """An agent with DQN's exploration schedule, which resets on every learn() call."""
+class FakeBuffer:
+    def __init__(self, size=10, filled=0):
+        self.buffer_size = size
+        self.pos = filled
 
-    def __init__(self):
+
+class FakeOffPolicyAgent(FakeAgent):
+    """An agent with DQN's exploration schedule, which resets on every learn() call,
+    and its replay buffer, which save() leaves behind.
+
+    `load_replay_buffer` replaces the buffer wholesale, size included, because SB3's
+    does: the size is pickled into the buffer. A fake that kept its own size would let
+    rl/train.py compare a value against itself and look like it was checking something.
+    """
+
+    def __init__(self, bufferSize=10):
         super().__init__()
         self.exploration_final_eps = 0.05
         self.exploration_schedule = lambda remaining: 1.0 * remaining
+        self.replay_buffer = FakeBuffer(bufferSize, filled=4)
+        self.loadedBufferFrom = None
+
+    def save_replay_buffer(self, path):
+        Path(path).write_bytes(pickle.dumps(self.replay_buffer))
+
+    def load_replay_buffer(self, path):
+        self.replay_buffer = pickle.loads(Path(path).read_bytes())
+        self.loadedBufferFrom = str(path)
 
 
 @pytest.fixture
@@ -84,12 +107,15 @@ def runTrain(prices, battery, tmp_path, **kwargs):
     return train.trainOne("maskableppo", prices, battery, outDir=str(tmp_path), **kwargs)
 
 
-def parentCheckpoint(tmp_path, cap=CAP_2025):
-    """A previous fold's directory, as trainOne would have left it."""
+def parentCheckpoint(tmp_path, cap=CAP_2025, buffer=None):
+    """A previous fold's directory, as trainOne would have left it. `buffer` writes the
+    replay buffer an off-policy parent leaves beside its weights."""
     directory = tmp_path / "fold00" / "maskableppo_seed0"
     directory.mkdir(parents=True)
     train.saveScaler(directory, PriceScaler(cap))
     (directory / "agent.zip").write_bytes(b"")
+    if buffer is not None:
+        (directory / train.replayFile).write_bytes(pickle.dumps(buffer))
     return directory
 
 
@@ -151,6 +177,86 @@ class TestWarmStart:
                      learning_rate=1e-4)
 
 
+class TestReplayBuffer:
+    """SB3's save() excludes the replay buffer, so a warm-started DQN would keep its
+    weights and optimiser but relearn from an empty buffer on every fold. MaskablePPO is
+    on-policy and loses nothing, so without this the two algorithms do not mean the same
+    thing by "warm"."""
+
+    def test_an_off_policy_agent_writes_its_buffer(self, prices, battery, tmp_path,
+                                                   monkeypatch):
+        agent = FakeOffPolicyAgent()
+        monkeypatch.setattr(algos, "build", lambda name, env, seed=0, **kw: agent)
+        _, path = runTrain(prices, battery, tmp_path)
+        assert (path.parent / train.replayFile).exists()
+
+    def test_an_on_policy_agent_writes_none(self, prices, battery, tmp_path, spy):
+        _, path = runTrain(prices, battery, tmp_path)
+        assert not (path.parent / train.replayFile).exists()
+
+    def test_a_warm_start_carries_the_parents_buffer(self, prices, battery, tmp_path,
+                                                     monkeypatch):
+        monkeypatch.setattr(config, "replay_buffer_size", 10)
+        parent = parentCheckpoint(tmp_path, buffer=FakeBuffer(size=10, filled=7))
+        agent = FakeOffPolicyAgent()
+        monkeypatch.setattr(algos, "load", lambda name, path, env=None: agent)
+        runTrain(prices, battery, tmp_path / "out", warmFrom=parent)
+        assert agent.loadedBufferFrom == str(parent / train.replayFile)
+        assert agent.replay_buffer.pos == 7
+
+    # A chain from before the buffer travelled has none. Continuing it would silently
+    # restart DQN's experience, which is the whole failure this exists to remove.
+    def test_refuses_a_parent_with_no_buffer(self, prices, battery, tmp_path,
+                                             monkeypatch):
+        parent = parentCheckpoint(tmp_path, buffer=None)
+        agent = FakeOffPolicyAgent()
+        monkeypatch.setattr(algos, "load", lambda name, path, env=None: agent)
+        with pytest.raises(FileNotFoundError) as raised:
+            runTrain(prices, battery, tmp_path / "out", warmFrom=parent)
+        assert train.replayFile in str(raised.value)
+
+    # The size is pickled into the buffer, and SB3 also restores it onto the agent from
+    # the checkpoint, so neither of those two values is the configured one. The check has
+    # to be against config.replay_buffer_size or it compares a number with itself.
+    #
+    # The agent here carries the parent's size, as a loaded DQN does. That is exactly the
+    # case a check against `agent.replay_buffer.buffer_size` cannot catch.
+    def test_refuses_a_buffer_that_is_not_the_configured_size(self, prices, battery,
+                                                              tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "replay_buffer_size", 57600)
+        parent = parentCheckpoint(tmp_path, buffer=FakeBuffer(size=99))
+        agent = FakeOffPolicyAgent(bufferSize=99)
+        monkeypatch.setattr(algos, "load", lambda name, path, env=None: agent)
+        with pytest.raises(ValueError) as raised:
+            runTrain(prices, battery, tmp_path / "out", warmFrom=parent)
+        assert "99" in str(raised.value) and "57600" in str(raised.value)
+
+    def test_accepts_a_buffer_of_the_configured_size(self, prices, battery, tmp_path,
+                                                     monkeypatch):
+        monkeypatch.setattr(config, "replay_buffer_size", 64)
+        parent = parentCheckpoint(tmp_path, buffer=FakeBuffer(size=64, filled=5))
+        agent = FakeOffPolicyAgent(bufferSize=64)
+        monkeypatch.setattr(algos, "load", lambda name, path, env=None: agent)
+        runTrain(prices, battery, tmp_path / "out", warmFrom=parent)
+        assert agent.replay_buffer.pos == 5
+
+    # An on-policy parent never wrote one, so nothing should be looked for.
+    def test_an_on_policy_warm_start_wants_no_buffer(self, prices, battery, tmp_path,
+                                                     spy):
+        parent = parentCheckpoint(tmp_path, buffer=None)
+        runTrain(prices, battery, tmp_path / "out", warmFrom=parent)
+        assert spy["load"][0]["path"] == str(parent / "agent")
+
+
+class TestMonitorColumns:
+    # The out-of-bounds count per episode, so a training run shows whether the penalty
+    # bites while it runs rather than only at the end.
+    def test_monitor_logs_the_out_of_bounds_count(self, prices, battery, tmp_path, spy):
+        _, path = runTrain(prices, battery, tmp_path)
+        header = (path.parent / "monitor.csv").read_text().splitlines()[1]
+        assert "outOfBoundsTotal" in header
+
+
 class TestHoldExploration:
     # An off-policy agent resumes at the epsilon its chain reached, rather than jumping
     # back to exploration_initial_eps and re-randomising itself every fold.
@@ -178,7 +284,9 @@ class TestHoldExploration:
 
     # The hold is applied on the warm path, so a resumed DQN does not re-randomise.
     def test_a_warm_start_applies_the_hold(self, prices, battery, tmp_path, monkeypatch):
-        parent = parentCheckpoint(tmp_path)
+        # An off-policy parent always leaves its buffer, and the warm start reads it.
+        monkeypatch.setattr(config, "replay_buffer_size", 10)
+        parent = parentCheckpoint(tmp_path, buffer=FakeBuffer())
         agent = FakeOffPolicyAgent()
         monkeypatch.setattr(algos, "load", lambda name, path, env=None: agent)
         runTrain(prices, battery, tmp_path / "out", warmFrom=parent)

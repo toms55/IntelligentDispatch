@@ -19,7 +19,8 @@ def _row(seed, source, day, agentProfit, oracle, fold=0):
         "fold": fold, "algo": "maskableppo", "trainMode": "warm", "seed": seed,
         "priceSource": source, "testDay": day, "agentProfit": agentProfit,
         "agentRevenue": agentProfit, "agentDegradation": 0.0,
-        "oracleDualBound": oracle, "oracleGap": 0.0, "spikeIntensity": 0.0,
+        "oracleDualBound": oracle, "oracleGap": 0.0, "outOfBounds": 0,
+        "spikeIntensity": 0.0,
         "highVol": False, "timesteps": 30000, "warmFrom": "",
         "writtenAt": "2026-01-01T00:00:00",
     }

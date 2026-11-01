@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from backtest import actions
+from rl.env import CHARGE, DISCHARGE, IDLE
 from utils import nem_interval
 
 DAY = datetime(2024, 1, 1, 4)
@@ -41,6 +42,46 @@ class TestActionRows:
     def test_an_older_run_reads_one_run_all_day(self):
         got = actions.actionRows(trajectory(), "NSW1")
         assert (got.forecastRunTime == pd.Timestamp("2024-01-01 04:00")).all()
+
+
+class TestAttemptedAction:
+    """`action` is the move that happened, so an out-of-bounds charge is filed there as
+    "idle". `attemptedAction` is what the agent chose, and the pair is what locates the
+    intervals where DQN tried to leave the bounds."""
+
+    def test_the_attempt_is_kept_beside_the_move(self):
+        frame = trajectory(steps=3)
+        frame["attemptedAction"] = [CHARGE, IDLE, DISCHARGE]
+        got = actions.actionRows(frame, "NSW1")
+        assert list(got.attemptedAction) == ["charge", "idle", "discharge"]
+        # Nothing moved in this trajectory, so every realised action reads idle.
+        assert list(got.action) == ["idle", "idle", "idle"]
+
+    # The env's own flag travels, rather than being re-derived from the energy moved.
+    # At the SoC boundary the two differ: the mask is a tolerance on the headroom, so a
+    # step can be out of bounds and still move an atom of energy, which makes `action`
+    # read "charge". Re-deriving the flag would miss exactly those intervals.
+    def test_the_env_flag_travels_rather_than_the_energy(self):
+        frame = trajectory(steps=3)
+        frame["attemptedAction"] = [CHARGE, CHARGE, CHARGE]
+        frame["outOfBounds"] = [True, True, False]
+        frame.loc[1, "bought"] = 4.8e-12   # flagged, but not exactly zero
+        frame.loc[2, "bought"] = 0.005
+        got = actions.actionRows(frame, "NSW1")
+        assert list(got.outOfBounds) == [True, True, False]
+        # The second row is the one a count from the energy alone would lose.
+        assert list(got.action) == ["idle", "charge", "charge"]
+
+    # Trajectories written before the flag carry none, and the export must still read.
+    def test_an_older_trajectory_reports_no_flag(self):
+        got = actions.actionRows(trajectory(steps=2), "NSW1")
+        assert got.outOfBounds.isna().all()
+
+    # Trajectories written before this change carry no such column, and the export of an
+    # old run must still read.
+    def test_an_older_trajectory_reports_no_attempt(self):
+        got = actions.actionRows(trajectory(steps=3), "NSW1")
+        assert got.attemptedAction.isna().all()
 
 
 class TestPriceSource:
@@ -120,6 +161,17 @@ class TestAppendRows:
         got = pd.read_csv(path)
         assert list(got.columns) == list(actions.columns)
         assert list(got.fold) == [0, 0, 0, 1, 1, 1]
+
+    # A --resume run against a CSV from before `attemptedAction` would otherwise append
+    # a wider block under a narrower header, and every row after it would parse into the
+    # wrong columns.
+    def test_appending_to_a_narrower_csv_is_refused(self, tmp_path):
+        path = tmp_path / "actions" / "run_NSW1.csv"
+        old = rows(0)[[name for name in actions.columns if name != "attemptedAction"]]
+        path.parent.mkdir(parents=True)
+        old.to_csv(path, index=False)
+        with pytest.raises(ValueError, match="attemptedAction"):
+            actions.appendRows(path, rows(1))
 
     # Seeds are separate processes on one file. Each fold's block stays whole: every
     # row parses, none is lost, and a fold's rows sit together.

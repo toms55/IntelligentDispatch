@@ -8,6 +8,7 @@
 set -euo pipefail
 
 REGION=NSW1
+ALGO=${ALGO:-maskableppo}   # ALGO=dqn bash scripts/rolling.sh
 SPAN="all=2024-01-01T04:00..2026-01-01T04:00"
 WORKERS=6
 GAP=0.02
@@ -36,7 +37,7 @@ uv run python -u -m cli baseline --split "$SPAN" --region "$REGION" --no-calenda
 say "2/2 rolling backtest: 52 folds, warm chain, realised prices then the AEMO forecast"
 uv run python -u -m cli rolling --split "$SPAN" --region "$REGION" \
   --train-weeks "$TRAIN_WEEKS" --test-weeks 1 --step-weeks 1 \
-  --algo maskableppo --cap-date "$CAP_DATE" \
+  --algo "$ALGO" --cap-date "$CAP_DATE" \
   --baseline-oracle discrete --no-calendar \
   --gap "$GAP" --time-limit "$LIMIT" --workers "$WORKERS" \
   --price-source both --allow-solve

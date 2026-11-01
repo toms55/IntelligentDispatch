@@ -32,7 +32,7 @@ from rl.baseline import buildBaseline, cacheKey, findRecord
 from rl import policies
 from rl.evaluate import evaluateSeeds
 from rl.features import PriceScaler
-from rl.train import trainOne
+from rl.train import replayFile, trainOne
 from utils import nem_interval
 from utils.market import marketPriceCap
 
@@ -57,6 +57,10 @@ class RollingConfig(NamedTuple):
     forecastEvery: int = config.forecast_refresh_intervals
     horizon: int = config.episode_intervals
     rewardScale: float = config.reward_scale
+    # Charging a full pack or discharging an empty one, in reward units. Part of the
+    # reward, so manifestOf carries it and two values may not share a result set. Only
+    # an unmasked algorithm can incur it; see config.invalid_action_penalty.
+    invalidPenalty: float = config.invalid_action_penalty
     initialSoc: float = config.initial_soc
     calendar: bool = False
     # The oracle supplies the test-day bound only; training never consults it. `captured`
@@ -350,11 +354,31 @@ def _ensureTrained(cfg, fold, trainMode, algo, seed, trainPrices, scaler,
     trainOne(
         algo, trainPrices, SchadeDegradation(*cfg.battery), seed=seed, timesteps=cfg.warmTimesteps if warmFrom else cfg.coldTimesteps,
         calendar=cfg.calendar, horizon=cfg.horizon, rewardScale=cfg.rewardScale,
+        invalidPenalty=cfg.invalidPenalty,
         outDir=directory.parent, scaler=scaler, warmFrom=warmFrom,
         forecasts=None if trainForecasts is None else trainForecasts(),
         initialSoc=cfg.initialSoc,
     )
+    _pruneReplay(warmFrom, directory)
     return directory
+
+
+def _pruneReplay(parent, child):
+    """Drop the parent fold's replay buffer once this fold has written its own.
+
+    An off-policy chain carries its experience from fold to fold (rl/train.py), and the
+    buffer is tens of megabytes. A 143-fold run over five seeds would otherwise leave
+    tens of gigabytes of dead buffers under --out.
+
+    The parent, never the child: a crash between the load and the save must leave the
+    chain with a buffer to resume from. A fold whose checkpoint already exists returns
+    before this and prunes nothing, which is what keeps --resume correct.
+    """
+    if parent is None:
+        return
+    buffer = Path(parent) / replayFile
+    if buffer.exists() and (Path(child) / replayFile).exists():
+        buffer.unlink()
 
 
 def _trajectoryRows(cfg, fold, algo, trainMode, seed, source, day, steps, observed,
@@ -369,6 +393,10 @@ def _trajectoryRows(cfg, fold, algo, trainMode, seed, source, day, steps, observ
             "forecastRunTime": None if runs is None else runs[step],
             "soc": info["soc"], "bought": info["bought"], "sold": info["sold"],
             "profit": info["profit"],
+            # What the agent chose, and whether it could be done. The export derives
+            # its `action` column from the energy moved, which is a different thing.
+            "attemptedAction": info.get("attemptedAction"),
+            "outOfBounds": info.get("outOfBounds"),
         }
 
 
@@ -381,6 +409,9 @@ def _oracleRows(cfg, fold, day, record, prices):
             "price": prices[step], "observedPrice": prices[step], "forecastRunTime": None,
             "soc": record["soc"][step], "bought": record["bought"][step],
             "sold": record["sold"][step], "profit": record["profitPerInterval"][step],
+            # The oracle solves rather than chooses, and its schedule is feasible by
+            # construction, so it attempted nothing it could not do.
+            "attemptedAction": None, "outOfBounds": False,
         }
 
 
@@ -454,7 +485,7 @@ def runRolling(cfg, onProgress=None):
                         testPrices, plan.model, baselines=testBaselines,
                         algoName=algo, calendar=cfg.calendar, horizon=cfg.horizon,
                         rewardScale=cfg.rewardScale, forecasts=forecasts, bounds=bounds,
-                        initialSoc=cfg.initialSoc,
+                        initialSoc=cfg.initialSoc, invalidPenalty=cfg.invalidPenalty,
                     )
                     rows += _resultRows(cfg, plan, fold, algo, trainMode, source, results,
                                         gaps)
@@ -543,6 +574,10 @@ def _resultRows(cfg, plan, fold, algo, trainMode, source, results, gaps):
                 "agentProfit": record["agentProfit"],
                 "agentRevenue": record["agentRevenue"],
                 "agentDegradation": record["agentDegradation"],
+                # How often the agent chose to charge a full pack or discharge an empty
+                # one. MaskablePPO cannot, because the mask removes the action, so this
+                # is what prices running DQN unmasked. An older record set has none.
+                "outOfBounds": record.get("outOfBounds", 0),
                 "oracleDualBound": record["lpProfit"],
                 # None when the solve stopped with no incumbent; the CSV holds NaN.
                 "oracleGap": (float("nan") if gaps[record["window"]] is None

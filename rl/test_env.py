@@ -24,6 +24,11 @@ MIXED_PRICES = [20.0, 15.0, -50.0, 10.0, 300.0, 25.0, 18.0, 400.0, 12.0, -80.0, 
 # it states its own mid-pack start.
 MID_SOC = 0.5
 
+# An out-of-bounds penalty, in reward units. Stated here rather than taken from
+# config.invalid_action_penalty, so a change to the experiment's value cannot quietly
+# weaken these tests.
+PENALTY = 1.0
+
 
 @pytest.fixture
 def paper():
@@ -89,6 +94,21 @@ class TestMatchesTheOracle:
         env = makeEnv(paper)
         env.reset(seed=0)
         infos = rollout(env, actionsFrom(schedule))
+        assert infos[-1]["episode_totals"]["profit"] == pytest.approx(
+            schedule.profit, rel=1e-9
+        )
+
+    def test_profit_is_identical_under_the_penalty(self, paper):
+        """The oracle's schedule is feasible, so it never goes out of bounds and the
+        penalty never fires along it. This is what keeps the bound valid once the
+        reward carries a training term."""
+        schedule = solve(MIXED_PRICES, paper, initialSoc=config.initial_soc,
+                         calendar=False, discretePower=True)
+        actions = actionsFrom(schedule)
+        env = makeEnv(paper, invalidPenalty=PENALTY)
+        env.reset(seed=0)
+        infos = rollout(env, actions)
+        assert not any(info["outOfBounds"] for info in infos)
         assert infos[-1]["episode_totals"]["profit"] == pytest.approx(
             schedule.profit, rel=1e-9
         )
@@ -224,9 +244,108 @@ class TestBoundary:
         assert info["soc"] == pytest.approx(1.0)
 
 
+class TestOutOfBounds:
+    """Charging a full pack or discharging an empty one. MaskablePPO cannot choose
+    either, because the mask removes it. DQN reads no mask, so it can, and the penalty
+    is what teaches it the boundary. `action_masks` is the only definition of the
+    condition, so these tests follow it rather than restating the arithmetic."""
+
+    def test_charging_a_full_pack_is_out_of_bounds(self, paper):
+        env = makeEnv(paper, initialSoc=1.0, invalidPenalty=PENALTY)
+        env.reset(seed=0)
+        _, reward, _, _, info = env.step(CHARGE)
+        assert info["outOfBounds"] is True
+        assert reward == pytest.approx(info["profit"] - PENALTY, rel=1e-12, abs=1e-15)
+
+    def test_discharging_an_empty_pack_is_out_of_bounds(self, paper):
+        env = makeEnv(paper, initialSoc=0.0, invalidPenalty=PENALTY)
+        env.reset(seed=0)
+        _, reward, _, _, info = env.step(DISCHARGE)
+        assert info["outOfBounds"] is True
+        assert reward == pytest.approx(info["profit"] - PENALTY, rel=1e-12, abs=1e-15)
+
+    def test_a_partial_top_up_is_never_out_of_bounds(self, paper):
+        """The one that keeps the environment matched to solve(discretePower=True).
+        That mode allows a part step where physics forces one, so penalising it would
+        make the oracle solve a different problem."""
+        env = makeEnv(paper)
+        start = 1.0 - (0.3 * env.fullStep * paper.chargeEfficiency) / paper.MWh
+        env = makeEnv(paper, initialSoc=start, invalidPenalty=PENALTY)
+        env.reset(seed=0)
+        _, reward, _, _, info = env.step(CHARGE)
+        assert 0.0 < info["bought"] < env.fullStep
+        assert info["outOfBounds"] is False
+        assert reward == pytest.approx(info["profit"], rel=1e-12, abs=1e-15)
+
+    def test_a_part_step_that_empties_the_pack_is_never_out_of_bounds(self, paper):
+        env = makeEnv(paper)
+        start = (0.3 * env.fullStep / paper.dischargeEfficiency) / paper.MWh
+        env = makeEnv(paper, initialSoc=start, invalidPenalty=PENALTY)
+        env.reset(seed=0)
+        _, reward, _, _, info = env.step(DISCHARGE)
+        assert 0.0 < info["sold"] < env.fullStep
+        assert info["outOfBounds"] is False
+        assert reward == pytest.approx(info["profit"], rel=1e-12, abs=1e-15)
+
+    def test_idle_is_never_out_of_bounds(self, paper):
+        for soc in (0.0, 0.5, 1.0):
+            env = makeEnv(paper, initialSoc=soc, invalidPenalty=PENALTY)
+            env.reset(seed=0)
+            _, reward, _, _, info = env.step(IDLE)
+            assert info["outOfBounds"] is False
+            assert reward == pytest.approx(info["profit"], rel=1e-12, abs=1e-15)
+
+    def test_the_attempted_action_is_recorded_whatever_moved(self, paper):
+        """The actions export derives its own column from the energy moved, so an
+        out-of-bounds charge is filed there as "idle". This is the only record of what
+        the agent actually chose."""
+        env = makeEnv(paper, initialSoc=1.0, invalidPenalty=PENALTY)
+        env.reset(seed=0)
+        _, _, _, _, info = env.step(CHARGE)
+        assert info["attemptedAction"] == CHARGE
+        assert info["bought"] == pytest.approx(0.0, abs=1e-12)
+
+    def test_the_penalty_moves_the_reward_and_nothing_else(self, paper):
+        """Every reported figure stays raw dollars, so the oracle keeps bounding the
+        agent and a profit column never carries a training term."""
+        actions = [DISCHARGE, CHARGE, DISCHARGE, IDLE, CHARGE, CHARGE,
+                   DISCHARGE, DISCHARGE, DISCHARGE, DISCHARGE, IDLE, CHARGE]
+        free = makeEnv(paper, invalidPenalty=0.0)
+        free.reset(seed=0)
+        penalised = makeEnv(paper, invalidPenalty=PENALTY)
+        penalised.reset(seed=0)
+        seen = 0
+        for action in actions:
+            _, bare, _, _, plain = free.step(action)
+            _, charged, _, _, info = penalised.step(action)
+            for key in ("profit", "revenue", "degradation", "soc", "bought", "sold"):
+                assert info[key] == pytest.approx(plain[key], rel=1e-12, abs=1e-15)
+            seen += info["outOfBounds"]
+            assert charged == pytest.approx(
+                bare - PENALTY * info["outOfBounds"], rel=1e-12, abs=1e-15)
+        assert seen > 0, "the action sequence must hit a boundary or this proves nothing"
+        # Counting does not depend on the penalty, so both episodes report the same.
+        assert info["episode_totals"] == plain["episode_totals"]
+        assert info["episode_totals"]["outOfBounds"] == seen
+
+    def test_the_episode_counts_every_attempt(self, paper):
+        env = makeEnv(paper, invalidPenalty=PENALTY)
+        env.reset(seed=0)
+        info = {}
+        for _ in range(len(MIXED_PRICES)):
+            _, _, _, _, info = env.step(DISCHARGE)
+        # The pack starts empty and nothing ever charges it, so every step is an attempt.
+        assert info["episode_totals"]["outOfBounds"] == len(MIXED_PRICES)
+        # Flat, because SB3's Monitor copies one key out of the final step's info and
+        # cannot reach a nested total. See rl/train.py.
+        assert info["outOfBoundsTotal"] == len(MIXED_PRICES)
+
+
 class TestReward:
     def test_the_reward_is_raw_profit(self, paper):
-        env = makeEnv(paper)
+        # No penalty, so the reward is profit and nothing else. The penalty term has its
+        # own tests in TestOutOfBounds.
+        env = makeEnv(paper, invalidPenalty=0.0)
         env.reset(seed=0)
         rng = np.random.default_rng(3)
         for _ in range(len(MIXED_PRICES)):
@@ -258,13 +377,26 @@ class TestReward:
         assert reward < 0
 
     def test_reward_scale_divides_the_reward(self, paper):
-        one = makeEnv(paper, rewardScale=1.0)
+        # Mid-pack, so the discharge actually moves energy. From an empty pack it moves
+        # nothing, and the test would compare zero against zero.
+        one = makeEnv(paper, initialSoc=MID_SOC, rewardScale=1.0)
         one.reset(seed=0)
         _, bare, _, _, _ = one.step(DISCHARGE)
-        ten = makeEnv(paper, rewardScale=10.0)
+        ten = makeEnv(paper, initialSoc=MID_SOC, rewardScale=10.0)
         ten.reset(seed=0)
         _, scaled, _, _, _ = ten.step(DISCHARGE)
+        assert bare != 0.0
         assert scaled == pytest.approx(bare / 10.0, rel=1e-12)
+
+    def test_the_penalty_is_in_reward_units_not_dollars(self, paper):
+        """So its size means the same whatever reward_scale is set to."""
+        for scale in (1.0, 20.0):
+            env = makeEnv(paper, initialSoc=1.0, rewardScale=scale,
+                          invalidPenalty=PENALTY)
+            env.reset(seed=0)
+            _, reward, _, _, info = env.step(CHARGE)
+            assert reward == pytest.approx(info["profit"] / scale - PENALTY,
+                                           rel=1e-12, abs=1e-15)
 
 
 class TestObservation:

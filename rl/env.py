@@ -37,7 +37,8 @@ class BessEnv(gymnasium.Env):
     def __init__(self, prices, model, baseline=None, horizon=config.episode_intervals,
                  initialSoc=config.initial_soc, dtHours=nem_interval_hours,
                  calendar=True, rewardScale=config.reward_scale, shuffle=False,
-                 forecasts=None, scaler=None):
+                 forecasts=None, scaler=None,
+                 invalidPenalty=config.invalid_action_penalty):
         self.prices = prices.to_numpy(dtype=float)
         self.timestamps = prices.index
         # One cap for the whole run, from the last timestamp. Pass `scaler` to reuse the
@@ -50,6 +51,9 @@ class BessEnv(gymnasium.Env):
         self.dtHours = dtHours
         self.calendar = calendar
         self.rewardScale = rewardScale
+        # Charging a full pack or discharging an empty one, in reward units. See
+        # config.invalid_action_penalty.
+        self.invalidPenalty = invalidPenalty
         self.shuffle = shuffle
         # None means realised prices (training). Otherwise one entry per window: a
         # single path, or a data.forecasts.refreshMatrix stack of runs, of which the
@@ -89,25 +93,33 @@ class BessEnv(gymnasium.Env):
             self.windowCursor += 1
         self.stepIndex = 0
         self.stored = self.initialSoc * self.model.MWh
-        self.totals = {"revenue": 0.0, "degradation": 0.0, "profit": 0.0, "baseline": 0.0}
+        self.totals = {"revenue": 0.0, "degradation": 0.0, "profit": 0.0,
+                       "baseline": 0.0, "outOfBounds": 0}
         return self._observation(), {}
 
     def step(self, action):
         price = self.prices[self._offset()]
         socPrev = self.stored / self.model.MWh
-        boughtMWh, soldMWh = self._applyAction(int(action))
+        action = int(action)
+        # Read before the move, because the move is what removes the headroom.
+        outOfBounds = not self.action_masks()[action]
+        boughtMWh, soldMWh = self._applyAction(action)
         socNew = self.stored / self.model.MWh
 
         revenue = price * (soldMWh - boughtMWh)
         qCd, qCal, degradationCost = self._degradation(socPrev, socNew)
         profit = revenue - degradationCost
         baseline = self._baselineAt(self.stepIndex)
-        reward = profit / self.rewardScale
+        # The penalty is the one term in the reward that is not profit. It stays out of
+        # `totals` and out of every info key below, so the figures the backtest reports
+        # remain raw dollars and the oracle keeps bounding the agent.
+        reward = profit / self.rewardScale - self.invalidPenalty * outOfBounds
 
         self.totals["revenue"] += revenue
         self.totals["degradation"] += degradationCost
         self.totals["profit"] += profit
         self.totals["baseline"] += baseline
+        self.totals["outOfBounds"] += outOfBounds
 
         self.stepIndex += 1
         truncated = self.stepIndex >= self.horizon
@@ -122,10 +134,17 @@ class BessEnv(gymnasium.Env):
             "calendarDegradation": qCal,
             "profit": profit,
             "lpProfit": baseline,
+            # What the agent chose, which is not what moved: an out-of-bounds charge
+            # moves nothing and so reads as idle anywhere the energy is the record.
+            "attemptedAction": action,
+            "outOfBounds": outOfBounds,
         }
         if truncated:
             info["episode_totals"] = dict(self.totals)
             info["regret"] = self.totals["baseline"] - self.totals["profit"]
+            # Flat, because SB3's Monitor copies one key out of the final step's info
+            # and cannot reach a nested total. rl/train.py asks it for this one.
+            info["outOfBoundsTotal"] = self.totals["outOfBounds"]
         return self._observation(), reward, False, truncated, info
 
     def action_masks(self):
