@@ -22,7 +22,13 @@ set -euo pipefail
 
 # The runs the upload stages, in the same order and with the same default as
 # publishSpace.sh. $RUNS overrides it, space separated.
-read -r -a RUNS <<< "${RUNS:-results/backtestResults/rolling2023_profit_fc5m}"
+defaultRuns="results/backtestResults/rolling2023_profit_fc5m_allseeds"
+defaultRuns+=" results/backtestResults/rolling2023_start_at_0_SoC_five_min_refresh"
+defaultRuns+=" results/backtestResults/rolling2023_price_scale_start_at_0_SoC_five_min_refresh"
+defaultRuns+=" results/backtestResults/rolling2023_price_history_start_at_0_SoC_five_min_refresh"
+defaultRuns+=" results/backtestResults/rolling2023_weekday_season_start_at_0_SoC_five_min_refresh"
+defaultRuns+=" results/backtestResults/rolling2023_dqn_start_at_0_SoC_five_min_refresh"
+read -r -a RUNS <<< "${RUNS:-$defaultRuns}"
 ACTIONS=${ACTIONS:-results/actions}
 POLICIES=${POLICIES:-trainedPolicies}
 ALGO=${ALGO:-maskableppo}

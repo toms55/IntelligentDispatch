@@ -39,7 +39,14 @@ set -euo pipefail
 SPACE=${DASHBOARD_SPACE:-toms55/IntelligentDispatch}
 # The runs to stage, in order. The first is the one the Space opens. --results replaces
 # this default on its first use and appends on every use after it.
-RUNS=(results/backtestResults/rolling2023_profit_fc5m)
+RUNS=(
+  results/backtestResults/rolling2023_profit_fc5m_allseeds
+  results/backtestResults/rolling2023_start_at_0_SoC_five_min_refresh
+  results/backtestResults/rolling2023_price_scale_start_at_0_SoC_five_min_refresh
+  results/backtestResults/rolling2023_price_history_start_at_0_SoC_five_min_refresh
+  results/backtestResults/rolling2023_weekday_season_start_at_0_SoC_five_min_refresh
+  results/backtestResults/rolling2023_dqn_start_at_0_SoC_five_min_refresh
+)
 runsGiven=no
 # The run's actions exports stay in results/actions/, which git tracks; see
 # backtest/publish.py.
