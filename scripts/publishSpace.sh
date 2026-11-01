@@ -20,9 +20,12 @@
 # The two screens stage differently. Stage 2 carries one seed per region, the one
 # `config.best_seed` names: the backtest screen draws one dispatch per region, not five
 # that differ only by seed, and the thesis reports the seed spread from the full set that
-# stays here, not from the Space. Stage 3 carries every seed of POLICY_SPECS, because the
-# forecast screen runs an agent live rather than replaying a row, and its dropdown is the
-# only way to compare seeds, algorithms and observation variants against each other.
+# stays here, not from the Space. Stage 3 carries every agent `rl.policies.loadable`
+# accepts, every seed and every tag, because the forecast screen runs an agent live
+# rather than replaying a row, and its dropdown is the only way to compare seeds,
+# algorithms and observation variants against each other. The two stages are therefore
+# independent: a label on the forecast screen need not match any run staged in 2, and
+# the backtest screen's run list is unrelated to which agents happen to be loadable now.
 #
 # Name a run once per run to stage several:
 #
@@ -57,22 +60,10 @@ runsGiven=no
 # backtest/publish.py.
 ACTIONS=results/actions
 # The agents come from the published layout, not from a training output directory, so the
-# Space runs the same bytes this machine's dashboard runs.
+# Space runs the same bytes this machine's dashboard runs. Stage 3 stages every agent
+# `rl.policies.loadable` accepts, so there is nothing to name here: the set is read
+# straight off $POLICIES, filtered by whether it matches today's observation layout.
 POLICIES=trainedPolicies
-TRAIN_MODE=warm
-# Every (algo, tag) pair of the experiment family staged above that the live forecast
-# screen can actually run, read from each agent's `policy.json:source`, which names the
-# run it was trained for. The three observation and price-transform variants are left
-# out, each for its own reason the live code on this branch cannot load:
-#   - price_history and weekday_season trained on a wider observation (108 slots) than
-#     `rl/features.py` builds here (60 slots), so `live.suggest` raises on them.
-#   - price_scale_at_5's scaler.json carries a "scale" field `PriceScaler.__init__`
-#     here does not accept.
-# Their backtest rows stay staged above; only the live rollout is the problem.
-POLICY_SPECS=(
-  "maskableppo:start_at_0_SoC"
-  "dqn:start_at_0_SoC"
-)
 REGION=NSW1
 STAGE=runs/space
 PUSH=no
@@ -86,7 +77,6 @@ while [[ $# -gt 0 ]]; do
     --results)    if [[ "$runsGiven" == no ]]; then RUNS=("$2"); runsGiven=yes;
                   else RUNS+=("$2"); fi; shift 2 ;;
     --policies)   POLICIES="$2"; shift 2 ;;
-    --train-mode) TRAIN_MODE="$2"; shift 2 ;;
     --region)     REGION="$2"; shift 2 ;;
     --stage)      STAGE="$2"; shift 2 ;;
     --push)       PUSH=yes; shift ;;
@@ -188,9 +178,8 @@ checkToken() {
   esac
 }
 
-# The seed per region, from `config.best_seed`. Read once, because stage 2 and stage 3
-# must stage the same seed: a result row the forecast screen cannot reproduce with the
-# agent beside it would be two different models under one name.
+# The seed per region, from `config.best_seed`, for stage 2's backtest rows only. Stage
+# 3 stages every seed, so it does not read this map.
 declare -A BEST_SEED=()
 while read -r region seed; do
   BEST_SEED["$region"]=$seed
@@ -311,38 +300,39 @@ printf '\nENV DASHBOARD_RESULTS=%s\n' "$DEFAULT_RUN" >> "$STAGE/Dockerfile"
 echo "$staged run(s), $(du -sh "$STAGE/results" | cut -f1), opening on $(basename "$DEFAULT_RUN")"
 
 # -------------------------------------------------------------- 3. the agents
-# Every seed of every (algo, tag) in POLICY_SPECS, for every region, so the forecast
-# screen's dropdown offers the same models the thesis compares. This machine keeps the
-# same agents under $POLICIES, and `rl/policies.py` is the only code that writes this
-# layout, so the publishing goes through it rather than through cp.
-say "3/5 agents from $POLICIES, every seed of ${#POLICY_SPECS[@]} (algo, tag) pair(s)"
-$PYTHON - "$POLICIES" "$STAGE/trainedPolicies" "$TRAIN_MODE" "${POLICY_SPECS[@]}" <<'PYTHON'
+# Every agent `rl.policies.loadable` says this build can actually run, for every
+# region. That check reads each agent's recorded `observationSize` against
+# `config.observation_size` and drops anything trained under another observation
+# layout, so a staged agent and the live screen's environment always agree. Staging a
+# hand-picked list here was the earlier bug: `policies.publish` stamps the *current*
+# `config.observation_size` onto whatever it copies, so re-publishing something
+# `loadable` had already excluded silently relabelled it as compatible and the live
+# screen crashed on the first rollout. Filtering through `loadable` first is what keeps
+# that stamp honest.
+say "3/5 agents from $POLICIES, every agent this build can load"
+$PYTHON - "$POLICIES" "$STAGE/trainedPolicies" <<'PYTHON'
 import sys
 
 from rl import policies
 
-source, root, trainMode, *specs = sys.argv[1:]
-seeds = (0, 1, 2, 3, 4)
+source, root = sys.argv[1:3]
 staged = 0
-for spec in specs:
-    algo, tag = spec.split(":", 1)
-    for region in policies.regions(source):
-        found = policies.available(region, source)
-        for seed in seeds:
-            label = policies.label(algo, trainMode, seed, tag)
-            directory = found.get(label)
-            if directory is None:
-                print(f"  skip {region}/{label}: not published at {source}")
-                continue
-            published = policies.publish(directory, region, algo, trainMode, seed,
-                                          root=root, tag=tag,
-                                          publishedBy="scripts/publishSpace.sh")
-            print(f"  {region}: {published.name}")
-            staged += 1
+for region in policies.regions(source):
+    for label, directory in sorted(policies.loadable(region, source).items()):
+        facts = policies.describe(directory)
+        algo, trainMode, seed = facts["algo"], facts["trainMode"], int(facts["seed"])
+        middle = label[len(algo) + 1:-len(f"-s{seed}")]
+        tag = middle[len(trainMode) + 1:] if middle.startswith(f"{trainMode}-") else None
+        published = policies.publish(directory, region, algo, trainMode, seed,
+                                      root=root, tag=tag,
+                                      publishedBy="scripts/publishSpace.sh")
+        print(f"  {region}: {published.name}")
+        staged += 1
 if staged == 0:
-    raise SystemExit(f"{source} holds none of POLICY_SPECS, so the forecast screen "
-                      "would offer nothing. Check POLICY_SPECS against the published "
-                      "labels, or publish them with `python -m cli publish`.")
+    raise SystemExit(f"{source} holds no agent `policies.loadable` accepts under "
+                      "today's config.observation_size, so the forecast screen would "
+                      "offer nothing. Publish a freshly trained agent, or retrain one "
+                      "under the current observation layout.")
 PYTHON
 
 # --------------------------------------------------------------- 4. the check

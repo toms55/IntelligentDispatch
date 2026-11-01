@@ -16,8 +16,9 @@
 # new training run changes the Space without changing one tracked file, and a new
 # backtest changes `results/backtestResults/` before anyone commits it.
 #
-# The defaults name the same results, models and seed as `scripts/publishSpace.sh`.
-# Keep the two in step.
+# The defaults name the same results as `scripts/publishSpace.sh`. Keep the two in step.
+# The agents need no such list here: both scripts read the same live set, through
+# `rl.policies.loadable`, so there is nothing to keep in step for stage 3.
 set -euo pipefail
 
 # The runs the upload stages, in the same order and with the same default as
@@ -30,12 +31,7 @@ defaultRuns+=" results/backtestResults/rolling2023_weekday_season_start_at_0_SoC
 read -r -a RUNS <<< "${RUNS:-$defaultRuns}"
 ACTIONS=${ACTIONS:-results/actions}
 POLICIES=${POLICIES:-trainedPolicies}
-TRAIN_MODE=${TRAIN_MODE:-warm}
-# The (algo, tag) pairs the upload stages, in the same order and with the same default
-# as publishSpace.sh's POLICY_SPECS. $POLICY_SPECS overrides it, space separated.
-defaultSpecs="maskableppo:start_at_0_SoC"
-defaultSpecs+=" dqn:start_at_0_SoC"
-read -r -a POLICY_SPECS <<< "${POLICY_SPECS:-$defaultSpecs}"
+PYTHON=${PYTHON:-"uv run python"}
 
 # The record of the last publish. It sits in the git directory, because it is state of
 # this one clone and not content of the repository. `--git-common-dir` keeps one record
@@ -68,16 +64,16 @@ describe() {
       find "$ACTIONS" -maxdepth 1 -type f -name "${run}_*.parquet"
     } 2>/dev/null | grep -E "/${run}_[A-Z]+[0-9]\.(csv|parquet)$" | sort | describe || true
   done
-  # Stage 3 of publishSpace.sh stages every seed of every (algo, tag) pair in
-  # POLICY_SPECS, for every region, so the same set is described here.
-  for region in "$POLICIES"/*/; do
-    region=$(basename "$region")
-    for spec in "${POLICY_SPECS[@]}"; do
-      algo=${spec%%:*}; tag=${spec#*:}
-      for seed in 0 1 2 3 4; do
-        directory="$POLICIES/$region/$algo-$TRAIN_MODE-$tag-s$seed"
-        if [[ -d "$directory" ]]; then find "$directory" -type f | sort | describe; fi
-      done
-    done
+  # Stage 3 of publishSpace.sh stages every agent `rl.policies.loadable` accepts, for
+  # every region. That set moves whenever a new agent is published or the observation
+  # layout in `config` changes, neither of which is a tracked diff, so it is read fresh
+  # here rather than named.
+  $PYTHON -c "
+from rl import policies
+for region in policies.regions('$POLICIES'):
+    for directory in policies.loadable(region, '$POLICIES').values():
+        print(directory)
+" | sort | while read -r directory; do
+    find "$directory" -type f | sort | describe
   done
 } | sha256sum | cut -d' ' -f1
