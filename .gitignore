@@ -17,6 +17,8 @@ results/**
 !results/actions/*.parquet
 !results/backtestResults/
 !results/backtestResults/*.csv
+!results/backtestResults/*.json
+!results/backtestResults/README.md
 
 # --- CLI outputs: <module>_<region>_<date>.csv/.png land in the cwd ---
 lp_*.csv
@@ -30,6 +32,8 @@ lp_*.csv
 *.xls
 *.xlsx
 *.zip
+# ...but a published agent's weights travel by git (see trainedPolicies/ in CLAUDE.md)
+!trainedPolicies/*/*/agent.zip
 
 # --- local helper and PBS job logs ---
 /id
