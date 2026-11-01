@@ -35,7 +35,7 @@ def makeEnv(paper, series, **kwargs):
 
 
 class TestRegistry:
-    @pytest.mark.parametrize("name", ["maskableppo", "dqn", "a2c"])
+    @pytest.mark.parametrize("name", ["maskableppo", "dqn", "dqnnomask", "a2c"])
     def test_builds_every_algorithm(self, paper, series, name):
         agent = algos.build(name, makeEnv(paper, series), seed=0)
         assert agent is not None
@@ -51,8 +51,9 @@ class TestRegistry:
         assert algos.supportsMasking("maskableppo") is True
         assert algos.supportsMasking("dqn") is True
         assert algos.supportsMasking("a2c") is False
+        assert algos.supportsMasking("dqnnomask") is False
 
-    @pytest.mark.parametrize("name", ["maskableppo", "dqn", "a2c"])
+    @pytest.mark.parametrize("name", ["maskableppo", "dqn", "dqnnomask", "a2c"])
     def test_runs_undiscounted(self, paper, series, name):
         agent = algos.build(name, makeEnv(paper, series), seed=0)
         assert agent.gamma == config.gamma == 1.0
@@ -80,13 +81,23 @@ class TestMaskableDqn:
         picks = {int(agent.predict(agent._last_obs)[0][0]) for _ in range(50)}
         assert DISCHARGE not in picks
 
+    def test_the_unmasked_dqn_explores_a_masked_move(self, paper, series):
+        """`dqnnomask` reads no mask, so it explores a discharge on an empty pack and
+        the environment's clip turns it into nothing moving."""
+        env = makeEnv(paper, series)
+        agent = algos.build("dqnnomask", env, seed=0)
+        agent.exploration_rate = 1.0
+        agent._last_obs = agent.env.reset()
+        picks = {int(agent.predict(agent._last_obs)[0][0]) for _ in range(200)}
+        assert DISCHARGE in picks
+
     def test_overrides_reach_the_algorithm(self, paper, series):
         agent = algos.build("a2c", makeEnv(paper, series), seed=0, learning_rate=0.004)
         assert agent.learning_rate == 0.004
 
 
 class TestTraining:
-    @pytest.mark.parametrize("name", ["maskableppo", "dqn", "a2c"])
+    @pytest.mark.parametrize("name", ["maskableppo", "dqn", "dqnnomask", "a2c"])
     def test_trains_and_checkpoints(self, paper, series, name, tmp_path):
         agent, path = trainOne(name, series, paper, seed=0, timesteps=96,
                                calendar=False, horizon=24, rewardScale=1.0,

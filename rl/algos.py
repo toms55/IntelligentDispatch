@@ -1,7 +1,8 @@
 """The --algo registry.
 
 MaskablePPO reads the action mask natively, and `MaskableDQN` below reads it when it
-acts. A2C relies on the environment's clipping instead.
+acts. `dqnnomask` is the same DQN reading no mask, as A2C reads none: both rely on the
+environment's clipping and closing override instead, which bind whatever the policy picks.
 
 Every algorithm runs undiscounted: an episode is one week of profit, and every interval
 of it counts the same. A discount is worse than it looks here: an episode opens empty, so
@@ -79,6 +80,14 @@ def _dqn(env, seed, overrides):
     return MaskableDQN(**settings)
 
 
+def _dqnNoMask(env, seed, overrides):
+    """`_dqn`'s settings on SB3's plain DQN, which never reads the mask."""
+    settings = dict(policy="MlpPolicy", env=env, seed=seed, gamma=config.gamma,
+                    learning_starts=config.observation_intervals, verbose=0)
+    settings.update(overrides)
+    return DQN(**settings)
+
+
 def _a2c(env, seed, overrides):
     settings = dict(policy="MlpPolicy", env=env, seed=seed, gamma=config.gamma,
                     verbose=0)
@@ -89,6 +98,7 @@ def _a2c(env, seed, overrides):
 builders = {
     "maskableppo": _maskablePpo,
     "dqn": _dqn,
+    "dqnnomask": _dqnNoMask,
     "a2c": _a2c,
 }
 
@@ -109,5 +119,6 @@ def holdExploration(agent):
 
 
 def load(name, path, env=None):
-    classes = {"maskableppo": MaskablePPO, "dqn": MaskableDQN, "a2c": A2C}
+    classes = {"maskableppo": MaskablePPO, "dqn": MaskableDQN, "dqnnomask": DQN,
+               "a2c": A2C}
     return classes[name.lower()].load(path, env=env)

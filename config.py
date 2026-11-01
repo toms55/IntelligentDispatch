@@ -118,7 +118,7 @@ best_seed = {"NSW1": 1, "QLD1": 0, "SA1": 4, "TAS1": 2, "VIC1": 1}
 forecast_refresh_intervals = 48
 
 # rl/algos.py asserts its registry matches this tuple.
-algorithms = ("maskableppo", "dqn", "a2c")
+algorithms = ("maskableppo", "dqn", "dqnnomask", "a2c")
 
 
 # --- Oracle --------------------------------------------------------------------

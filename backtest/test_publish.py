@@ -169,3 +169,16 @@ class TestCycleBudget:
                                                     "forecastEvery": 48})
         with pytest.raises(ValueError, match="spent 10.5"):
             publish.publish(run, root)
+
+    def test_each_train_mode_spends_its_own_budget(self, results, root):
+        """A pooled run scores the shared agent and its fine-tuned copy on the same
+        episode. Each spends 4.2 of 7 cycles, and the two must not add up to 8.4."""
+        week = [dict(row, episodeStart=DAY, agentCycles=0.6)
+                for row in dayRows(count=7, folds=1)]
+        rows = [dict(row, trainMode=mode) for mode in ("pooled", "finetune")
+                for row in week]
+        run = results / "rolling"
+        records.writeFold(run / "all", REGION, rows[0]["fold"], rows)
+        records.writeManifest(run / "all", REGION, {"region": REGION,
+                                                    "forecastEvery": 48})
+        assert publish.publish(run, root)
