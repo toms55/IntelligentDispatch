@@ -66,3 +66,16 @@ checkpoint was trained on. About 5 regions x 5 seeds x 52 folds per variant.
 - Regions: all five, or NSW1 + TAS1 only (best and worst performers)?
 - PPO only, or PPO and DQN?
 - Which of the ten to run (all ten is roughly 35 variant-runs).
+
+## Decided scope (user, 2026-11-02)
+
+Elements 1-5, 8, 9. All five regions. PPO and DQN. Every variant runs as the
+pooled-regions agent (`backtest/pooled.py`, `scripts/pooled.pbs`): one shared agent per
+seed over all regions, then a per-region fine-tune. Reference arm is the published
+`rolling2023_{ppo,dqn}_pooled_regions_daily_1_cycle_end_empty_5min_forecast`.
+
+Variant count (non-baseline): 1 degradation 3, 2 lookahead 4, 3 time encoding 3,
+4 history 2, 5 action levels 3, 8 penalty/mask/shaping 5, 9 price tails 4 = 24.
+24 variants x 2 algorithms x 5 seeds = 240 seed-jobs (each up to 48 h on medq), plus 48
+merge jobs. Code still to write: flags for 1, 2, 3, 4, 5, 9 (none exist today), and new
+oracle corpora for 1 and 5.
