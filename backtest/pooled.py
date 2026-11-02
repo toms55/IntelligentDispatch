@@ -124,6 +124,7 @@ def _train(rollingCfg, foldIndex, trainMode, algo, seed, prices, scaler, warmFro
         warmFrom=warmFrom, initialSoc=rollingCfg.initialSoc,
         cycleBudget=rollingCfg.cycleBudget, terminalPrice=rollingCfg.terminalPrice,
         endEmpty=rollingCfg.endEmpty, ablation=rollingCfg.ablation,
+        invalidPenalty=rollingCfg.invalidPenalty,
     )
     return directory
 
@@ -221,6 +222,7 @@ def runPooled(cfg, onProgress=None):
                     initialSoc=regionCfg.initialSoc, cycleBudget=regionCfg.cycleBudget,
                     terminalPrice=regionCfg.terminalPrice, endEmpty=regionCfg.endEmpty,
                     ablation=regionCfg.ablation,
+                    invalidPenalty=regionCfg.invalidPenalty,
                 )
                 steps, warmFrom = provenance[mode]
                 # _resultRows reads the warm/cold budget off the config, which says
@@ -253,7 +255,7 @@ def publishFinal(cfg, fold):
     shared agent under its own train mode, so the forecast screen can run either."""
     # An ablation's agents read another observation or solve another problem, so they are
     # not dashboard agents, and a default-named publish would overwrite a real one.
-    if not cfg.base.ablation.isDefault():
+    if runner.isAblation(cfg.base):
         return []
     shared = pooledConfig(cfg)
     published = []

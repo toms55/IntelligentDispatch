@@ -28,7 +28,6 @@ from optimisation.lp import Schedule
 from utils import nem_interval_hours
 
 CHARGE, IDLE, DISCHARGE = 0, 1, 2
-_actions = (CHARGE, IDLE, DISCHARGE)
 
 # Energies are keyed on integer multiples of this, so that two paths to one physical SoC
 # give one state. The band of safe values is wide. A charge step is nu_C * F and a

@@ -604,6 +604,13 @@ def runRolling(cfg, onProgress=None):
     return written
 
 
+def isAblation(cfg):
+    """True when a run differs from the reference in anything the MDP ablation varies.
+    The penalty is not a field of `Ablation`, so it is tested beside it."""
+    return (not cfg.ablation.isDefault()
+            or cfg.invalidPenalty != config.invalid_action_penalty)
+
+
 def publishFinal(cfg, fold):
     """Copy the last fold's agents into `trainedPolicies/`.
 
@@ -611,7 +618,7 @@ def publishFinal(cfg, fold):
     trained model of the whole run. The dashboard reads only this directory, which is
     what lets one machine train and another draw the result.
     """
-    if not cfg.ablation.isDefault():
+    if isAblation(cfg):
         return []
     published = []
     for algo in cfg.algos:

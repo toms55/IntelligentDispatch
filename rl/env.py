@@ -50,7 +50,8 @@ class BessEnv(gymnasium.Env):
         self.timestamps = prices.index
         # One cap for the whole run, from the last timestamp. Pass `scaler` to reuse the
         # one a checkpoint was trained under; see rl/train.py.
-        self.scaler = scaler if scaler is not None else features.scalerFor(prices.index)
+        self.scaler = (scaler if scaler is not None else
+                       self.ablation.scaler(features.marketPriceCap(prices.index[-1])))
 
         self.model = model
         self.baseline = baseline
@@ -215,7 +216,9 @@ class BessEnv(gymnasium.Env):
              and self._closingAction(action) == action
              for action in range(self.levels)]
             + [self._closingAction(self.idleAction) == self.idleAction]
-            + [self._dischargeRoom() > self.tolerance] * self.levels,
+            + [self._dischargeRoom() > self.tolerance
+               and self._closingAction(action) == action
+               for action in range(self.idleAction + 1, 2 * self.levels + 1)],
             dtype=bool,
         )
 

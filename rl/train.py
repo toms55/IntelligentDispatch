@@ -7,7 +7,8 @@ from stable_baselines3.common.monitor import Monitor
 import config
 from rl import algos
 from rl.env import BessEnv
-from rl.features import PriceScaler, scalerFor
+from rl.ablation import Ablation
+from rl.features import PriceScaler, marketPriceCap
 from rl.policies import scalerFile
 
 # The replay buffer, beside the weights. Working state: it never reaches
@@ -128,7 +129,9 @@ def trainOne(algoName, prices, model, seed=0,
     directory = Path(outDir) / f"{algoName}_seed{seed}"
     directory.mkdir(parents=True, exist_ok=True)
 
-    scaler = scaler if scaler is not None else scalerFor(prices.index)
+    if scaler is None:
+        scaler = (ablation if ablation is not None else Ablation()).scaler(
+            marketPriceCap(prices.index[-1]))
     saveScaler(directory, scaler)
 
     env = Monitor(

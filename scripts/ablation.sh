@@ -3,26 +3,46 @@
 # (backtest/pooled.py) in the daily end-empty setup, so a variant differs from the
 # published reference in the flags below and nothing else. See ABLATION_PLAN.md.
 #
-#     bash scripts/ablation.sh list                    the variants
-#     bash scripts/ablation.sh plan [VARIANT...]       print every qsub, submit nothing
-#     SUBMIT=1 bash scripts/ablation.sh plan ...       actually qsub them
+# HOW TO SUBMIT (from the repo root, on the PBS login node)
 #
-# `plan` is a dry run unless SUBMIT=1 is set. Nothing here submits on its own, and nothing
-# should until the grid has been agreed: a full grid is about 220 seed-jobs of up to 48 h.
+#   1. See the variants:        bash scripts/ablation.sh list
+#   2. Dry run one variant:     bash scripts/ablation.sh plan deg_flat
+#      This prints every qsub it would make, and submits nothing. `<id>` stands in for
+#      the job ids that the later jobs wait on.
+#   3. Submit it:               SUBMIT=1 bash scripts/ablation.sh plan deg_flat
+#      Several at once:         SUBMIT=1 bash scripts/ablation.sh plan deg_flat look_1h
+#      Everything (~220 seed-jobs of up to 48 h): leave the variant names off. Agree the
+#      grid before you do.
+#   4. Watch it:                qstat -u $USER
+#   5. When the merge job ends, its results are in results/backtestResults/. Commit them:
+#                               git add results/backtestResults results/actions
 #
-# Variants that change the problem (kind "problem") need their oracle records first, so
-# each gets one oracle job per region and its seed jobs wait on all five. Variants that
-# only change what the agent sees or is paid (kind "agent") reuse the baseline corpus.
+# Narrower runs, set on the same command line:
 #
-#     ALGOS="maskableppo dqn"   which algorithms (default: both, where the variant applies)
-#     SEEDS="0 1 2 3 4"         which seeds
-#     REGIONS="NSW1 QLD1 SA1 TAS1 VIC1"
+#     ALGOS="dqn"               which algorithms (default: both, where the variant applies)
+#     SEEDS="0 1 2"             which seeds (default 0 1 2 3 4); the merge uses the same list
+#     REGIONS="NSW1 TAS1"       which regions (default all five); every job uses the same list
+#
+#     SEEDS="0 1 2" REGIONS="NSW1 TAS1" SUBMIT=1 bash scripts/ablation.sh plan lev_9
+#
+# Before submitting: run from a checkout with `.venv` built (`uv sync`) that nobody edits
+# while the jobs queue or run, and check each run name is free (the check is in
+# scripts/pooled.pbs). The baseline oracle corpus must already hold the test episodes.
+# Nothing here submits unless SUBMIT=1.
+#
+# A "problem" variant (kind in `list`) changes the dispatch problem, so it needs its own
+# oracle records first: one oracle job per region, and its seed jobs wait on all of them.
+# An "agent" variant only changes what the agent sees or is paid, and reuses the baseline
+# corpus. Job graph per variant and algorithm:
+#
+#     [oracle x regions]  ->  [seed job x seeds]  ->  [merge + publish]
 #
 # qsub -v splits on commas, so no variant text or flag may contain one.
 #
 # Run names are rolling2023_ablate_<variant>; pooled.pbs adds _dqn for DQN. Ablation runs
-# publish no agents to trainedPolicies/ (an ablation's observation or action set is not
-# the dashboard's), and backtest.publish writes their rows to results/backtestResults/.
+# publish no agents to trainedPolicies/ (an ablation's observation, action set or
+# out-of-bounds penalty is not the dashboard's), and backtest.publish writes their rows
+# to results/backtestResults/.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -71,9 +91,6 @@ fi
 shift
 WANT=("$@")
 
-run() {  # print the command, and run it only when SUBMIT=1
-  if [ "${SUBMIT:-0}" = 1 ]; then eval "$@"; else printf '%s\n' "$*"; fi
-}
 submit() {  # echo an id: a real one when submitting, a placeholder otherwise
   if [ "${SUBMIT:-0}" = 1 ]; then eval "$@"; else printf '%s\n' "$*" >&2; echo "<id>"; fi
 }
@@ -97,9 +114,10 @@ for v in "${VARIANTS[@]}"; do
     run_name="rolling2023_ablate_$name"
     seedIds=()
     for seed in $SEEDS; do
-      seedIds+=("$(submit "qsub -N ab-$name-$algo-s$seed $dependency -v SEED=$seed,ALGO=$algo,RUN=$run_name,TAG=ablate_$name,EXTRA=\"$flags\" scripts/pooled.pbs")")
+      seedIds+=("$(submit "qsub -N ab-$name-$algo-s$seed $dependency -v SEED=$seed,ALGO=$algo,RUN=$run_name,TAG=ablate_$name,REGIONS=\"$REGIONS\",EXTRA=\"$flags\" scripts/pooled.pbs")")
     done
     desc="MDP ablation $name: $(field "$v" 5). Pooled-regions $algo; daily; 1 EFC; end empty; otherwise the reference run."
-    submit "qsub -N ab-$name-$algo-merge -W depend=afterok:$(IFS=:; echo "${seedIds[*]}") -v MERGE=1,ALGO=$algo,RUN=$run_name,DESCRIPTION=\"$desc\" scripts/pooled.pbs" >/dev/null
+    mergeId=$(submit "qsub -N ab-$name-$algo-merge -W depend=afterok:$(IFS=:; echo "${seedIds[*]}") -v MERGE=1,ALGO=$algo,RUN=$run_name,SEEDS=\"$SEEDS\",REGIONS=\"$REGIONS\",DESCRIPTION=\"$desc\" scripts/pooled.pbs")
+    if [ "${SUBMIT:-0}" = 1 ]; then echo "$name $algo: merge job $mergeId"; fi
   done
 done
