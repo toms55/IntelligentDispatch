@@ -1,7 +1,10 @@
-/* A calendar cell leads to that day, so the pointer has to say so. Plotly puts a
-   crosshair on its drag layer, which reads as "drag to zoom" rather than as "click
-   me". The class sits on the calendar view alone, because a click on the day chart
-   does nothing. Dash serves every file in this folder. */
-.clickable-cells .nsewdrag {
+/* A calendar cell leads to that day, so the pointer has to say so. Plotly puts its
+   own cursor on the drag layer through a `cursor-*` class, under a selector of three
+   classes, so these rules name the same depth and add `!important` to win. The class
+   sits on the calendar view alone, because a click on the day chart does nothing.
+   Dash serves every file in this folder. */
+.clickable-cells .js-plotly-plot .plotly .nsewdrag,
+.clickable-cells .js-plotly-plot .plotly .cursor-crosshair,
+.clickable-cells .js-plotly-plot .plotly .cursor-default {
     cursor: pointer !important;
 }

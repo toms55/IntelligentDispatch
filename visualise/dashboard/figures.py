@@ -311,8 +311,13 @@ def monthFigure(frame, month, selected=None):
                            y0=row - 0.5, y1=row + 0.5, line=dict(color=ink, width=2),
                            fillcolor="rgba(0,0,0,0)")]
 
+    # A cell is a link to that day, and a zoom into part of a month means nothing, so
+    # the calendar carries no drag. This also drops the crosshair plotly gives a
+    # zooming plot, which `assets/cursor.css` then replaces with the pointer. A click
+    # still reaches the callback.
     figure.update_layout(**_layout(
         height=120 + 62 * rows, margin=dict(l=24, r=24, t=34, b=46), shapes=shapes,
+        dragmode=False,
         legend=dict(orientation="h", yanchor="top", y=-0.04, x=0,
                     font=dict(color=secondaryInk)),
     ))

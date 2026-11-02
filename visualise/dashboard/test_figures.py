@@ -179,6 +179,12 @@ class TestMonth:
         quiet["highVol"] = False
         assert not _traces(figures.monthFigure(quiet, DAY), "markers")
 
+    # A cell is a link to that day, so the calendar offers no drag. The crosshair
+    # plotly gives a zooming plot would read as "drag to zoom", and `assets/cursor.css`
+    # puts the pointer there instead.
+    def test_the_calendar_offers_no_drag(self, frame):
+        assert figures.monthFigure(frame, DAY).layout.dragmode is False
+
     # Every cell carries the date the click handler reads, and its fold.
     def test_each_cell_carries_its_day_and_fold(self, frame):
         extra = np.array(figures.monthFigure(frame, DAY).data[0].customdata,
