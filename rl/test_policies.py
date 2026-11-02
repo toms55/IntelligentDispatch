@@ -134,3 +134,50 @@ class TestLoadable:
         (directory / policies.metadataFile).unlink()
         wanted = config.observation_size == policies.unrecordedObservationSize
         assert bool(policies.loadable(REGION, tmp_path / "out")) == wanted
+
+
+class TestMaskedDqnIsNotOffered:
+    """A masked DQN is a plain DQN with another `predict`, so its weights load here and
+    the screen would run them unmasked under their own name. `loadable` drops them."""
+
+    def publishMasked(self, tmp_path, tag, seed=0, trainMode="warm"):
+        return policies.publish(checkpoint(tmp_path / "fold142"), REGION, "dqn",
+                                trainMode, seed, root=tmp_path / "out", tag=tag)
+
+    def test_every_published_masked_dqn_is_dropped(self, tmp_path):
+        for label in policies.maskedDqnPolicies:
+            algo, trainMode, tag = label.split("-", 2)
+            assert algo == "dqn"
+            for seed in range(5):
+                policies.publish(checkpoint(tmp_path / "fold142"), REGION, algo,
+                                 trainMode, seed, root=tmp_path / "out", tag=tag)
+        assert len(policies.available(REGION, tmp_path / "out")) == \
+            5 * len(policies.maskedDqnPolicies)
+        assert policies.loadable(REGION, tmp_path / "out") == {}
+
+    def test_an_unmasked_dqn_of_another_run_is_kept(self, tmp_path):
+        self.publishMasked(tmp_path, "efc7")
+        assert list(policies.loadable(REGION, tmp_path / "out")) == ["dqn-warm-efc7-s0"]
+
+    # The list names a family, not one seed, so a seed nobody published yet is covered.
+    def test_the_list_covers_every_seed(self):
+        assert policies.readsMaskedDqn("dqn-warm-daily_dump_soc0_maskdqn-s9") is True
+        assert policies.readsMaskedDqn("dqn-warm-efc7-s9") is False
+
+    # `publish` records the mask from `algos`, so the list above never needs a second
+    # entry: a build that moves the mask onto an algorithm drops its agents by record.
+    def test_publish_records_whether_the_algorithm_reads_the_mask(self, tmp_path):
+        ppo = policies.publish(checkpoint(tmp_path / "fold51"), REGION, "maskableppo",
+                               "warm", 0, root=tmp_path / "out")
+        dqn = policies.publish(checkpoint(tmp_path / "fold51"), REGION, "dqn",
+                               "warm", 0, root=tmp_path / "out")
+        assert policies.describe(ppo)["readsMask"] is True
+        assert policies.describe(dqn)["readsMask"] is False
+
+    def test_a_recorded_mask_that_disagrees_with_this_build_is_dropped(self, tmp_path):
+        directory = policies.publish(checkpoint(tmp_path / "fold51"), REGION, "dqn",
+                                     "warm", 0, root=tmp_path / "out", tag="efc7")
+        facts = policies.describe(directory)
+        facts["readsMask"] = True
+        (directory / policies.metadataFile).write_text(json.dumps(facts))
+        assert policies.loadable(REGION, tmp_path / "out") == {}

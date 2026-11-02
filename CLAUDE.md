@@ -136,7 +136,8 @@ Rules:
 1. Never build that path by hand. `rl/policies.py` is the only definition of it. Call
    `policies.publish(...)` to write and `policies.available(region)` to read.
    `policies.loadable(region)` is the reader for a screen that must run the agent: it
-   drops every agent whose recorded `observationSize` is not the one `config` states now.
+   drops every agent whose recorded `observationSize` is not the one `config` states now,
+   and every agent in `policies.maskedDqnPolicies`. See the Gotcha below.
 2. Every command that trains an agent publishes its final agent there before it exits.
    `cli train` publishes each seed. `cli rolling` publishes the last fold of the run.
 3. Always copy `scaler.json` with the weights. The transform is pinned to a market
@@ -388,7 +389,11 @@ cover.
     the Parquet and writes nothing. `python -m rl.oracleArchive pack <json folder>
     oracleResults/<set>` merges solves into a set, a new record replacing an old one of
     the same key, and `unpack` writes byte-identical cache JSONs back out.
-  - `algos.py` — the `--algo` registry: MaskablePPO, DQN, A2C.
+  - `algos.py` — the `--algo` registry: MaskablePPO, DQN, A2C. `algos.load` reads a
+    fourth name, `dqnnomask`, which `build` refuses. Agents of the pooled-regions
+    experiment family carry it, because the branch that trained them had a second DQN
+    that read the mask. Here DQN reads none, so the two names are one plain DQN and
+    only `dqn` can start a run.
   - `train.py`, `evaluate.py` — one run per seed, and regret against the oracle.
   - `policies.py` — `trainedPolicies/`: the layout of a finished agent, and the only
     code that writes or lists one. See the convention above.
@@ -602,6 +607,18 @@ cover.
   would understate the spend by `nu_D`, a 5 per cent error, and a budget that is 5 per
   cent loose is not the budget anybody asked for. `_StateSpace.cellSide` in `dp.py` and
   `BessEnv.spentMWh` both hold the cell-side figure.
+- **A masked-DQN agent loads here and must not be run.** Three published families
+  (`dqn-warm-daily_dump_soc0_maskdqn`, `dqn-pooled-pooled_daily_empty_efc1` and
+  `dqn-finetune-pooled_daily_empty_efc1`) were trained by a `dqn` that read the action
+  mask when it acted. `rl/algos.py` here has no such algorithm. A masked DQN is a plain
+  DQN with another `predict`, so the weights load and nothing refuses them, and the
+  forecast screen would run them unmasked under their own name. That is a wrong dispatch
+  run, not a missing one. `policies.maskedDqnPolicies` names the three, `loadable` drops
+  them, and `publishSpace.sh` stage 3 filters through `loadable`, so they never reach the
+  Space. The list is closed: `publish` now records `readsMask` from
+  `algos.supportsMasking`, and `loadable` drops an agent whose record disagrees with this
+  build. Their result rows stay published, because the rows are what the masked run
+  actually earned.
 - **The observation went from 60 slots to 62, so an agent published under the old layout
   cannot be loaded into the new environment.** `policies.loadable(region, root)` filters
   `available()` on the `observationSize` that `publish` now records, and `live.py` reads
