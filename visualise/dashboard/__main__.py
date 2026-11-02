@@ -9,11 +9,10 @@ results/backtestResults/<run>` to narrow both screens to one published run, whic
 what the hosted dashboard does.
 
 Backtest. Pick a model and a region at the top. The model names its experiment, and the
-box under the tiles states every setting that experiment ran under, above the date field.
-A date field, a stepper and
-a calendar button drive one board, which shows either the month or one day's dispatch,
-never both. The stepper moves what the board shows, a month or a day, and the label
-above it names which. Click a day in the month to open it. The two date boxes on the
+box under the pickers states every setting that experiment ran under. Below it a date
+field, a stepper and a calendar button drive one board, which shows either the month or
+one day's dispatch, never both. The stepper moves what the board shows, a month or a
+day, and the label above it names which. Click a day in the month to open it. The two date boxes on the
 right open on the whole backtest, and the button beside them downloads the run's rows
 over those days, for the region on screen.
 
@@ -377,12 +376,12 @@ def layout(regions, region, day):
         dcc.Store(id="forecast-csv"),
         html.Div(id="backtest-screen", children=[
             _modelControls(regions, region),
-            html.Div(id="tiles", style={"display": "flex", "gap": "12px",
-                                        "flexWrap": "wrap", "marginBottom": "18px"}),
             # What the selected experiment tested. The dropdown names the model, and
             # every setting behind it is here, above the day field that reads it.
             html.Div(id="settings"),
             _dayControls(),
+            html.Div(id="tiles", style={"display": "flex", "gap": "12px",
+                                        "flexWrap": "wrap", "marginBottom": "18px"}),
             html.Div([dcc.Graph(id="board", config={"displayModeBar": False})],
                      style=panelStyle),
         ]),
