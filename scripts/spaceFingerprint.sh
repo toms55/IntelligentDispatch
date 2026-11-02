@@ -16,18 +16,14 @@
 # new training run changes the Space without changing one tracked file, and a new
 # backtest changes `results/backtestResults/` before anyone commits it.
 #
-# The defaults name the same results as `scripts/publishSpace.sh`. Keep the two in step.
-# The agents need no such list here: both scripts read the same live set, through
-# `rl.policies.loadable`, so there is nothing to keep in step for stage 3.
+# Neither input is named here. The runs come from `config.dashboard_runs`, through
+# `scripts/dashboardRuns.sh`, and the agents from `experiments.runnable`, so this script
+# and `scripts/publishSpace.sh` read one list each and cannot drift apart.
 set -euo pipefail
 
-# The runs the upload stages, in the same order and with the same default as
-# publishSpace.sh. $RUNS overrides it, space separated.
-defaultRuns="results/backtestResults/rolling2023_start_at_0_SoC_five_min_refresh"
-defaultRuns+=" results/backtestResults/rolling2023_dqn_start_at_0_SoC_five_min_refresh"
-defaultRuns+=" results/backtestResults/rolling2023_price_scale_start_at_0_SoC_five_min_refresh"
-defaultRuns+=" results/backtestResults/rolling2023_price_history_start_at_0_SoC_five_min_refresh"
-defaultRuns+=" results/backtestResults/rolling2023_weekday_season_start_at_0_SoC_five_min_refresh"
+# The runs the upload stages, in the same order and from the same list as
+# publishSpace.sh: `config.dashboard_runs`. $RUNS overrides it, space separated.
+defaultRuns=$(bash "$(dirname "$0")/dashboardRuns.sh" | tr '\n' ' ')
 read -r -a RUNS <<< "${RUNS:-$defaultRuns}"
 ACTIONS=${ACTIONS:-results/actions}
 POLICIES=${POLICIES:-trainedPolicies}
@@ -64,10 +60,14 @@ describe() {
       find "$ACTIONS" -maxdepth 1 -type f -name "${run}_*.parquet"
     } 2>/dev/null | grep -E "/${run}_[A-Z]+[0-9]\.(csv|parquet)$" | sort | describe || true
   done
-  # Stage 3 of publishSpace.sh stages every agent `rl.policies.loadable` accepts, for
-  # every region. That set moves whenever a new agent is published or the observation
-  # layout in `config` changes, neither of which is a tracked diff, so it is read fresh
-  # here rather than named.
+  # Stage 3 of publishSpace.sh stages the agents the forecast screen offers, which is a
+  # subset of what `rl.policies.loadable` accepts. This reads the whole loadable set
+  # instead, because narrowing it to the offered one means reading every staged run's
+  # actions export, and the hook has to stay quick. Over-covering republishes a little
+  # too often and never too rarely, which is the same trade the result files take above.
+  # That set moves whenever a new agent is published or the observation layout in
+  # `config` changes, neither of which is a tracked diff, so it is read fresh here
+  # rather than named.
   $PYTHON -c "
 from rl import policies
 for region in policies.regions('$POLICIES'):

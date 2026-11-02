@@ -606,7 +606,9 @@ def publishFinal(cfg, fold):
                 published.append(policies.publish(
                     checkpoint, cfg.region, algo, trainMode, seed,
                     root=cfg.policyRoot, tag=cfg.policyTag, command="rolling",
-                    fold=fold.index,
+                    # Which run trained it, so the dashboard can find the experiment
+                    # that scored it. See visualise/dashboard/experiments.py.
+                    rawRun=Path(cfg.outDir).name, fold=fold.index,
                     trainWindow=[fold.trainStart.isoformat(), fold.trainEnd.isoformat()],
                     testWindow=[fold.testStart.isoformat(), fold.testEnd.isoformat()],
                     capDate=cfg.capDate.isoformat(),

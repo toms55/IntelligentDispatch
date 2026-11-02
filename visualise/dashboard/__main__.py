@@ -2,10 +2,14 @@
 
     uv run python -m visualise.dashboard
 
-It reads the one run under `results/backtestResults/`. Pass `--results
-results/backtestResults/<run>` when that directory holds more than one run.
+Both screens offer the experiments `config.dashboard_runs` names, at the seed
+`config.best_seed_by_run` pins, so a model on one screen has its numbers on the other.
+`visualise/dashboard/experiments.py` is the catalogue. Pass `--results
+results/backtestResults/<run>` to narrow both screens to one published run, which is
+what the hosted dashboard does.
 
-Backtest. Pick a model and a region at the top. Below them a date field, a stepper and
+Backtest. Pick a model and a region at the top. The model names its experiment, and the
+box under the tiles states every setting that experiment ran under. Below them a date field, a stepper and
 a calendar button drive one board, which shows either the month or one day's dispatch,
 never both. The stepper moves what the board shows, a month or a day, and the label
 above it names which. Click a day in the month to open it. The two date boxes on the
@@ -14,20 +18,24 @@ over those days, for the region on screen.
 
 Current forecast. Pick a model and a region, and the board draws the AEMO price path
 published right now, with the dispatch that model would run over it. This screen runs
-the agent itself, so its model list is what `trainedPolicies/` holds on this machine,
-not what the backtest scored. The start state of charge is a box, in percent, because
+the agent itself, so it offers the models whose weights are on this machine and whose
+experiment is published, and it runs each one under that experiment's own episode. The
+box above the board states those settings. The start state of charge is a box, in
+percent, because
 the charge a real battery holds is not in this repository. See
 `visualise/dashboard/live.py` for what the two screens do not share. The button beside
 the dropdowns downloads the intervals on the board.
 """
 import argparse
 import calendar as calendarModule
+from pathlib import Path
 
 import pandas as pd
 from dash import Dash, Input, Output, State, ctx, dcc, html, no_update
 from dash.exceptions import MissingCallbackContextException, PreventUpdate
 
-from visualise.dashboard import data, figures, live
+import config
+from visualise.dashboard import data, experiments, figures, live
 
 tileStyle = {"flex": "1 1 150px", "padding": "14px 16px", "borderRadius": "10px",
              "border": f"1px solid {figures.gridline}",
@@ -123,6 +131,26 @@ def _tile(tile):
         html.Div(tile["sub"], style={"color": figures.secondaryInk,
                                      "fontSize": "12px", "marginTop": "2px"}),
     ], style=style)
+
+
+def _settingsBox(lines):
+    """The experiment settings, as name and value rows. One box, drawn on both screens.
+
+    `experiments.settings` is the only source of the lines, so a model means the same
+    thing wherever it is named.
+    """
+    rows = []
+    for name, value in lines:
+        rows.append(html.Div([
+            html.Div(name, style={"color": figures.mutedInk, "fontSize": "12px",
+                                  "textTransform": "uppercase",
+                                  "letterSpacing": "0.04em",
+                                  "flex": "0 0 150px"}),
+            html.Div(str(value), style={"color": figures.ink, "fontSize": "13px",
+                                        "flex": "1 1 200px"}),
+        ], style={"display": "flex", "gap": "12px", "alignItems": "baseline",
+                  "padding": "3px 0"}))
+    return html.Div(rows, style={**panelStyle, "marginBottom": "18px"})
 
 
 def parseDay(text):
@@ -347,6 +375,9 @@ def layout(regions, region, day):
             _controls(regions, region),
             html.Div(id="tiles", style={"display": "flex", "gap": "12px",
                                         "flexWrap": "wrap", "marginBottom": "18px"}),
+            # What the selected experiment tested. The dropdown names the model, and
+            # every setting behind it is here.
+            html.Div(id="settings"),
             html.Div([dcc.Graph(id="board", config={"displayModeBar": False})],
                      style=panelStyle),
         ]),
@@ -359,6 +390,7 @@ def layout(regions, region, day):
             dcc.Loading(
                 children=[
                     _liveControls(regions, opening),
+                    html.Div(id="live-settings"),
                     html.Div([dcc.Graph(id="forecast-board",
                                         config={"displayModeBar": False})],
                              style=panelStyle),
@@ -376,20 +408,49 @@ def layout(regions, region, day):
               "color": figures.ink})
 
 
-def liveModels(region, policyRoot=live.defaultCheckpoints):
-    """The forecast screen's model list: what `trainedPolicies/` holds for `region`.
+def entriesOf(region, loader, runs=None, root=data.backtestRoot):
+    """Every backtest entry for `region`, as [(entry, experiment)], in catalogue order.
 
-    Not the backtest screen's list. That one names runs already scored and needs no
-    weights, so it offers models this screen cannot load. A machine that holds no
-    agent for `region` gets an empty list, and the board then draws the prices alone.
+    One entry per experiment, train mode and price source, at the pinned seed. The other
+    seeds stay in the published rows and in the thesis: see `config.best_seed_by_run`.
     """
-    return sorted(live.findCheckpoints(region, policyRoot))
+    out = []
+    for experiment in experiments.catalogue(region, runs, root):
+        days = loader(experiment.run, region).days
+        for entry in experiments.entries(experiment, days):
+            out.append((entry, experiment))
+    return out
+
+
+def pick(found, label):
+    """The (entry, experiment) a dropdown label names, or the first one offered.
+
+    The first, because a region change can leave the old label behind, and the screen
+    draws the model it then names rather than nothing.
+    """
+    for entry, experiment in found:
+        if entry.label == label:
+            return entry, experiment
+    return found[0] if found else (None, None)
+
+
+def liveModels(region, policyRoot=live.defaultCheckpoints, loader=None,
+               runs=None, root=data.backtestRoot):
+    """The forecast screen's model list: one agent per experiment and train mode.
+
+    Every name here is an agent this machine can run and an experiment the backtest
+    screen scores, at the same seed, because both lists come from
+    `experiments.runnable`. A machine holding no agent for `region` gets an empty list,
+    and the board then draws the prices alone.
+    """
+    return experiments.runnable(region, root, policyRoot, loader, runs)
 
 
 def forecastBoard(region, model, policyRoot, initialSoc=defaultSoc):
     """The forecast figure, the box above it, its two cards and the frame it drew.
 
-    Returns (figure, box, tiles, frame).
+    Returns (figure, box, tiles, frame). `model` is an `experiments.Runnable`, or None
+    when this machine holds no agent of a published experiment for the region.
 
     The two halves fail apart. The prices are AEMO's and need no agent, so a model
     whose checkpoint is not on this machine still gets its price path, with the reason
@@ -409,7 +470,8 @@ def forecastBoard(region, model, policyRoot, initialSoc=defaultSoc):
     except (FileNotFoundError, ValueError) as error:
         frame, note = live.priceFrame(path), str(error)
     figure = figures.forecastFigure(frame, live.blocks(frame), region=region,
-                                    model=model, note=note)
+                                    model=None if model is None else model.entry.label,
+                                    note=note)
     return (figure, _liveBox(None if frame.empty else frame.settlementdate.iloc[0]),
             figures.forecastTiles(frame, initialSoc), frame)
 
@@ -417,13 +479,33 @@ def forecastBoard(region, model, policyRoot, initialSoc=defaultSoc):
 def forecastExport(region, model, frame):
     """The file the forecast screen hands over: the drawn intervals, and its name.
 
-    None when the fetch returned nothing, and the button then downloads nothing.
+    None when the fetch returned nothing, and the button then downloads nothing. The
+    name carries the experiment, because the same agent under another experiment's
+    settings is another plan.
     """
     if frame.empty:
         return None
     start = pd.Timestamp(frame.settlementdate.iloc[0]).strftime("%Y%m%dT%H%M")
-    return {"name": f"forecast_{region}_{model or 'prices'}_{start}.csv",
+    name = "prices" if model is None else (
+        f"{model.entry.algo}-{model.entry.trainMode}-s{int(model.entry.seed)}"
+        f"_{model.entry.run}")
+    return {"name": f"forecast_{region}_{name}_{start}.csv",
             "csv": frame.to_csv(index=False)}
+
+
+def liveNote(model, frame):
+    """What the forecast board does differently from the backtest of the same model.
+
+    The episode opens at the run time rather than at 04:00, so it covers part of a
+    trading day, and the cycle budget covers the same part. The state of charge is the
+    reader's, not a measurement.
+    """
+    settings = experiments.envSettings(model.experiment)
+    budget = live.budgetFor(settings, len(frame))
+    share = ("no cycle budget" if budget is None
+             else f"{budget:.2f} cycles for these {len(frame)} intervals")
+    return (f"the episode opens at the run time, not at 04:00, so it plans "
+            f"{len(frame)} of {settings['horizon']} intervals: {share}")
 
 
 def _liveBox(start):
@@ -456,20 +538,29 @@ def _trigger():
         return None
 
 
-def register(app, loader, policyRoot=live.defaultCheckpoints):
+def register(app, loader, policyRoot=live.defaultCheckpoints, runs=None,
+             root=data.backtestRoot):
+    def found(region):
+        return entriesOf(region, loader, runs, root)
+
     @app.callback(Output("pick-model", "options"), Output("pick-model", "value"),
                   Input("pick-region", "value"), State("pick-model", "value"))
     def fillModels(region, current):
-        names = data.models(loader(region).days)
+        names = [entry.label for entry, _ in found(region)]
         return ([{"label": name, "value": name} for name in names],
                 current if current in names else (names[0] if names else None))
 
-    # The boxes open on the whole backtest, and on the span of the region shown,
-    # because a run need not hold the same test days in every region.
+    # The boxes open on the whole backtest, on the span of the experiment and the region
+    # shown, because an experiment need not hold the same test days in every region and
+    # two experiments need not cover the same span.
     @app.callback(Output("from-date", "value"), Output("to-date", "value"),
-                  Input("pick-region", "value"))
-    def fillDates(region):
-        return tuple(showDay(day) for day in runSpan(loader(region).days))
+                  Input("pick-region", "value"), Input("pick-model", "value"))
+    def fillDates(region, label):
+        entry, _ = pick(found(region), label)
+        if entry is None:
+            raise PreventUpdate
+        return tuple(showDay(day)
+                     for day in runSpan(loader(entry.run, region).days))
 
     # The published rows of the region on screen, over the days the boxes name.
     @app.callback(Output("download-days", "data"), Output("from-date", "style"),
@@ -478,7 +569,10 @@ def register(app, loader, policyRoot=live.defaultCheckpoints):
                   State("from-date", "value"), State("to-date", "value"),
                   State("state", "data"), prevent_initial_call=True)
     def downloadDays(clicks, fromText, toText, state):
-        run = loader(state["region"])
+        entry, _ = pick(found(state["region"]), state["model"])
+        if entry is None:
+            raise PreventUpdate
+        run = loader(entry.run, state["region"])
         start, end, fromStyle, toStyle, note = downloadRange(
             fromText, toText, runSpan(run.days))
         if start is None:
@@ -505,7 +599,7 @@ def register(app, loader, policyRoot=live.defaultCheckpoints):
                   Input("day-text", "value"), Input("pick-region", "value"),
                   Input("pick-model", "value"), State("state", "data"))
     def setState(click, _prev, _next, _calendar, text, region, model, state):
-        names = data.models(loader(region).days)
+        names = [entry.label for entry, _ in found(region)]
         state = dict(state, model=model)
         state = nextState(ctx.triggered_id, state, click=click, text=text,
                           region=region, models=names)
@@ -522,21 +616,28 @@ def register(app, loader, policyRoot=live.defaultCheckpoints):
         return (*stepLabels(state["view"]), shown)
 
     @app.callback(Output("tiles", "children"), Output("board", "figure"),
-                  Output("board-label", "children"), Input("state", "data"))
+                  Output("board-label", "children"), Output("settings", "children"),
+                  Input("state", "data"))
     def redraw(state):
-        run = loader(state["region"])
-        chosen = data.modelRows(run.days, state["model"])
+        entry, experiment = pick(found(state["region"]), state["model"])
+        if entry is None:
+            message = (f"No experiment is published for {state['region']}. "
+                       f"config.dashboard_runs names the runs the screen offers.")
+            return [], figures.monthFigure(pd.DataFrame(), state["day"]), message, []
+        run = loader(entry.run, state["region"])
+        chosen = data.entryRows(run.days, entry.algo, entry.trainMode, entry.seed,
+                                entry.priceSource)
         day = pd.Timestamp(state["day"]) + pd.Timedelta(hours=data.dayStartHour)
         # The tiles report the selected day in both views, so stepping the day or
         # clicking a calendar cell always moves them.
         scoped = data.scope(chosen, day=day)
-        row = chosen.iloc[0] if not chosen.empty else {}
-        # The forecast comes from the run's own actions export, so the line on the
-        # chart and the refresh tile both follow --results.
+        # The forecast line, the refresh tile and the oracle bound all come from the
+        # selected experiment's own run, so selecting an experiment selects its oracle
+        # and its forecast with it.
         forecast = (data.forecastPath(run.resultsDir, state["region"], day,
-                                      algo=row.get("algo"), trainMode=row.get("trainMode"),
-                                      seed=row.get("seed"))
-                    if row.get("priceSource") == "forecast" else None)
+                                      algo=entry.algo, trainMode=entry.trainMode,
+                                      seed=entry.seed)
+                    if entry.priceSource == "forecast" else None)
         # Verified against the export by `data.loadRun`, so the tile states it as fact.
         every = run.forecastEvery
         if state["view"] == "calendar":
@@ -548,13 +649,16 @@ def register(app, loader, policyRoot=live.defaultCheckpoints):
             # backtest day and a live forecast read the same way.
             path = data.dispatchPath(
                 data.decisions(run, day),
-                algo=row.get("algo"), trainMode=row.get("trainMode"),
-                seed=row.get("seed"), priceSource=row.get("priceSource"))
+                algo=entry.algo, trainMode=entry.trainMode, seed=entry.seed,
+                priceSource=entry.priceSource)
+            # `entry.label`, not the stored one: the store opens on no model at all,
+            # and a stale label would name a model the chart did not draw.
             board = figures.dayFigure(path, live.blocks(path), day,
-                                      region=state["region"], model=state["model"],
+                                      region=state["region"], model=entry.label,
                                       forecast=forecast, every=every)
             label = f"{day:%A %-d %B %Y}, 04:00 to 04:00"
-        return [_tile(tile) for tile in figures.summaryTiles(scoped, every)], board, label
+        return ([_tile(tile) for tile in figures.summaryTiles(scoped, every)], board,
+                label, _settingsBox(experiments.settings(experiment, entry, run.days)))
 
     @app.callback(Output("backtest-screen", "style"), Output("live-screen", "style"),
                   Input("screen", "value"))
@@ -592,7 +696,8 @@ def register(app, loader, policyRoot=live.defaultCheckpoints):
             if trigger in ("forecast-run", "soc-text"):
                 return no_update, no_update, no_update, style, note
             soc = (previous or {}).get("soc", defaultSoc)
-        names = liveModels(region, policyRoot)
+        offered = liveModels(region, policyRoot, loader, runs, root)
+        names = [item.entry.label for item in offered]
         model = model if model in names else (names[0] if names else None)
         return ({"screen": screen, "region": region, "model": model, "clicks": clicks,
                  "submits": submits, "slot": slot, "soc": soc},
@@ -604,33 +709,57 @@ def register(app, loader, policyRoot=live.defaultCheckpoints):
                   Output("forecast-start", "children"),
                   Output("forecast-tiles", "children"),
                   Output("forecast-csv", "data"),
+                  Output("live-settings", "children"),
                   Input("live-state", "data"))
     def redrawForecast(state):
         if state["screen"] != "live":
             raise PreventUpdate
+        region = state["region"]
+        offered = liveModels(region, policyRoot, loader, runs, root)
+        model = next((item for item in offered
+                      if item.entry.label == state["model"]), None)
         figure, box, tiles, frame = forecastBoard(
-            state["region"], state["model"], policyRoot,
-            state.get("soc", defaultSoc))
+            region, model, policyRoot, state.get("soc", defaultSoc))
+        # The same settings the backtest screen shows for the same model, out of one
+        # function, plus what this screen does differently to plan part of a day.
+        lines = ([] if model is None
+                 else experiments.settings(model.experiment, model.entry)
+                 + [("On this screen", liveNote(model, frame))])
         return (figure, box, [_tile(tile) for tile in tiles],
-                forecastExport(state["region"], state["model"], frame))
+                forecastExport(region, model, frame), _settingsBox(lines))
 
 
-def build(region, resultsDir, policyRoot=live.defaultCheckpoints):
-    runs = {}
+def build(region, resultsDir=None, policyRoot=live.defaultCheckpoints):
+    """The app over every experiment in `config.dashboard_runs`.
 
-    def loader(name):
-        if name not in runs:
-            runs[name] = data.loadRun(name, resultsDir)
-        return runs[name]
+    `resultsDir` narrows it to one published run, which is what the hosted dashboard
+    passes: the Space stages one run and opens on it. Without it the screen offers the
+    pinned catalogue, which is every experiment the thesis reports.
+    """
+    root = data.backtestRoot if resultsDir is None else Path(resultsDir).parent
+    names = None if resultsDir is None else (Path(resultsDir).name,)
+    held = {}
 
-    regions = data.availableRegions(resultsDir) or [region]
-    # A run the agent never trained on NSW1 for still opens, on a region it holds.
+    def loader(run, name):
+        key = (str(run), name)
+        if key not in held:
+            held[key] = data.loadRun(name, Path(root) / run)
+        return held[key]
+
+    regions = experiments.regions(names, root) or [region]
+    # An experiment the agent never trained on NSW1 for still opens, on a region it
+    # holds.
     region = region if region in regions else regions[0]
-    first = loader(region)
+    opening = entriesOf(region, loader, names, root)
+    if not opening:
+        raise FileNotFoundError(
+            f"no experiment of config.dashboard_runs is published for {region} under "
+            f"{root}; publish one with `python -m backtest.publish`")
+    first = loader(opening[0][0].run, region)
     day = str(pd.Timestamp(first.days.testDay.max()).date())
     app = Dash(__name__, title=f"{region} rolling backtest")
     app.layout = layout(regions, region, day)
-    register(app, loader, policyRoot)
+    register(app, loader, policyRoot, names, root)
     return app
 
 
@@ -639,15 +768,16 @@ def main(argv=None):
                                      description=__doc__.splitlines()[0])
     parser.add_argument("--region", default="NSW1")
     parser.add_argument("--results", default=None,
-                        help="the backtest records to read (default: the one run "
-                             f"under {data.backtestRoot}/)")
+                        help="one published run to show, as "
+                             f"{data.backtestRoot}/<run> (default: every experiment "
+                             "config.dashboard_runs names)")
     parser.add_argument("--policies", default=str(live.defaultCheckpoints),
                         help="where training published its final agents "
                              f"(default: {live.defaultCheckpoints})")
     parser.add_argument("--port", type=int, default=8050)
     args = parser.parse_args(argv)
-    resultsDir = data.findResults(args.results)
-    print(f"reading {resultsDir}")
+    resultsDir = None if args.results is None else data.findResults(args.results)
+    print(f"reading {resultsDir or ', '.join(config.dashboard_runs)}")
     build(args.region, resultsDir, args.policies).run(port=args.port)
 
 

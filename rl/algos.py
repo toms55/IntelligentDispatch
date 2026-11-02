@@ -3,6 +3,20 @@
 MaskablePPO is the only SB3-family algorithm that reads an action mask. DQN and A2C
 rely on the environment's clipping instead.
 
+`dqnnomask` is a second name for that same unmasked DQN. It exists because the published
+run `rolling2023_dqn_pooled_regions_daily_1_cycle_end_empty_5min_forecast` records it as
+its algorithm, and a published run's algorithm string is part of what it is: the
+dashboard loads the weights by that name. It was scored on a branch where `dqn` had been
+changed to mask at action selection, so the unmasked arm needed a name of its own there.
+On this branch `dqn` masks nothing, so the two builders are the same, and both are the
+DQN every published DQN result was produced by.
+
+One difference from the branch that trained those agents: it had no
+`config.replay_buffer_size`, so its DQN took SB3's default buffer of 1000000
+transitions, and `_dqn` below pins 57600. The buffer is not in `agent.zip`, so it does
+not change how a published agent loads or acts. It would change a retrain, so a rerun of
+that experiment is not a reproduction of it.
+
 Every algorithm runs undiscounted: an episode is one week of profit, and every interval
 of it counts the same.
 
@@ -64,6 +78,15 @@ def _dqn(env, seed, overrides):
     return DQN(**settings)
 
 
+def _dqnNoMask(env, seed, overrides):
+    """`dqnnomask`: the same agent `_dqn` builds, under the name a published run uses.
+
+    One builder, not a copy of the settings, so the two names cannot drift into two
+    different agents.
+    """
+    return _dqn(env, seed, overrides)
+
+
 def _a2c(env, seed, overrides):
     settings = dict(policy="MlpPolicy", env=env, seed=seed, gamma=config.gamma,
                     verbose=0)
@@ -74,6 +97,7 @@ def _a2c(env, seed, overrides):
 builders = {
     "maskableppo": _maskablePpo,
     "dqn": _dqn,
+    "dqnnomask": _dqnNoMask,
     "a2c": _a2c,
 }
 
@@ -103,5 +127,5 @@ def holdExploration(agent):
 
 
 def load(name, path, env=None):
-    classes = {"maskableppo": MaskablePPO, "dqn": DQN, "a2c": A2C}
+    classes = {"maskableppo": MaskablePPO, "dqn": DQN, "dqnnomask": DQN, "a2c": A2C}
     return classes[name.lower()].load(path, env=env)

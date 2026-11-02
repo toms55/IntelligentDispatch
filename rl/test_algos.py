@@ -35,7 +35,7 @@ def makeEnv(paper, series, **kwargs):
 
 
 class TestRegistry:
-    @pytest.mark.parametrize("name", ["maskableppo", "dqn", "a2c"])
+    @pytest.mark.parametrize("name", ["maskableppo", "dqn", "dqnnomask", "a2c"])
     def test_builds_every_algorithm(self, paper, series, name):
         agent = algos.build(name, makeEnv(paper, series), seed=0)
         assert agent is not None
@@ -50,9 +50,20 @@ class TestRegistry:
     def test_only_maskable_ppo_claims_masking(self):
         assert algos.supportsMasking("maskableppo") is True
         assert algos.supportsMasking("dqn") is False
+        assert algos.supportsMasking("dqnnomask") is False
         assert algos.supportsMasking("a2c") is False
 
-    @pytest.mark.parametrize("name", ["maskableppo", "dqn", "a2c"])
+    # `dqnnomask` is the name a published run records for the unmasked DQN, so it has to
+    # build and load the same agent `dqn` does, never a second one that drifts from it.
+    def test_dqnnomask_is_the_same_agent_as_dqn(self, paper, series):
+        plain = algos.build("dqn", makeEnv(paper, series), seed=0)
+        named = algos.build("dqnnomask", makeEnv(paper, series), seed=0)
+        assert type(named) is type(plain)
+        for setting in ("gamma", "learning_starts", "buffer_size", "learning_rate",
+                        "batch_size", "train_freq", "target_update_interval"):
+            assert getattr(named, setting) == getattr(plain, setting), setting
+
+    @pytest.mark.parametrize("name", ["maskableppo", "dqn", "dqnnomask", "a2c"])
     def test_runs_undiscounted(self, paper, series, name):
         agent = algos.build(name, makeEnv(paper, series), seed=0)
         assert agent.gamma == config.gamma == 1.0
@@ -63,7 +74,7 @@ class TestRegistry:
 
 
 class TestTraining:
-    @pytest.mark.parametrize("name", ["maskableppo", "dqn", "a2c"])
+    @pytest.mark.parametrize("name", ["maskableppo", "dqn", "dqnnomask", "a2c"])
     def test_trains_and_checkpoints(self, paper, series, name, tmp_path):
         agent, path = trainOne(name, series, paper, seed=0, timesteps=96,
                                calendar=False, horizon=24, rewardScale=1.0,

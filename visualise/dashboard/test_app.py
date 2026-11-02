@@ -15,21 +15,26 @@ from visualise.dashboard import __main__ as app
 from rl import policies
 from visualise.dashboard import data, figures, live
 from visualise.dashboard.test_data import DAY, REGION, run  # noqa: F401
-from visualise.dashboard.test_live import (path, sawtooth,  # noqa: F401
+from visualise.dashboard.test_live import (model, path, sawtooth,  # noqa: F401
                                            standIn)
 
-MODEL = "maskableppo-warm-s0-realised"
-LIVE_MODEL = "maskableppo-warm-s0"
+# The backtest label names the experiment the numbers came from, as the dropdown does.
+MODEL = "maskableppo-warm-s0-realised | rolling"
+LIVE_MODEL = "maskableppo-warm-s0 | rolling"
 
 
-def publish(root, region=None, seed=0):
-    """One published agent under `root`, as training would leave it."""
+def publish(root, region=None, seed=0, rawRun="rolling"):
+    """One published agent under `root`, as training would leave it.
+
+    `rawRun` is the run that trained it, which is how the forecast screen finds the
+    experiment that scored it. An agent with no experiment behind it is not offered.
+    """
     source = Path(root) / "checkpoint"
     source.mkdir(parents=True, exist_ok=True)
     (source / policies.agentFile).write_bytes(b"")
     (source / policies.scalerFile).write_text("{}")
     policies.publish(source, region or REGION, "maskableppo", "warm", seed,
-                     root=Path(root) / "trainedPolicies")
+                     root=Path(root) / "trainedPolicies", rawRun=rawRun)
     return Path(root) / "trainedPolicies"
 
 
@@ -201,12 +206,12 @@ class TestRedraw:
         built = app.build(REGION, run)
         got = _callback(built, "tiles")({"region": REGION, "day": "2025-01-01",
                                          "view": view, "model": MODEL})
-        assert len(got) == 3 and all(item is not None for item in got)
+        assert len(got) == 4 and all(item is not None for item in got)
 
     # The month view still names its own month.
     def test_the_month_view_names_its_month(self, run):
         built = app.build(REGION, run)
-        tiles, _, label = _callback(built, "tiles")(
+        tiles, _, label, _ = _callback(built, "tiles")(
             {"region": REGION, "day": "2025-02-01", "view": "calendar",
              "model": MODEL})
         assert label == "February 2025"
@@ -218,8 +223,8 @@ class TestRedraw:
         redraw = _callback(built, "tiles")
         values = []
         for day in ("2025-01-01", "2025-01-02"):
-            tiles, _, _ = redraw({"region": REGION, "day": day, "view": "calendar",
-                                  "model": MODEL})
+            tiles, _, _, _ = redraw({"region": REGION, "day": day, "view": "calendar",
+                                     "model": MODEL})
             labels = [tile.children[0].children for tile in tiles]
             values.append([tile.children[1].children for tile in tiles])
         assert "Days" not in labels
@@ -237,7 +242,7 @@ class TestRedraw:
     # A day with no trajectory file still renders the rest of the screen.
     def test_a_day_without_a_trajectory_still_renders(self, run):
         built = app.build(REGION, run)
-        _, board, _ = _callback(built, "tiles")(
+        _, board, _, _ = _callback(built, "tiles")(
             {"region": REGION, "day": "2025-01-03", "view": "day", "model": MODEL})
         assert board.layout.annotations
 
@@ -247,7 +252,7 @@ class TestDownload:
     def test_the_boxes_open_on_the_whole_run(self, run):
         built = app.build(REGION, run)
         days = data.loadRun(REGION, run).days
-        assert _callback(built, "from-date")(REGION) == (
+        assert _callback(built, "from-date")(REGION, MODEL) == (
             app.showDay(days.testDay.min()), app.showDay(days.testDay.max()))
 
     # The file holds the days the boxes name and no others, so a reader who narrows
@@ -256,7 +261,8 @@ class TestDownload:
         built = app.build(REGION, run)
         day = data.loadRun(REGION, run).days.testDay.min() + timedelta(days=1)
         sent, fromStyle, toStyle, note = _callback(built, "download-days")(
-            1, app.showDay(day), app.showDay(day), {"region": REGION})
+            1, app.showDay(day), app.showDay(day),
+            {"region": REGION, "model": MODEL})
         rows = pd.read_csv(io.StringIO(sent["content"]))
         assert set(pd.to_datetime(rows.testDay)) == {day}
         assert note is None and fromStyle == toStyle == app.dayStyle
@@ -269,7 +275,8 @@ class TestDownload:
         days = data.loadRun(REGION, run).days
         after = days.testDay.max() + timedelta(days=1)
         sent, fromStyle, toStyle, note = _callback(built, "download-days")(
-            1, app.showDay(days.testDay.min()), app.showDay(after), {"region": REGION})
+            1, app.showDay(days.testDay.min()), app.showDay(after),
+            {"region": REGION, "model": MODEL})
         assert sent is no_update and toStyle == app.badDayStyle
         assert fromStyle == app.dayStyle
         assert note == (f"Type a date from {app.showDay(days.testDay.min())} to "
@@ -299,7 +306,7 @@ class TestForecastDownload:
     # rather than an empty file.
     def test_an_empty_board_sends_nothing(self, run):
         built = app.build(REGION, run)
-        assert app.forecastExport(REGION, LIVE_MODEL, pd.DataFrame()) is None
+        assert app.forecastExport(REGION, model(), pd.DataFrame()) is None
         with pytest.raises(PreventUpdate):
             _callback(built, "download-forecast")(1, None)
 
@@ -307,8 +314,9 @@ class TestForecastDownload:
     def test_the_name_states_what_it_holds(self):
         frame = pd.DataFrame({"settlementdate": [pd.Timestamp("2026-10-29 14:05")],
                               "price": [100.0]})
-        export = app.forecastExport(REGION, LIVE_MODEL, frame)
-        assert export["name"] == f"forecast_{REGION}_{LIVE_MODEL}_20261029T1405.csv"
+        export = app.forecastExport(REGION, model(), frame)
+        assert export["name"] == (f"forecast_{REGION}_maskableppo-warm-s0_rolling"
+                                  "_20261029T1405.csv")
         assert "100.0" in export["csv"]
 
 
@@ -348,20 +356,21 @@ class TestForecastScreen:
         assert figure.data[0].name == "AEMO forecast"
         assert box[1].children == "01/01/2025 10:05"
 
-    # The prices are AEMO's, so a model with no agent still gets its price path.
-    def test_an_unpublished_model_still_draws_the_prices(self, monkeypatch, tmp_path):
+    # The prices are AEMO's, so a screen with no model to run still draws its price
+    # path, with the reason the dispatch blocks are missing written over it.
+    def test_no_model_still_draws_the_prices(self, monkeypatch, tmp_path):
         monkeypatch.setattr(live, "forecastPath", lambda region: path([10.0, 300.0]))
-        figure, box, *_ = app.forecastBoard(REGION, MODEL, tmp_path)
+        figure, box, *_ = app.forecastBoard(REGION, None, tmp_path)
         assert figure.data[0].name == "AEMO forecast"
         assert not [s for s in figure.layout.shapes if s.type == "rect"]
-        assert "not published" in figure.layout.annotations[0].text
+        assert "No published agent" in figure.layout.annotations[0].text
         assert box[1].children == "01/01/2025 10:05"
 
     # The cards come back with the board, so one network read fills the whole screen.
     def test_the_board_returns_the_cards(self, monkeypatch, sawtooth, standIn,
                                         tmp_path):
         monkeypatch.setattr(live, "forecastPath", lambda region: sawtooth)
-        _, _, tiles, _ = app.forecastBoard(REGION, LIVE_MODEL, tmp_path)
+        _, _, tiles, _ = app.forecastBoard(REGION, model(), tmp_path)
         assert [tile["label"] for tile in tiles] == ["Expected revenue",
                                                      "Current state of charge"]
         assert tiles[0]["raw"] > 0
@@ -370,13 +379,28 @@ class TestForecastScreen:
     def test_the_cards_are_in_the_layout(self, run):
         assert "forecast-tiles" in _ids(app.build(REGION, run).layout)
 
+    # The box states the experiment the model was scored under, out of the same
+    # function the backtest screen's box comes from, plus what this screen does
+    # differently with part of a trading day.
+    def test_the_box_states_the_experiment(self, monkeypatch, run, sawtooth, standIn,
+                                           tmp_path):
+        monkeypatch.setattr(live, "forecastPath", lambda region: sawtooth)
+        built = app.build(REGION, run, publish(tmp_path))
+        *_, box = _callback(built, "forecast-board")(
+            {"screen": "live", "region": REGION, "model": LIVE_MODEL, "soc": 0.5})
+        said = {row.children[0].children: row.children[1].children
+                for row in box.children}
+        assert said["Experiment"] == "rolling"
+        assert said["Cycle budget"].startswith("1.00 equivalent full cycles")
+        assert "opens at the run time" in said["On this screen"]
+
     # A NEMWeb failure is written on the board, not swallowed into an empty chart.
     def test_a_failed_fetch_says_why(self, monkeypatch, tmp_path):
         def refuse(region):
             raise ValueError("AEMO has not published this run")
 
         monkeypatch.setattr(live, "forecastPath", refuse)
-        figure, box, tiles, _ = app.forecastBoard(REGION, LIVE_MODEL, tmp_path)
+        figure, box, tiles, _ = app.forecastBoard(REGION, model(), tmp_path)
         assert "not published" in figure.layout.annotations[0].text
         assert box[1].children == "no run"
         assert tiles[0]["value"] == "no data"
@@ -404,7 +428,7 @@ class TestStartSoc:
         monkeypatch.setattr(live, "suggest",
                             lambda *args, **kwargs: seen.update(kwargs) or
                             suggest(*args, **kwargs))
-        _, _, tiles, _ = app.forecastBoard(REGION, LIVE_MODEL, tmp_path, 0.2)
+        _, _, tiles, _ = app.forecastBoard(REGION, model(), tmp_path, 0.2)
         assert seen["initialSoc"] == 0.2
         assert tiles[1]["raw"] == 0.2
 

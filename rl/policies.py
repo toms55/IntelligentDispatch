@@ -9,6 +9,11 @@ reader goes through it.
         scaler.json    the price transform the weights were trained under
         policy.json    where the agent came from, and when
 
+`policy.json` also records `rawRun`, the results directory of the run that trained the
+agent. `visualise/dashboard/experiments.py` reads it to find the published experiment
+that scored this agent, so the forecast screen never offers a model with no numbers
+behind it.
+
 The directory name is the label the dashboard shows, so a reader needs no index file
 to list what is on the machine. The optional tag keeps a run whose agents mean something
 else, such as a different episode start, beside the ones already published rather than

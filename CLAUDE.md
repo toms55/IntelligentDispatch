@@ -92,6 +92,10 @@ Rules:
    counts, because the two differ by about 60% at the same step budget.
 3. MaskablePPO reads the mask and DQN does not. That is a property of the algorithm, not
    a change to the problem, and the out-of-bounds rate measures what it costs.
+   `dqnnomask` is a second name for that same unmasked DQN, and one builder serves both.
+   It exists because a published run records it as its algorithm, and the dashboard loads
+   the weights by that name. Never give it settings of its own: two names for one agent
+   is already one too many, and two agents under two names would end the comparison.
 4. The out-of-bounds penalty (`config.invalid_action_penalty`) enters the reward and
    nothing else. Profit, revenue, degradation, regret and the captured fraction stay raw
    dollars, so the discrete oracle keeps bounding the agent: the oracle's schedule is
@@ -128,7 +132,7 @@ travel. There is exactly one layout for a finished agent:
 trainedPolicies/<region>/<algo>-<trainMode>[-<tag>]-s<seed>/
     agent.zip      the weights
     scaler.json    the price transform the weights were trained under
-    policy.json    which command wrote it, from which window, and when
+    policy.json    which command wrote it, from which window and run, and when
 ```
 
 Rules:
@@ -206,22 +210,51 @@ Rules:
    because it is the only check that reads a whole run on real prices, and it runs
    before anything is written.
 
-### The two dashboard screens read different things
+### One catalogue of experiments, read by both screens
 
-The backtest screen reads finished rows from `--results`. It replays numbers already
-written, so it needs no weights and its model list comes from the results.
+An experiment is one published run of one region: its day rows, the manifest it ran
+under, and the one line saying what it tested. `config.dashboard_runs` is the list of
+them, `config.best_seed_by_run` names the seed each one shows, and
+`visualise/dashboard/experiments.py` is the only reader of either.
 
-The current forecast screen runs the agent now, so it needs the weights. Its model
-list comes from `trainedPolicies/` and from nowhere else. Never fill it from the
-results: that offers a model the screen cannot load.
+The backtest screen offers one entry per experiment, train mode and price source. The
+forecast screen offers the agents those same experiments trained, at the same seed. So
+every model a reader can run has its numbers on the other screen.
+
+Rules:
+
+1. A run reaches `config.dashboard_runs` when it tests something the thesis reports and
+   its manifest states what that was. The comment there says which published runs are
+   out and why. Everything else stays published, in the thesis, and off the screen.
+2. One seed per model, pinned in `config.best_seed_by_run`, never ranked while the
+   screen draws. `scripts/rankSeeds.py` derives the map and prints it. Picking the top
+   of five seeds on the test days is selection on the test window, so the settings box
+   says which seed of how many it shows and the thesis quotes the spread.
+3. Selecting an experiment selects its oracle. Every published row carries the bound of
+   its own run, so the screen reads the rows of the selected run and nothing else. No
+   screen solves, and no screen re-derives a bound.
+4. The settings box comes from `experiments.settings` and from nowhere else, on both
+   screens. It reads the published manifest, so it describes the backtest that ran
+   rather than the settings this checkout holds now.
+5. The forecast screen builds its environment from `experiments.envSettings`: the
+   episode, the cycle budget, the closing rule, the terminal price and the start state
+   of charge, all from the manifest. Not from `config`, which moves between
+   experiments, and not from `policy.json`, which records the training machine's
+   `config` at publish time and is wrong for every agent published so far. The screen
+   plans part of a trading day, so `live.budgetFor` gives it that part of the budget.
+6. An agent is tied to its experiment by `rawRun` in `policy.json`, the results
+   directory that trained it, against `rawResults` in the run's manifest.
+   `experiments.policyRun` is the one reader. An agent with no experiment behind it, or
+   one `policies.loadable` refuses, is held back from the forecast screen rather than
+   offered.
 
 ### One definition of the hosted dashboard
 
 The dashboard is hosted on a Hugging Face Space, which builds `deploy/Dockerfile` and
 serves `deploy/app.py`. `scripts/publishSpace.sh` is the only code that stages the
-upload, and the upload is a subset: the packages the two screens import, one run from
-`results/backtestResults/` with its actions exports, one published agent per region,
-and `deploy/`.
+upload, and the upload is a subset: the packages the two screens import, the runs of
+`config.dashboard_runs` with their actions exports and their manifests, the agents those
+runs trained at one seed each, and `deploy/`.
 
 The Space runs on CPU Basic hardware, which has no hourly cost but needs a PRO plan to
 create. Only static Spaces are free, and a Dash application is not static.
@@ -258,15 +291,16 @@ Rules:
    through `SSH_ASKPASS`, and a machine with no working askpass program pushes with
    empty credentials. Hugging Face answers that anonymous push with "You have read
    access but not the required permissions", which names the wrong cause.
-9. The Space carries one seed per region, the one `config.best_seed` names, and every
-   other seed stays on this machine. The thesis reports the spread over seeds, so
-   `trainedPolicies/` holds all of them and the published results hold all of them.
-   The Space shows one, because five dispatch runs that differ only by seed is not a
-   thing a reader can read. `scripts/bestSeeds.sh` is the only reader of that map, and
-   both the publish script and the fingerprint go through it. Stage 2 filters the result
-   rows and the actions export to that seed, and stage 3 stages that seed's agent, so
-   the two screens of the Space name the same model.
-10. The staged runs are the ones `--results` names, once per run, and the first is the
+9. The Space carries one seed per train mode and region, the one
+   `config.best_seed_by_run` names, and every other seed stays on this machine. The
+   thesis reports the spread over seeds, so `trainedPolicies/` holds all of them and
+   the published results hold all of them. The Space shows one, because five dispatch
+   runs that differ only by seed is not a thing a reader can read. Stage 2 filters the
+   result rows and the actions export to that seed, and stage 3 stages the agents
+   `experiments.runnable` offers for the staged runs, so the two screens of the Space
+   name the same models.
+10. The staged runs default to `config.dashboard_runs`, through
+   `scripts/dashboardRuns.sh`, and `--results` replaces that list. The first is the
    one the Space opens. Stage 2 writes `ENV DASHBOARD_RESULTS` into the staged
    Dockerfile, so a Space variable of that name switches to another staged run with no
    republish. The screen draws one run at a time, so staging several only buys that
@@ -414,7 +448,8 @@ cover.
 
 - **`config.py`** — experiment design pinned in one place: episode horizon, observation
   horizon, SoC reset, the cycle budget, seeds, splits, the observation layout constants,
-  and the two oracle roles. Module constants are lower_snake, matching
+  the two oracle roles, and the dashboard catalogue (`dashboard_runs`,
+  `best_seed_by_run`). Module constants are lower_snake, matching
   `utils/constants.py`.
 
 - **`utils/constants.py`** — `nem_interval` (5 min) and `nem_interval_hours` (1/12),
@@ -431,19 +466,21 @@ cover.
   oracle cache over the whole span, then the 52 folds.
 - **`scripts/pushMain.sh`** — one push for both remotes: main to GitHub, then the same
   code to the Space through `scripts/publishSpace.sh`.
-- **`scripts/bestSeeds.sh`** — `config.best_seed` as `REGION SEED` lines. It parses the
-  one line with sed rather than starting an interpreter, because the pre-push hook reads
-  it on every push.
+- **`scripts/dashboardRuns.sh`** — `config.dashboard_runs` as one results path per line.
+  It parses the block with sed rather than starting an interpreter, because the pre-push
+  hook reads it on every push.
 - **`scripts/hooks/prePush`** — the same job on a plain `git push` that updates main.
   `scripts/installHooks.sh` installs it, and `scripts/spaceFingerprint.sh` tells it
   whether anything the Space serves has changed.
 
-- **`visualise/dashboard/`** — the Dash app. Two screens behind tabs. `data.py` reads
-  the rolling results, `figures.py` draws, `live.py` runs a published agent over the
-  AEMO path published right now. `--results` points at the records, `--policies` at
-  `trainedPolicies/`. `--results` names a run as `results/backtestResults/<run>`, the
-  path of its CSVs without the region. With no `--results`, `data.findResults` reads
-  the one run under `results/backtestResults/`. Two runs there raise and name both.
+- **`visualise/dashboard/`** — the Dash app. Two screens behind tabs.
+  `experiments.py` is the catalogue both screens select from, `data.py` reads the
+  rolling results, `figures.py` draws, `live.py` runs a published agent over the AEMO
+  path published right now. `--policies` points at `trainedPolicies/`. With no
+  `--results` both screens offer every experiment `config.dashboard_runs` names, at the
+  seed `config.best_seed_by_run` pins, and each entry carries the run its numbers come
+  from. `--results results/backtestResults/<run>` narrows them to one published run,
+  which is what the hosted dashboard passes.
   A day view reads the run's actions export, `results/actions/<run>_<region>.parquet`
   (see `data.actionsFile`): its rows are the dispatch the chart draws, for either
   price source, and its `forecastRunTime` column is the only source of the forecast
