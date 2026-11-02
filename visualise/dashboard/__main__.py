@@ -9,7 +9,8 @@ results/backtestResults/<run>` to narrow both screens to one published run, whic
 what the hosted dashboard does.
 
 Backtest. Pick a model and a region at the top. The model names its experiment, and the
-box under the tiles states every setting that experiment ran under. Below them a date field, a stepper and
+box under the tiles states every setting that experiment ran under, above the date field.
+A date field, a stepper and
 a calendar button drive one board, which shows either the month or one day's dispatch,
 never both. The stepper moves what the board shows, a month or a day, and the label
 above it names which. Click a day in the month to open it. The two date boxes on the
@@ -243,20 +244,24 @@ def nextState(triggered, state, click=None, text=None, region=None, models=()):
     return state
 
 
-def _controls(regions, region):
+def _modelControls(regions, region):
+    """The model and region pickers, at the top of the backtest screen."""
     return html.Div([
-        html.Div([
-            html.Div([html.Label("Model", style=labelStyle),
-                      dcc.Dropdown(id="pick-model", clearable=False,
-                                   style={"minWidth": "260px"})]),
-            html.Div([html.Label("Region", style=labelStyle),
-                      dcc.Dropdown(id="pick-region", value=region, clearable=False,
-                                   options=[{"label": name, "value": name}
-                                            for name in regions],
-                                   style={"minWidth": "120px"})]),
-        ], style={"display": "flex", "gap": "14px", "justifyContent": "flex-end",
-                  "marginBottom": "20px", "flexWrap": "wrap"}),
-        html.Div([
+        html.Div([html.Label("Model", style=labelStyle),
+                  dcc.Dropdown(id="pick-model", clearable=False,
+                               style={"minWidth": "260px"})]),
+        html.Div([html.Label("Region", style=labelStyle),
+                  dcc.Dropdown(id="pick-region", value=region, clearable=False,
+                               options=[{"label": name, "value": name}
+                                        for name in regions],
+                               style={"minWidth": "120px"})]),
+    ], style={"display": "flex", "gap": "14px", "justifyContent": "flex-end",
+              "marginBottom": "20px", "flexWrap": "wrap"})
+
+
+def _dayControls():
+    """The day field, the stepper, the calendar button and the download box."""
+    return html.Div([
             html.Div([html.Label("Day", style=labelStyle),
                       dcc.Input(id="day-text", type="text", debounce=True,
                                 placeholder=dateFormat.replace("%d", "DD")
@@ -293,9 +298,8 @@ def _controls(regions, region):
                          style={"color": figures.lossPole, "fontSize": "12px",
                                 "marginTop": "4px", "maxWidth": "320px"}),
             ], style={"marginLeft": "auto"}),
-        ], style={"display": "flex", "gap": "14px", "alignItems": "flex-end",
-                  "flexWrap": "wrap", "marginBottom": "18px"}),
-    ])
+    ], style={"display": "flex", "gap": "14px", "alignItems": "flex-end",
+              "flexWrap": "wrap", "marginBottom": "18px"})
 
 
 def _liveControls(regions, region):
@@ -372,12 +376,13 @@ def layout(regions, region, day):
         # already drawn rather than a second fetch that could differ from the chart.
         dcc.Store(id="forecast-csv"),
         html.Div(id="backtest-screen", children=[
-            _controls(regions, region),
+            _modelControls(regions, region),
             html.Div(id="tiles", style={"display": "flex", "gap": "12px",
                                         "flexWrap": "wrap", "marginBottom": "18px"}),
             # What the selected experiment tested. The dropdown names the model, and
-            # every setting behind it is here.
+            # every setting behind it is here, above the day field that reads it.
             html.Div(id="settings"),
+            _dayControls(),
             html.Div([dcc.Graph(id="board", config={"displayModeBar": False})],
                      style=panelStyle),
         ]),
