@@ -24,10 +24,11 @@ import pandas as pd
 
 import config
 from data.prices import price_series
-from utils import nem_interval
+from utils import nem_interval, nem_interval_hours
 from degradation.schade import SchadeDegradation
 from optimisation.lp import defaultSolver, solve
 from rl import policies
+from rl.ablation import addAblationArguments, ablationOf
 
 
 DEFAULT_PATH = ""  # --csv / --plot given without a PATH; filled in by _outputPath
@@ -285,6 +286,19 @@ def _runLp(args):
     return 0
 
 
+def _oracleAblation(args):
+    """The wear cost and action set an ablation states to the oracle. Nothing for the
+    baseline, so every key and every record from before the study is untouched."""
+    ablation = ablationOf(args)
+    costing = ablation.costing(_battery(args), nem_interval_hours)
+    out = {}
+    if costing is not None:
+        out["costing"] = costing
+    if ablation.actionLevels != 1:
+        out["levels"] = ablation.actionLevels
+    return out
+
+
 def _runBaseline(args):
     from rl import baseline
 
@@ -300,12 +314,13 @@ def _runBaseline(args):
 
     records = baseline.buildBaseline(
         prices, region=args.region, horizon=args.horizon,
-        calendar=not args.no_calendar, discretePower=not args.continuous,
+        calendar=not args.no_calendar or args.degradation == "full",
+        discretePower=not args.continuous,
         model=_battery(args), initialSoc=args.initial_soc,
         gap=args.gap, timeLimit=args.time_limit, workers=args.workers,
         cacheDir=args.cache_dir, onDone=progress if args.verbose else None,
         cycles=args.cycles, terminalPrice=args.terminal_price,
-        endEmpty=args.end_empty,
+        endEmpty=args.end_empty, **_oracleAblation(args),
     )
     profit = sum(record["profit"] for record in records)
     bound = sum(record["dualBound"] for record in records)
@@ -493,10 +508,11 @@ def _rolling(args):
         forecastEvery=_refreshIntervals(args, args.horizon),
         horizon=args.horizon, cycleBudget=args.cycles,
         terminalPrice=args.terminal_price,
-        endEmpty=args.end_empty,
+        endEmpty=args.end_empty, ablation=ablationOf(args),
         rewardScale=args.reward_scale,
         invalidPenalty=args.invalid_penalty,
-        initialSoc=args.initial_soc, calendar=not args.no_calendar,
+        initialSoc=args.initial_soc,
+        calendar=not args.no_calendar or args.degradation == "full",
         discretePower=args.baseline_oracle == "discrete",
         gap=args.gap, timeLimit=args.time_limit, workers=args.workers,
         battery=(args.mw, args.mwh, args.replacement_cost),
@@ -774,6 +790,7 @@ def main(argv=None):
     baselineCmd.add_argument("--cache-dir", type=Path, default=None, metavar="DIR",
                              help="read and write the records here instead of "
                                   "data_cache/lp_baseline")
+    addAblationArguments(baselineCmd)
     baselineCmd.set_defaults(run=_runBaseline)
 
     train = addParser("train", "train an agent, one run per seed")
@@ -875,6 +892,7 @@ def main(argv=None):
     rolling.add_argument("--calendar", dest="no_calendar", action="store_false",
                          help="keep calendar aging; every oracle window then misses the "
                               "cache and must be re-solved")
+    addAblationArguments(rolling)
     rolling.set_defaults(run=_runRolling, out="runs/rolling", no_calendar=True)
 
     # Not addParser: this command takes directories, not a window, and the shared

@@ -14,6 +14,7 @@ from gymnasium import spaces
 import config
 from data.forecasts import activeRun
 from rl import features
+from rl.ablation import Ablation
 from utils import nem_interval_hours
 
 CHARGE, IDLE, DISCHARGE = 0, 1, 2
@@ -39,12 +40,18 @@ class BessEnv(gymnasium.Env):
                  calendar=True, rewardScale=config.reward_scale, shuffle=False,
                  forecasts=None, scaler=None, cycleBudget=config.cycle_budget,
                  terminalPrice=0.0, invalidPenalty=config.invalid_action_penalty,
-                 endEmpty=False):
+                 endEmpty=False, ablation=None):
+        self.ablation = (ablation if ablation is not None else Ablation()).validate()
+        if (not self.ablation.timeEncoding == "clock" and horizon
+                != config.observation_intervals):
+            raise ValueError("a sine/cosine or absent time encoding replaces the episode "
+                             "slot, which only equals the clock on a one-day episode")
         self.prices = prices.to_numpy(dtype=float)
         self.timestamps = prices.index
         # One cap for the whole run, from the last timestamp. Pass `scaler` to reuse the
         # one a checkpoint was trained under; see rl/train.py.
         self.scaler = scaler if scaler is not None else features.scalerFor(prices.index)
+
         self.model = model
         self.baseline = baseline
         self.horizon = horizon
@@ -82,14 +89,25 @@ class BessEnv(gymnasium.Env):
                 f"{len(self.prices)} intervals is shorter than one {horizon}-interval episode"
             )
 
+        # The trading day's cheap and dear quarters, for the shaping bonus. One pair per
+        # episode, read from the realised prices, and used in the reward only.
+        self.quarters = self._dayQuarters() if self.ablation.shapingBonus else None
+
+        self.costing = self.ablation.costing(model, dtHours)
+        # 2L + 1 actions: the first L charge at falling shares of rated power, the middle
+        # one idles, the last L discharge at rising shares. One level is the three-action
+        # problem every published agent faced, and the arithmetic is then unchanged.
+        self.levels = self.ablation.actionLevels
+        self.idleAction = self.levels
+        self.dischargeAction = 2 * self.levels
         self.fullStep = model.chargePower * dtHours
         self.tolerance = 1e-9 * self.fullStep
         # What one full-rate discharge removes, cell-side.
         self.fullRemoval = self.fullStep / model.dischargeEfficiency
 
-        low, high = features.observationBounds(self.scaler)
+        low, high = features.observationBounds(self.scaler, self.ablation)
         self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
-        self.action_space = spaces.Discrete(3)
+        self.action_space = spaces.Discrete(2 * self.levels + 1)
 
         self.windowCursor = 0
         self.windowIndex = 0
@@ -121,7 +139,7 @@ class BessEnv(gymnasium.Env):
         socPrev = self.stored / self.model.MWh
         action = int(action)
         # Read before the move, because the move is what removes the headroom.
-        outOfBounds = not self.action_masks()[action]
+        outOfBounds = not self._legalMask()[action]
         boughtMWh, soldMWh = self._applyAction(self._closingAction(action))
         socNew = self.stored / self.model.MWh
 
@@ -140,6 +158,7 @@ class BessEnv(gymnasium.Env):
         # `totals` and out of every info key below, so the figures the backtest reports
         # remain raw dollars and the oracle keeps bounding the agent.
         reward = (profit + terminal) / self.rewardScale - self.invalidPenalty * outOfBounds
+        reward += self._shaping(price, boughtMWh, soldMWh)
 
         self.totals["revenue"] += revenue
         self.totals["degradation"] += degradationCost
@@ -162,7 +181,9 @@ class BessEnv(gymnasium.Env):
             "lpProfit": baseline,
             # What the agent chose, which is not what moved: an out-of-bounds charge
             # moves nothing and so reads as idle anywhere the energy is the record.
-            "attemptedAction": action,
+            # The direction, as CHARGE, IDLE or DISCHARGE, whatever the action set: the
+            # actions export and the out-of-bounds report read it as those three.
+            "attemptedAction": self._direction(action),
             "outOfBounds": outOfBounds,
             "cycles": self.totals["cycles"],
             "terminalValue": terminal,
@@ -177,18 +198,55 @@ class BessEnv(gymnasium.Env):
 
     def action_masks(self):
         """MaskablePPO reads this by name. Masked when zero energy would move, or when
-        `_closingAction` would override the move."""
+        `_closingAction` would override the move.
+
+        The ablation `hideMask` shows the algorithm every action as legal, which is a
+        plain PPO. Only what the algorithm reads changes: `_legalMask` stays the
+        definition of out of bounds, so the count and the penalty are the same."""
+        if self.ablation.hideMask:
+            return np.ones(2 * self.levels + 1, dtype=bool)
+        return self._legalMask()
+
+    def _legalMask(self):
+        """The one definition of an action that moves energy. `step` counts an action
+        outside it as out of bounds, whatever the algorithm was shown."""
         return np.array(
-            [
-                self._chargeHeadroom() > self.tolerance
-                and self._closingAction(CHARGE) == CHARGE,
-                self._closingAction(IDLE) == IDLE,
-                self._dischargeRoom() > self.tolerance,
-            ],
+            [self._chargeHeadroom() > self.tolerance
+             and self._closingAction(action) == action
+             for action in range(self.levels)]
+            + [self._closingAction(self.idleAction) == self.idleAction]
+            + [self._dischargeRoom() > self.tolerance] * self.levels,
             dtype=bool,
         )
 
+    def _direction(self, action):
+        if action < self.idleAction:
+            return CHARGE
+        return IDLE if action == self.idleAction else DISCHARGE
+
+    def _share(self, action):
+        """The share of rated power an action asks for, always positive."""
+        return abs(self.levels - action) / self.levels
+
     # --- Internals -----------------------------------------------------------
+
+    def _dayQuarters(self):
+        """The 25th and 75th percentile of each episode's realised prices."""
+        shaped = self.prices[:len(self.windows) * self.horizon].reshape(
+            len(self.windows), self.horizon)
+        return np.percentile(shaped, 25, axis=1), np.percentile(shaped, 75, axis=1)
+
+    def _shaping(self, price, boughtMWh, soldMWh):
+        """The buy-low/sell-high bonus, in reward units. It moves nothing the backtest
+        reports, exactly as the out-of-bounds penalty does not."""
+        if not self.ablation.shapingBonus:
+            return 0.0
+        low, high = self.quarters[0][self.windowIndex], self.quarters[1][self.windowIndex]
+        if boughtMWh > 0 and price <= low:
+            return self.ablation.shapingBonus * boughtMWh / self.fullStep
+        if soldMWh > 0 and price >= high:
+            return self.ablation.shapingBonus * soldMWh / self.fullStep
+        return 0.0
 
     def _offset(self):
         return self.windows[self.windowIndex] + self.stepIndex
@@ -231,25 +289,37 @@ class BessEnv(gymnasium.Env):
         if not self.endEmpty:
             return action
         after = max(self.horizon - self.stepIndex - 1, 0)
-        if action == CHARGE:
+        direction = self._direction(action)
+        if direction == CHARGE:
             charged = min(self.stored + self.model.chargeEfficiency
-                          * min(self.fullStep, max(0.0, self._chargeHeadroom())),
+                          * min(self._share(action) * self.fullStep,
+                                max(0.0, self._chargeHeadroom())),
                           self.model.MWh)
             if not self._emptiable(charged, after):
-                action = IDLE
-        if action == IDLE and not self._emptiable(self.stored, after):
-            action = DISCHARGE
+                action = self.idleAction
+        elif direction == DISCHARGE and action != self.dischargeAction:
+            # A part-rate discharge that leaves too much to sell in time is raised to
+            # the full rate. With one level the only discharge is the full rate.
+            sold = min(self._share(action) * self.fullStep,
+                       max(0.0, self._dischargeRoom()))
+            left = max(self.stored - sold / self.model.dischargeEfficiency, 0.0)
+            if not self._emptiable(left, after):
+                action = self.dischargeAction
+        if action == self.idleAction and not self._emptiable(self.stored, after):
+            action = self.dischargeAction
         return action
 
     def _applyAction(self, action):
         """Move energy, clipped to what fits. Returns meter-side (bought, sold)."""
-        if action == CHARGE:
-            boughtMWh = min(self.fullStep, max(0.0, self._chargeHeadroom()))
+        direction = self._direction(action)
+        step = self._share(action) * self.fullStep
+        if direction == CHARGE:
+            boughtMWh = min(step, max(0.0, self._chargeHeadroom()))
             self.stored += self.model.chargeEfficiency * boughtMWh
             self.stored = min(self.stored, self.model.MWh)
             return boughtMWh, 0.0
-        if action == DISCHARGE:
-            soldMWh = min(self.fullStep, max(0.0, self._dischargeRoom()))
+        if direction == DISCHARGE:
+            soldMWh = min(step, max(0.0, self._dischargeRoom()))
             removed = soldMWh / self.model.dischargeEfficiency
             self.stored = max(self.stored - removed, 0.0)
             self.spentMWh += removed
@@ -257,6 +327,11 @@ class BessEnv(gymnasium.Env):
         return 0.0, 0.0
 
     def _degradation(self, socPrev, socNew):
+        if self.costing is not None:
+            # The ablation's own wear cost, the same arithmetic as optimisation.dp.costed:
+            # a rate on the energy that left the cells.
+            removed = max(socPrev - socNew, 0.0) * self.model.MWh
+            return 0.0, 0.0, self.costing[1] * removed
         qCd, qCal, costBoth = self.model.step(socPrev, socNew, self.dtHours)
         if self.calendar:
             return qCd, qCal, costBoth
@@ -290,6 +365,9 @@ class BessEnv(gymnasium.Env):
             remaining,
             self._cyclesLeft(),
             max(0.0, 1.0 - self.stepIndex / self.horizon),
+            ablation=self.ablation,
+            settled=self.prices[start:start + self.horizon],
+            stepIndex=self.stepIndex,
         )
 
     def _cyclesLeft(self):

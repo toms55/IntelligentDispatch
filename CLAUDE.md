@@ -319,6 +319,44 @@ The backtest day view feeds it realised prices from `data.dispatchPath`. The for
 view feeds it the AEMO path. Do not write a second dispatch chart, and do not give a
 block a second colour.
 
+### The MDP ablation study changes one field of `Ablation`
+
+`rl/ablation.py:Ablation` names what a run changes from the baseline, and every field
+defaults to the baseline, so `Ablation()` is the environment every published agent
+trained in. `ABLATION_PLAN.md` states the study and `scripts/ablation.sh` lists the
+variants and prints their `qsub` commands. It submits only when `SUBMIT=1`.
+
+Rules:
+
+1. A variant moves one field. The record travels with the config the way `endEmpty` does
+   (`RollingConfig.ablation`, `BessEnv(ablation=)`, `trainOne`, `evaluateSeeds`, the
+   pooled driver and `cli rolling`/`cli baseline`), and `runner.manifestOf` records only
+   the fields that differ. The baseline writes nothing, so a published run still resumes.
+2. Agent-side fields (`lookahead`, `timeEncoding`, `history`, `priceTransform`,
+   `hideMask`, `shapingBonus`) change what the agent sees or is rewarded for. The problem
+   is the same, so the oracle corpus applies unchanged. The shaping bonus enters the
+   reward only, as the out-of-bounds penalty does (convention 4 above).
+3. Problem-side fields (`degradation`, `actionLevels`) change the dispatch problem, so the
+   oracle is solved under the same change: `dp.solve(costing=, levels=)`, recorded by
+   `cacheKey` only when set. `rl/test_ablation_problem.py` replays the oracle's chosen
+   actions through the environment and holds profit, soc and cycles to 1e-9, as
+   `TestMatchesTheOracle` does for the baseline. Break that and the capture ratio of
+   every problem-side variant means nothing.
+4. `hideMask` shows MaskablePPO every action as legal. `BessEnv._legalMask` stays the one
+   definition of out of bounds, and the count and the penalty read it.
+5. `attemptedAction` stays CHARGE, IDLE or DISCHARGE whatever the action set, because the
+   actions export and `backtest.outofbounds` read it as those three. The index the agent
+   chose is not exported.
+6. The price transforms live in `PriceScaler` and so travel in `scaler.json`. The "clip"
+   band is `config.price_clip_bounds`, the 2023 pooled 10th and 90th percentile. Never
+   re-pin it from a test window.
+7. An ablation run publishes no agent to `trainedPolicies/`: it reads another observation
+   or action set, and a default-named publish would overwrite a dashboard agent.
+8. `history` reads only the episode's own settled prices (zero before it opens), so no
+   slot crosses a region join in the pooled training set. A 24 hour history is therefore
+   empty at the start of every day, unlike the earlier `hist0` run that was handed the
+   day before.
+
 ## Architecture
 
 Flat package layout at the repo root — no `src/`. Tests sit beside the code they

@@ -112,7 +112,7 @@ def trainOne(algoName, prices, model, seed=0,
              warmFrom=None, forecasts=None, initialSoc=config.initial_soc,
              invalidPenalty=config.invalid_action_penalty,
              cycleBudget=config.cycle_budget, terminalPrice=0.0, endEmpty=False,
-             **overrides):
+             ablation=None, **overrides):
     """Train `algoName` on `prices` and write a checkpoint. Returns (agent, path).
 
     `warmFrom` is a previous checkpoint directory to continue from, which is how a
@@ -137,7 +137,7 @@ def trainOne(algoName, prices, model, seed=0,
                 forecasts=forecasts, initialSoc=initialSoc,
                 invalidPenalty=invalidPenalty,
                 cycleBudget=cycleBudget, terminalPrice=terminalPrice,
-                endEmpty=endEmpty),
+                endEmpty=endEmpty, ablation=ablation),
         filename=str(directory / "monitor.csv"),
         # One column per episode saying how often the agent chose to charge a full pack
         # or discharge an empty one, so a run shows whether the penalty bites while it

@@ -28,12 +28,13 @@ from data.forecasts import (decisionPath, decisionRuns, loadForecastCache, refre
                             refreshRunTimes)
 from data.prices import price_series
 from degradation.schade import SchadeDegradation
+from rl.ablation import Ablation
 from rl.baseline import buildBaseline, cacheKey, findRecord
 from rl import policies
 from rl.evaluate import evaluateSeeds
 from rl.features import PriceScaler
 from rl.train import replayFile, trainOne
-from utils import nem_interval
+from utils import nem_interval, nem_interval_hours
 from utils.market import marketPriceCap
 
 
@@ -69,6 +70,9 @@ class RollingConfig(NamedTuple):
     # an unmasked algorithm can incur it; see config.invalid_action_penalty.
     invalidPenalty: float = config.invalid_action_penalty
     initialSoc: float = config.initial_soc
+    # What the MDP ablation study changes from the baseline (rl/ablation.py). The default
+    # is the baseline problem and is left out of the manifest, so published runs resume.
+    ablation: Ablation = Ablation()
     calendar: bool = False
     # The oracle supplies the test-day bound only; training never consults it. `captured`
     # divides by this bound, and a continuous oracle may ramp to any power between zero
@@ -129,8 +133,16 @@ def manifestOf(cfg):
         skip.add("endEmpty")
     # Checkpoints trained against the old oracle-baselined reward carry no such key, so
     # this keeps a resumed run from mixing the two rewards in one result set.
+    skip.add("ablation")
     return {**{key: value for key, value in cfg._asdict().items() if key not in skip},
-            "reward": "profit"}
+            **_ablationEntry(cfg), "reward": "profit"}
+
+
+def _ablationEntry(cfg):
+    """The ablation as the manifest records it: the fields that differ, and nothing at
+    all for the baseline."""
+    changed = cfg.ablation.asManifest()
+    return {"ablation": changed} if changed else {}
 
 
 def trainingManifestOf(cfg):
@@ -150,7 +162,7 @@ def trainingManifestOf(cfg):
     if cfg.trainSource == "forecast":
         keep.add("forecastEvery")
     return {**{key: value for key, value in cfg._asdict().items() if key in keep},
-            "reward": "profit"}
+            **_ablationEntry(cfg), "reward": "profit"}
 
 
 def _requireSameTraining(cfg):
@@ -196,7 +208,8 @@ def _plan(cfg):
         discretePower=cfg.discretePower, model=model, initialSoc=cfg.initialSoc,
         gap=cfg.gap, timeLimit=cfg.timeLimit, workers=cfg.workers,
         cycles=cfg.cycleBudget, terminalPrice=cfg.terminalPrice,
-        endEmpty=cfg.endEmpty,
+        endEmpty=cfg.endEmpty, costing=cfg.ablation.costing(model, nem_interval_hours),
+        levels=cfg.ablation.actionLevels,
     )
     # Volatility is reported per trading day; a forecast is read per episode, because one
     # refresh matrix row is one episode.
@@ -208,7 +221,7 @@ def _plan(cfg):
             *(_trainEpisodes(fold, cfg.horizon) for fold in selected)))
     return Plan(everyFold, selected, prices, oracle, oracleStart,
                 volatility.volatilityFrame(prices, days),
-                PriceScaler(marketPriceCap(cfg.capDate)), model,
+                cfg.ablation.scaler(marketPriceCap(cfg.capDate)), model,
                 _forecastSource(cfg, forecastDays))
 
 
@@ -330,7 +343,9 @@ def auditPlan(cfg):
     missing = [day for day in days if findRecord(cacheKey(
         cfg.region, day + nem_interval, cfg.horizon, cfg.calendar, cfg.discretePower,
         model, cfg.initialSoc, cfg.gap, cfg.cycleBudget,
-        cfg.terminalPrice, cfg.endEmpty)) is None]
+        cfg.terminalPrice, cfg.endEmpty,
+        cfg.ablation.costing(model, nem_interval_hours),
+        cfg.ablation.actionLevels)) is None]
     return {"folds": len(everyFold), "selected": len(selected),
             "episodes": len(days), "missing": len(missing),
             "leftoverDays": folds.leftoverDays(everyFold, cfg.end),
@@ -396,7 +411,7 @@ def _ensureTrained(cfg, fold, trainMode, algo, seed, trainPrices, scaler,
         outDir=directory.parent, scaler=scaler, warmFrom=warmFrom,
         forecasts=None if trainForecasts is None else trainForecasts(),
         initialSoc=cfg.initialSoc, cycleBudget=cfg.cycleBudget,
-        terminalPrice=cfg.terminalPrice, endEmpty=cfg.endEmpty,
+        terminalPrice=cfg.terminalPrice, endEmpty=cfg.endEmpty, ablation=cfg.ablation,
     )
     _pruneReplay(warmFrom, directory)
     return directory
@@ -538,7 +553,7 @@ def runRolling(cfg, onProgress=None):
                         rewardScale=cfg.rewardScale, forecasts=forecasts, bounds=bounds,
                         initialSoc=cfg.initialSoc, invalidPenalty=cfg.invalidPenalty,
                         cycleBudget=cfg.cycleBudget, terminalPrice=cfg.terminalPrice,
-                        endEmpty=cfg.endEmpty,
+                        endEmpty=cfg.endEmpty, ablation=cfg.ablation,
                     )
                     rows += _resultRows(cfg, plan, fold, algo, trainMode, source,
                                         results, position, testRecords, episodes)
@@ -596,6 +611,8 @@ def publishFinal(cfg, fold):
     trained model of the whole run. The dashboard reads only this directory, which is
     what lets one machine train and another draw the result.
     """
+    if not cfg.ablation.isDefault():
+        return []
     published = []
     for algo in cfg.algos:
         for trainMode in cfg.trainModes:

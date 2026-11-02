@@ -9,6 +9,8 @@
 #     qsub -N pool-s0 -v SEED=0,ALGO=maskableppo scripts/pooled.pbs
 #     qsub -N pool-merge -v MERGE=1,ALGO=maskableppo -W depend=afterok:<full ids> scripts/pooled.pbs
 #
+# EXTRA carries an MDP ablation's flags (scripts/ablation.sh sets it), unquoted on purpose.
+#
 # Every seed passes --resume, because a later seed finds the actions CSV an earlier one
 # began. Check the name is free once, before submitting:
 #
@@ -46,4 +48,4 @@ SEED=${SEED:?pass -v SEED=0 etc.}
 $PY -u -m backtest.pooled --run "$RUN" --algo "$ALGO" --seed "$SEED" --end-empty \
   --cycles 1.0 --terminal-price 0 --horizon 288 --forecast-refresh 5 \
   --pooled-warm 150000 --pooled-cold 1500000 --fine-tune 30000 \
-  --policy-tag "$TAG" --resume
+  --policy-tag "$TAG" --resume ${EXTRA:-}

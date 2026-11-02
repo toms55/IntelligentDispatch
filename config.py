@@ -65,6 +65,13 @@ observation_size = 1 + price_feature_count + 3
 # window before you quote any result.
 price_knee = 300.0
 
+# The band the "clip" price transform of the ablation study clamps the observation to:
+# the 10th and 90th percentile of every region's 2023 RRP, pooled (525600 intervals), so it
+# precedes every test window. Kortmann et al. (2025) clip to the same percentiles. NEM-wide
+# rather than per region because the pooled agent shares one scaler. Never re-pin this
+# from a test window; it has the same discipline as price_knee and terminal_energy_price.
+price_clip_bounds = (-28.1, 150.0)
+
 
 # --- Reward ------------------------------------------------------------------
 reward_scale = 20.0

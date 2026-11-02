@@ -1,0 +1,33 @@
+#!/bin/bash
+# The oracle records one problem-side ablation needs, for one region. An agent-side
+# ablation changes nothing the oracle sees, so it needs no job here: its keys already
+# match the daily end-empty corpus.
+#
+#     qsub -N ab-or-lev9-NSW1 -v REGION=NSW1,EXTRA="--action-levels 4" scripts/ablationOracle.pbs
+#
+# `EXTRA` is the same flag string the variant trains under (scripts/ablation.sh). The
+# calendar term is on only for `--degradation full`, as backtest.pooled sets it. The span
+# is the test days only: 2023-12-31 04:00 is the first fold's test start, so the 52
+# training weeks before it need no bound.
+#
+# A discrete window is solved by optimisation/dp.py: about 1 s at 3 actions, 5 s at 5,
+# 22 s at 9 and 100 s at 17, plus a state-space build per worker (about 5 minutes at 17).
+
+#PBS -q workq
+#PBS -l ncpus=12
+#PBS -l mem=48GB
+#PBS -l walltime=24:00:00
+#PBS -j oe
+
+set -euo pipefail
+cd "${PBS_O_WORKDIR:-$PWD}"
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONWARNINGS=ignore
+
+CALENDAR=--no-calendar
+case " ${EXTRA:-} " in *" --degradation full "*) CALENDAR= ;; esac
+
+.venv/bin/python -u -m cli baseline \
+  --split "test=${START:-2023-12-31T04:00}..${END:-2026-09-27T04:00}" \
+  --region "${REGION:?pass -v REGION=NSW1 etc.}" $CALENDAR --horizon 288 --cycles 1.0 \
+  --end-empty --initial-soc 0 --terminal-price 0 --gap 0.02 \
+  --workers "${WORKERS:-12}" --verbose ${EXTRA:-}

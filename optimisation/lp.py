@@ -47,6 +47,9 @@ class Schedule:
     # What the closing stock is worth, already included in `profit` but reported apart
     # from it so it is never mistaken for trading revenue.
     terminalValue: float = 0.0
+    # The action index taken in each interval, where the solver chose among discrete
+    # actions (`optimisation.dp` does; the MILP does not).
+    actions: list = None
 
 
 def fillBottomUp(soc, segmentCapacities):
