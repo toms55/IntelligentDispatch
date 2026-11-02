@@ -1,0 +1,51 @@
+{
+  "run": "rolling2023_ppo_daily_no_cycle_limit_start_empty_5min_forecast_rerun",
+  "region": "QLD1",
+  "description": "MaskablePPO rerun of rolling2023_start_at_0_SoC_five_min_refresh (daily, starts empty, no cycle budget, terminal price 0, 5-minute refresh) on the current code, as the PPO side of the masked-DQN comparison.",
+  "rawResults": "results/rolling_daily_dump_soc0_QLD1",
+  "contextWrittenAt": "2026-11-01T03:53:51+00:00",
+  "manifest": {
+    "actionsFile": "results/actions/rolling_daily_dump_soc0_QLD1.csv",
+    "algos": [
+      "maskableppo"
+    ],
+    "battery": [
+      0.06,
+      0.1,
+      150000.0
+    ],
+    "calendar": false,
+    "capDate": "2026-10-01 04:00:00",
+    "coldTimesteps": 300000,
+    "discretePower": true,
+    "end": "2026-09-27 04:00:00",
+    "forecastEvery": 1,
+    "gap": 0.02,
+    "horizon": 288,
+    "initialSoc": 0.0,
+    "policyRoot": "trainedPolicies",
+    "priceSources": [
+      "realised",
+      "forecast"
+    ],
+    "region": "QLD1",
+    "reward": "profit",
+    "rewardScale": 20.0,
+    "seeds": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "start": "2023-01-01 04:00:00",
+    "stepWeeks": 1,
+    "testWeeks": 1,
+    "trainModes": [
+      "warm"
+    ],
+    "trainWeeks": 52,
+    "trajectorySeed": 0,
+    "warmTimesteps": 30000
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "region": "QLD1",
+  "algo": "dqnnomask",
+  "trainMode": "pooled",
+  "seed": 1,
+  "label": "dqnnomask-pooled-pooled_daily_empty_efc1-s1",
+  "source": "runs/rolling_pooled_daily_empty_efc1_dqnnomask_POOLED/POOLED/fold142/pooled/dqnnomask_seed1",
+  "observationSize": 62,
+  "cycleBudget": 7.0,
+  "publishedAt": "2026-11-01T08:52:07+00:00",
+  "command": "pooled",
+  "fold": 142,
+  "pooledRegions": [
+    "NSW1",
+    "QLD1",
+    "SA1",
+    "TAS1",
+    "VIC1"
+  ],
+  "trainWindow": [
+    "2025-09-21T04:00:00",
+    "2026-09-20T04:00:00"
+  ],
+  "testWindow": [
+    "2026-09-20T04:00:00",
+    "2026-09-27T04:00:00"
+  ],
+  "capDate": "2026-10-01T04:00:00"
+}
