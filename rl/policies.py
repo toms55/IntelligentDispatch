@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import config
+from rl import algos
 
 defaultRoot = Path("trainedPolicies")
 agentFile = "agent.zip"
@@ -79,6 +80,10 @@ def publish(checkpoint, region, algo, trainMode, seed, root=defaultRoot, tag=Non
         # layout cannot be loaded into it and must not be offered: see `loadable`.
         "observationSize": config.observation_size,
         "cycleBudget": config.cycle_budget,
+        # Whether this algorithm read the action mask. Recorded so a later build that
+        # moves the mask on or off an algorithm can drop the agent rather than run it
+        # under the wrong policy: see `loadable` and `maskedDqnPolicies`.
+        "readsMask": algos.supportsMasking(algo),
         "publishedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         **facts,
     }, indent=2, default=str) + "\n")
@@ -103,22 +108,56 @@ def available(region, root=defaultRoot):
 # and this is what their weights expect.
 unrecordedObservationSize = 60
 
+# Published agents whose DQN read the action mask when it acted. `rl/algos.py` here has
+# no such algorithm: DQN relies on the environment's clipping, and
+# `config.invalid_action_penalty` measures what that costs. The weights load, because a
+# masked DQN is a plain DQN with another `predict`, so nothing refuses them and the
+# dashboard would run them unmasked under their own name. That is a wrong dispatch run,
+# not a missing one, so `loadable` leaves them out.
+#
+# A fixed list, named by label without the seed suffix, because the mask is a property
+# of the algorithm that trained them and no published `policy.json` records it. Every
+# publish from now on records `readsMask`, so this list is closed and never grows.
+maskedDqnPolicies = frozenset({
+    "dqn-warm-daily_dump_soc0_maskdqn",
+    "dqn-pooled-pooled_daily_empty_efc1",
+    "dqn-finetune-pooled_daily_empty_efc1",
+})
+
+
+def readsMaskedDqn(label):
+    """Whether this label names one of `maskedDqnPolicies`, at any seed."""
+    return label.rsplit("-s", 1)[0] in maskedDqnPolicies
+
 
 def loadable(region, root=defaultRoot):
     """The published agents this build can actually run, as {label: directory}.
 
     An agent is loadable when it was published under the observation layout now in
-    `config`. A 60-slot agent cannot be loaded into a 62-slot environment, and offering
-    it in a dropdown offers a model the screen is certain to fail on.
+    `config`, and when the algorithm that trained it is the algorithm this build runs
+    under that name. A 60-slot agent cannot be loaded into a 62-slot environment, and
+    offering it in a dropdown offers a model the screen is certain to fail on.
 
     An agent published before the layout was recorded states none, so it is read as
     `unrecordedObservationSize`, which is the layout every one of them was trained under.
+
+    A masked-DQN agent is dropped as well. See `maskedDqnPolicies` for why that one needs
+    a list rather than a recorded fact.
     """
     out = {}
     for label, directory in available(region, root).items():
-        size = describe(directory).get("observationSize", unrecordedObservationSize)
-        if int(size) == config.observation_size:
-            out[label] = directory
+        if readsMaskedDqn(label):
+            continue
+        facts = describe(directory)
+        size = facts.get("observationSize", unrecordedObservationSize)
+        if int(size) != config.observation_size:
+            continue
+        # Recorded from this module's `publish`. An agent whose algorithm read the mask
+        # under a name that reads none here means something else than it would now.
+        readsMask = facts.get("readsMask")
+        if readsMask is not None and bool(readsMask) != algos.supportsMasking(facts["algo"]):
+            continue
+        out[label] = directory
     return out
 
 

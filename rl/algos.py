@@ -127,5 +127,16 @@ def holdExploration(agent):
 
 
 def load(name, path, env=None):
+    """Read a published agent back.
+
+    `dqnnomask` is a reader, not a builder. Published agents of the pooled-regions
+    experiment family carry that name, because the branch that trained them had a second
+    DQN that read the mask and needed the two told apart. Here DQN never reads the mask,
+    so `dqnnomask` and `dqn` are the same plain DQN, and `builders` offers `dqn` alone.
+    No new run can start under the other name.
+    """
     classes = {"maskableppo": MaskablePPO, "dqn": DQN, "dqnnomask": DQN, "a2c": A2C}
-    return classes[name.lower()].load(path, env=env)
+    name = name.lower()
+    if name not in classes:
+        raise ValueError(f"unknown algorithm {name!r}; choose from {sorted(classes)}")
+    return classes[name].load(path, env=env)
