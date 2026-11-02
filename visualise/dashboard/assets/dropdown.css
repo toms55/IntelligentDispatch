@@ -1,0 +1,18 @@
+/* A model label names the agent and the experiment behind it, so it is long and it
+   has to fit. The box itself is widened in `_modelControls` and `_liveControls`, and
+   these rules space the open menu out so the labels do not run together. Dash serves
+   every file in this folder, and `react-select` is what Dash's dropdown is built on,
+   so the class names below are its own. */
+.Select-menu-outer .Select-option {
+    padding: 10px 12px;
+    line-height: 1.35;
+}
+
+/* One line per option. A label the box cannot hold ends in an ellipsis rather than
+   wrapping, so every row keeps the same height. */
+.Select-menu-outer .Select-option,
+.Select-control .Select-value-label {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}

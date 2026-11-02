@@ -50,6 +50,9 @@ labelStyle = {"color": figures.mutedInk, "fontSize": "12px", "display": "block",
               "marginBottom": "4px"}
 socStyle = {**buttonStyle, "width": "72px"}
 dayStyle = {**buttonStyle, "width": "140px"}
+# A model label names the agent and the experiment behind it, so the box has to be
+# wide enough to read the whole of it. `assets/dropdown.css` spaces the open menu out.
+modelPickerStyle = {"minWidth": "420px"}
 
 
 def _bad(style):
@@ -248,7 +251,7 @@ def _modelControls(regions, region):
     return html.Div([
         html.Div([html.Label("Model", style=labelStyle),
                   dcc.Dropdown(id="pick-model", clearable=False,
-                               style={"minWidth": "260px"})]),
+                               style=modelPickerStyle)]),
         html.Div([html.Label("Region", style=labelStyle),
                   dcc.Dropdown(id="pick-region", value=region, clearable=False,
                                options=[{"label": name, "value": name}
@@ -331,7 +334,7 @@ def _liveControls(regions, region):
             ], style={"marginRight": "auto"}),
             html.Div([html.Label("Model", style=labelStyle),
                       dcc.Dropdown(id="pick-live-model", clearable=False,
-                                   style={"minWidth": "260px"})]),
+                                   style=modelPickerStyle)]),
             html.Div([html.Label("Region", style=labelStyle),
                       dcc.Dropdown(id="pick-live-region", value=region, clearable=False,
                                    options=[{"label": name, "value": name}
