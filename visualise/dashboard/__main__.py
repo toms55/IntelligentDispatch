@@ -382,8 +382,11 @@ def layout(regions, region, day):
             _dayControls(),
             html.Div(id="tiles", style={"display": "flex", "gap": "12px",
                                         "flexWrap": "wrap", "marginBottom": "18px"}),
+            # The class that marks the cells clickable goes on this panel, not on the
+            # graph: dcc.Graph drops a `className` set from a callback, and the cursor
+            # is inherited anyway, so the panel carries it to the cells.
             html.Div([dcc.Graph(id="board", config={"displayModeBar": False})],
-                     style=panelStyle),
+                     id="board-panel", style=panelStyle),
         ]),
         dcc.Store(id="live-state",
                   data={"screen": "backtest", "region": opening, "model": None,
@@ -621,7 +624,7 @@ def register(app, loader, policyRoot=live.defaultCheckpoints, runs=None,
 
     @app.callback(Output("tiles", "children"), Output("board", "figure"),
                   Output("board-label", "children"), Output("settings", "children"),
-                  Output("board", "className"),
+                  Output("board-panel", "className"),
                   Input("state", "data"))
     def redraw(state):
         entry, experiment = pick(found(state["region"]), state["model"])
