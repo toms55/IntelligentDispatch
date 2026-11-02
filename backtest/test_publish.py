@@ -43,7 +43,7 @@ class TestPublish:
         assert sorted(path.name for path in root.glob("*.csv")) == ["rolling_NSW1.csv",
                                                                      "rolling_SA1.csv"]
         assert data.availableRegions(root / "rolling") == ["NSW1", "SA1"]
-        assert data.findResults(None, root=root) == root / "rolling"
+        assert data.findResults(None, root=root) == (root / "rolling",)
 
     # Every fold's rows land in the one CSV, unchanged, with the forecast pull beside them.
     def test_the_copy_loads(self, results, root):

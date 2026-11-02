@@ -5,8 +5,8 @@
 Both screens offer the experiments `config.dashboard_runs` names, at the seed
 `config.best_seed_by_run` pins, so a model on one screen has its numbers on the other.
 `visualise/dashboard/experiments.py` is the catalogue. Pass `--results
-results/backtestResults/<run>` to narrow both screens to one published run, which is
-what the hosted dashboard does.
+results/backtestResults/<run>`, once per run, to narrow both screens to the runs it
+names, which is what the hosted dashboard does. The screens open on the first.
 
 Backtest. Pick a model and a region at the top. The model names its experiment, and the
 box under the pickers states every setting that experiment ran under. Below it a date
@@ -737,15 +737,28 @@ def register(app, loader, policyRoot=live.defaultCheckpoints, runs=None,
                 forecastExport(region, model, frame), _settingsBox(lines))
 
 
-def build(region, resultsDir=None, policyRoot=live.defaultCheckpoints):
+def staged(resultsDirs=None):
+    """(root, run names) for the runs the screens offer, or the default root and None.
+
+    None is the whole pinned catalogue, which is what a local dashboard shows.
+    `data.findResults` is the one reader of what `--results` and `DASHBOARD_RESULTS`
+    name, and it holds every run to one root.
+    """
+    if resultsDirs is None:
+        return data.backtestRoot, None
+    found = data.findResults(resultsDirs)
+    return found[0].parent, tuple(path.name for path in found)
+
+
+def build(region, resultsDirs=None, policyRoot=live.defaultCheckpoints):
     """The app over every experiment in `config.dashboard_runs`.
 
-    `resultsDir` narrows it to one published run, which is what the hosted dashboard
-    passes: the Space stages one run and opens on it. Without it the screen offers the
+    `resultsDirs` narrows it to the published runs it names, one run or several, which is
+    what the hosted dashboard passes: the Space stages its runs and names them all. The
+    first one named is the one the screens open on. Without it the screens offer the
     pinned catalogue, which is every experiment the thesis reports.
     """
-    root = data.backtestRoot if resultsDir is None else Path(resultsDir).parent
-    names = None if resultsDir is None else (Path(resultsDir).name,)
+    root, names = staged(resultsDirs)
     held = {}
 
     def loader(run, name):
@@ -775,18 +788,20 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="visualise.dashboard",
                                      description=__doc__.splitlines()[0])
     parser.add_argument("--region", default="NSW1")
-    parser.add_argument("--results", default=None,
-                        help="one published run to show, as "
-                             f"{data.backtestRoot}/<run> (default: every experiment "
-                             "config.dashboard_runs names)")
+    parser.add_argument("--results", action="append", default=None,
+                        help="a published run to show, as "
+                             f"{data.backtestRoot}/<run>. Name it once per run to offer "
+                             "several, and the screens open on the first (default: "
+                             "every experiment config.dashboard_runs names)")
     parser.add_argument("--policies", default=str(live.defaultCheckpoints),
                         help="where training published its final agents "
                              f"(default: {live.defaultCheckpoints})")
     parser.add_argument("--port", type=int, default=8050)
     args = parser.parse_args(argv)
-    resultsDir = None if args.results is None else data.findResults(args.results)
-    print(f"reading {resultsDir or ', '.join(config.dashboard_runs)}")
-    build(args.region, resultsDir, args.policies).run(port=args.port)
+    resultsDirs = None if args.results is None else data.findResults(args.results)
+    reading = resultsDirs or config.dashboard_runs
+    print(f"reading {', '.join(str(item) for item in reading)}")
+    build(args.region, resultsDirs, args.policies).run(port=args.port)
 
 
 if __name__ == "__main__":
