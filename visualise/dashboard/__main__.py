@@ -621,13 +621,14 @@ def register(app, loader, policyRoot=live.defaultCheckpoints, runs=None,
 
     @app.callback(Output("tiles", "children"), Output("board", "figure"),
                   Output("board-label", "children"), Output("settings", "children"),
+                  Output("board", "className"),
                   Input("state", "data"))
     def redraw(state):
         entry, experiment = pick(found(state["region"]), state["model"])
         if entry is None:
             message = (f"No experiment is published for {state['region']}. "
                        f"config.dashboard_runs names the runs the screen offers.")
-            return [], figures.monthFigure(pd.DataFrame(), state["day"]), message, []
+            return [], figures.monthFigure(pd.DataFrame(), state["day"]), message, [], ""
         run = loader(entry.run, state["region"])
         chosen = data.entryRows(run.days, entry.algo, entry.trainMode, entry.seed,
                                 entry.priceSource)
@@ -661,8 +662,11 @@ def register(app, loader, policyRoot=live.defaultCheckpoints, runs=None,
                                       region=state["region"], model=entry.label,
                                       forecast=forecast, every=every)
             label = f"{day:%A %-d %B %Y}, 04:00 to 04:00"
+        # A calendar cell opens that day, so `assets/cursor.css` gives it the pointer.
+        # The day chart answers no click, so it keeps the plotly cursor.
         return ([_tile(tile) for tile in figures.summaryTiles(scoped, every)], board,
-                label, _settingsBox(experiments.settings(experiment, entry, run.days)))
+                label, _settingsBox(experiments.settings(experiment, entry, run.days)),
+                "clickable-cells" if state["view"] == "calendar" else "")
 
     @app.callback(Output("backtest-screen", "style"), Output("live-screen", "style"),
                   Input("screen", "value"))

@@ -1,0 +1,7 @@
+/* A calendar cell leads to that day, so the pointer has to say so. Plotly puts a
+   crosshair on its drag layer, which reads as "drag to zoom" rather than as "click
+   me". The class sits on the calendar view alone, because a click on the day chart
+   does nothing. Dash serves every file in this folder. */
+.clickable-cells .nsewdrag {
+    cursor: pointer !important;
+}

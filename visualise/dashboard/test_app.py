@@ -206,12 +206,12 @@ class TestRedraw:
         built = app.build(REGION, run)
         got = _callback(built, "tiles")({"region": REGION, "day": "2025-01-01",
                                          "view": view, "model": MODEL})
-        assert len(got) == 4 and all(item is not None for item in got)
+        assert len(got) == 5 and all(item is not None for item in got)
 
     # The month view still names its own month.
     def test_the_month_view_names_its_month(self, run):
         built = app.build(REGION, run)
-        tiles, _, label, _ = _callback(built, "tiles")(
+        tiles, _, label, *_ = _callback(built, "tiles")(
             {"region": REGION, "day": "2025-02-01", "view": "calendar",
              "model": MODEL})
         assert label == "February 2025"
@@ -223,8 +223,8 @@ class TestRedraw:
         redraw = _callback(built, "tiles")
         values = []
         for day in ("2025-01-01", "2025-01-02"):
-            tiles, _, _, _ = redraw({"region": REGION, "day": day, "view": "calendar",
-                                     "model": MODEL})
+            tiles, *_ = redraw({"region": REGION, "day": day, "view": "calendar",
+                                "model": MODEL})
             labels = [tile.children[0].children for tile in tiles]
             values.append([tile.children[1].children for tile in tiles])
         assert "Days" not in labels
@@ -242,9 +242,19 @@ class TestRedraw:
     # A day with no trajectory file still renders the rest of the screen.
     def test_a_day_without_a_trajectory_still_renders(self, run):
         built = app.build(REGION, run)
-        _, board, _, _ = _callback(built, "tiles")(
+        _, board, *_ = _callback(built, "tiles")(
             {"region": REGION, "day": "2025-01-03", "view": "day", "model": MODEL})
         assert board.layout.annotations
+
+    # A calendar cell opens that day, and `assets/cursor.css` reads the class to give
+    # it the pointer. The day chart answers no click, so it carries no class.
+    @pytest.mark.parametrize("view,wanted", [("calendar", "clickable-cells"),
+                                             ("day", "")])
+    def test_only_the_calendar_marks_its_cells_clickable(self, run, view, wanted):
+        built = app.build(REGION, run)
+        got = _callback(built, "tiles")(
+            {"region": REGION, "day": "2025-01-03", "view": view, "model": MODEL})
+        assert got[-1] == wanted
 
 
 class TestDownload:
