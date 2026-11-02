@@ -14,7 +14,8 @@ from dash.exceptions import PreventUpdate
 from visualise.dashboard import __main__ as app
 from rl import policies
 from visualise.dashboard import data, figures, live
-from visualise.dashboard.test_data import DAY, REGION, run  # noqa: F401
+from visualise.dashboard.test_data import (DAY, REGION, dayRows,  # noqa: F401
+                                            publishRun, run)
 from visualise.dashboard.test_live import (model, path, sawtooth,  # noqa: F401
                                            standIn)
 
@@ -23,18 +24,20 @@ MODEL = "maskableppo-warm-s0-realised | rolling"
 LIVE_MODEL = "maskableppo-warm-s0 | rolling"
 
 
-def publish(root, region=None, seed=0, rawRun="rolling"):
+def publish(root, region=None, seed=0, rawRun="rolling", tag=None):
     """One published agent under `root`, as training would leave it.
 
     `rawRun` is the run that trained it, which is how the forecast screen finds the
     experiment that scored it. An agent with no experiment behind it is not offered.
+    `tag` is what gives the agent of a second experiment its own directory name, as
+    `cli rolling --policy-tag` does.
     """
     source = Path(root) / "checkpoint"
     source.mkdir(parents=True, exist_ok=True)
     (source / policies.agentFile).write_bytes(b"")
     (source / policies.scalerFile).write_text("{}")
     policies.publish(source, region or REGION, "maskableppo", "warm", seed,
-                     root=Path(root) / "trainedPolicies", rawRun=rawRun)
+                     root=Path(root) / "trainedPolicies", tag=tag, rawRun=rawRun)
     return Path(root) / "trainedPolicies"
 
 
@@ -93,6 +96,88 @@ class TestModelOptions:
     def test_a_valid_choice_is_kept(self, run):
         built = app.build(REGION, run)
         assert _callback(built, "pick-model")(REGION, MODEL)[1] == MODEL
+
+
+SECOND = "maskableppo-warm-s0-realised | rolling_fc4h"
+SECOND_LIVE = "maskableppo-warm-s0 | rolling_fc4h"
+
+
+@pytest.fixture
+def twoRuns(tmp_path):
+    """Two experiments published under one root, each carrying its own oracle bound.
+
+    This is what the hosted dashboard stages and what `--results` names twice. The
+    bounds differ by a factor of ten, so a test can tell which run a screen read.
+    """
+    first = publishRun(tmp_path, dayRows(), every=288, description="the first run")
+    rows = [dict(row, oracleDualBound=400.0) for row in dayRows()]
+    second = publishRun(tmp_path, rows, name="rolling_fc4h", every=288,
+                        description="the second run")
+    return first, second
+
+
+def _tileValue(tiles, label):
+    """One tile's value, by the label above it."""
+    found = [tile.children[1].children for tile in tiles
+             if tile.children[0].children == label]
+    assert found, f"no {label} tile among {[t.children[0].children for t in tiles]}"
+    return found[0]
+
+
+class TestSeveralExperiments:
+    """Several published runs behind one dropdown, which is what a reader compares."""
+
+    # Every run named reaches the one dropdown, in the order it was named, so a reader
+    # moves between experiments without restarting the app.
+    def test_the_dropdown_offers_every_run(self, twoRuns):
+        first, second = twoRuns
+        built = app.build(REGION, [second, first])
+        options, value = _callback(built, "pick-model")(REGION, None)
+        assert [item["value"] for item in options] == [SECOND, MODEL]
+        assert value == SECOND
+
+    # Selecting a model selects its experiment's oracle. Every published row carries the
+    # bound of its own run, so the screen reads the selected run's rows and no others.
+    @pytest.mark.parametrize("label,bound", [(MODEL, "$40.00"), (SECOND, "$400.00")])
+    def test_the_oracle_follows_the_model(self, twoRuns, label, bound):
+        built = app.build(REGION, list(twoRuns))
+        tiles = _callback(built, "tiles")(
+            {"region": REGION, "day": "2025-01-01", "view": "calendar",
+             "model": label})[0]
+        assert _tileValue(tiles, "Oracle profit") == bound
+
+    # The settings box describes the selected experiment, so the box and the numbers
+    # cannot name two different runs.
+    @pytest.mark.parametrize("label,tested", [(MODEL, "the first run"),
+                                               (SECOND, "the second run")])
+    def test_the_box_describes_the_selected_run(self, twoRuns, label, tested):
+        built = app.build(REGION, list(twoRuns))
+        box = _callback(built, "tiles")(
+            {"region": REGION, "day": "2025-01-01", "view": "calendar",
+             "model": label})[3]
+        lines = {row.children[0].children: row.children[1].children
+                 for row in box.children}
+        assert lines["What it tested"] == tested
+        assert lines["Experiment"] == ("rolling" if label == MODEL
+                                       else "rolling_fc4h")
+
+    # Each run's own test days drive the download boxes, because two experiments need
+    # not cover the same span.
+    def test_a_model_of_either_run_opens_its_own_dates(self, twoRuns):
+        built = app.build(REGION, list(twoRuns))
+        fill = _callback(built, "from-date")
+        assert fill(REGION, MODEL) == fill(REGION, SECOND)
+
+    # The forecast screen offers one agent per staged experiment, at the same seed as
+    # the backtest screen, so every model a reader can run has its numbers next door.
+    def test_the_forecast_screen_offers_an_agent_of_each_run(self, twoRuns, tmp_path):
+        policyRoot = publish(tmp_path, rawRun="rolling")
+        publish(tmp_path, rawRun="rolling_fc4h", tag="fc4h")
+        built = app.build(REGION, list(twoRuns), policyRoot)
+        _, options, value, *_ = _callback(built, "live-state")("live", REGION, None, 0)
+        assert sorted(item["value"] for item in options) == sorted(
+            [LIVE_MODEL, SECOND_LIVE])
+        assert value in (LIVE_MODEL, SECOND_LIVE)
 
 
 class TestNextState:

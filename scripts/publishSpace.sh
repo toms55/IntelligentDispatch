@@ -28,8 +28,8 @@
 #     bash scripts/publishSpace.sh --results results/backtestResults/rolling2023_profit \
 #                                  --results results/backtestResults/rolling2023_profit_fc5m
 #
-# The screen draws one run at a time, so the first one named is the one the Space opens.
-# $DASHBOARD_RESULTS switches to another staged run in the Space settings, with no
+# Both screens offer every staged run, and they open on the first one named.
+# $DASHBOARD_RESULTS reorders or narrows the staged runs in the Space settings, with no
 # republish.
 #
 # The training code is in the upload because the forecast screen runs an agent. The
@@ -274,10 +274,12 @@ PYTHON
   echo "  $run: $found regions"
   staged=$((staged + 1))
 done
-# The screen draws one run, so the first run named is pinned into the image. A Space
-# variable of the same name picks another staged run without a republish.
+# Every staged run is pinned into the image, so both screens offer all of them and a
+# reader compares the experiments in one dropdown. The screens open on the first. A
+# Space variable of the same name reorders or narrows them without a republish.
+STAGED_RUNS=$(IFS=,; printf '%s' "${RUNS[*]}")
 DEFAULT_RUN=${RUNS[0]}
-printf '\nENV DASHBOARD_RESULTS=%s\n' "$DEFAULT_RUN" >> "$STAGE/Dockerfile"
+printf '\nENV DASHBOARD_RESULTS=%s\n' "$STAGED_RUNS" >> "$STAGE/Dockerfile"
 echo "$staged run(s), $(du -sh "$STAGE/results" | cut -f1), opening on $(basename "$DEFAULT_RUN")"
 
 # -------------------------------------------------------------- 3. the agents
@@ -352,7 +354,7 @@ say "4/5 smoke test with the solver and archive packages blocked"
 # path reaches one of them, the Space fails on its first request rather than here, so
 # the check runs now, with those names blocked. It runs an agent over a made up price
 # path rather than the AEMO one, so the check needs no network.
-DASHBOARD_RESULTS="$DEFAULT_RUN" \
+DASHBOARD_RESULTS="$STAGED_RUNS" \
 DASHBOARD_POLICIES=trainedPolicies \
 DASHBOARD_REGION="$REGION" \
   $PYTHON - "$STAGE" <<'PYTHON'
@@ -383,16 +385,19 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 region = os.environ["DASHBOARD_REGION"]
-run = Path(os.environ["DASHBOARD_RESULTS"])
-models = app.dashboard.liveModels(region, app.policyRoot, runs=(run.name,),
-                                  root=run.parent)
-print(f"  regions on the backtest screen: {app.data.availableRegions(run)}")
+# `app.resultsDirs` is the staged list the image names, parsed by `deploy/app.py`, so
+# the check reads the runs the Space will read and not a second copy of that list.
+runs = app.resultsDirs
+root, names = app.dashboard.staged(runs)
+models = app.dashboard.liveModels(region, app.policyRoot, runs=names, root=root)
+for run in runs:
+    print(f"  regions of {run.name}: {app.data.availableRegions(run)}")
 print(f"  models on the forecast screen: {[item.entry.label for item in models]}")
-# One name per model the staged run scored and the staged weights can run. It was
-# longer when the screen still offered models with no experiment behind them.
+# One name per model a staged run scored and the staged weights can run, so the count
+# is the staged runs times their train modes.
 if not models:
-    raise AssertionError(f"{app.policyRoot} published no agent of {run.name} for "
-                         f"{region}")
+    raise AssertionError(f"{app.policyRoot} published no agent of "
+                         f"{', '.join(run.name for run in runs)} for {region}")
 
 # A day of prices with one peak, so a working agent charges and discharges once.
 index = pd.date_range("2026-01-01 04:05", periods=288, freq="5min")
@@ -424,7 +429,7 @@ fi
   git lfs install --local >/dev/null
   git add -A
   git -c user.email=publish@localhost -c user.name=publish commit -q \
-    -m "dashboard: $(basename "$DEFAULT_RUN") of ${#RUNS[@]} run(s), best seed per region, every seed on the forecast screen"
+    -m "dashboard: ${#RUNS[@]} run(s) in one dropdown, opening on $(basename "$DEFAULT_RUN"), one seed per model"
   git remote add space "https://huggingface.co/spaces/$SPACE"
   if [[ "$PUSH" == yes ]]; then
     echo "pushing to https://huggingface.co/spaces/$SPACE"

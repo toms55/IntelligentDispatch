@@ -302,10 +302,10 @@ Rules:
    name the same models.
 10. The staged runs default to `config.dashboard_runs`, through
    `scripts/dashboardRuns.sh`, and `--results` replaces that list. The first is the
-   one the Space opens. Stage 2 writes `ENV DASHBOARD_RESULTS` into the staged
-   Dockerfile, so a Space variable of that name switches to another staged run with no
-   republish. The screen draws one run at a time, so staging several only buys that
-   switch.
+   one the Space opens. Stage 2 writes every staged run into the staged Dockerfile as
+   one comma-separated `ENV DASHBOARD_RESULTS`, so both screens offer all of them and a
+   reader compares the experiments in one dropdown. A Space variable of that name
+   reorders or narrows the staged runs with no republish.
 11. An actions export written by `python -m backtest.actions` holds seed 0 only. Stage 2
    refuses to stage a seed the export does not hold, because the calendar would draw and
    every day view would be empty. Either name a seed the export holds, or re-run the
@@ -484,8 +484,10 @@ cover.
   path published right now. `--policies` points at `trainedPolicies/`. With no
   `--results` both screens offer every experiment `config.dashboard_runs` names, at the
   seed `config.best_seed_by_run` pins, and each entry carries the run its numbers come
-  from. `--results results/backtestResults/<run>` narrows them to one published run,
-  which is what the hosted dashboard passes.
+  from. `--results results/backtestResults/<run>`, named once per run, narrows them to
+  the runs it names, and the screens open on the first. That is what the hosted
+  dashboard passes, one name per staged run. `data.findResults` is the only reader of
+  it, and it holds every run named to one root.
   A day view reads the run's actions export, `results/actions/<run>_<region>.parquet`
   (see `data.actionsFile`): its rows are the dispatch the chart draws, for either
   price source, and its `forecastRunTime` column is the only source of the forecast

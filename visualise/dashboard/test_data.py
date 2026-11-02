@@ -178,20 +178,36 @@ class TestFindResults:
 
     # A named run is taken as it is, whatever else sits beside it.
     def test_a_named_run_wins(self, run):
-        assert data.findResults(run) == run
+        assert data.findResults(run) == (run,)
 
     # The regions of one run are one candidate, not five.
     def test_the_one_run_is_found(self, tmp_path):
         wanted = self.make(tmp_path)
         publishRun(tmp_path, dayRows(2, folds=1), name=wanted.name, region="SA1")
-        assert data.findResults(None, root=tmp_path / "backtestResults") == wanted
+        assert data.findResults(None, root=tmp_path / "backtestResults") == (wanted,)
 
-    # Two experiments cannot be chosen between, so the message names both.
-    def test_several_runs_name_themselves(self, tmp_path):
+    # Several runs are several experiments the screens offer together, in the order
+    # they were named, because the dropdown names the experiment behind every model.
+    def test_the_runs_named_keep_their_order(self, tmp_path):
+        first = self.make(tmp_path)
+        second = self.make(tmp_path, "rolling2023_fc4h")
+        assert data.findResults([second, first]) == (second, first)
+
+    # With no name, every run under the root is offered. A staged root holds the runs
+    # the Space uploaded and nothing else.
+    def test_every_run_under_the_root_is_found(self, tmp_path):
         self.make(tmp_path)
         self.make(tmp_path, "rolling2023_fc4h")
-        with pytest.raises(FileNotFoundError, match="several runs"):
-            data.findResults(None, root=tmp_path / "backtestResults")
+        found = data.findResults(None, root=tmp_path / "backtestResults")
+        assert [path.name for path in found] == ["rolling2023_fc4h",
+                                                 "rolling2023_profit"]
+
+    # The screens read one root, so runs spread over two cannot be loaded at all.
+    def test_two_roots_name_themselves(self, tmp_path):
+        first = self.make(tmp_path)
+        second = self.make(tmp_path / "elsewhere", "rolling2023_fc4h")
+        with pytest.raises(FileNotFoundError, match="2 roots"):
+            data.findResults([first, second])
 
     # An empty tree says what to run, not which path is missing.
     def test_an_empty_tree_says_what_to_run(self, tmp_path):

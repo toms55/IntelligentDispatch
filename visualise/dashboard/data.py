@@ -225,28 +225,36 @@ def forecastPath(resultsDir, region, day, algo=None, trainMode=None, seed=None):
 
 
 def findResults(given=None, root=backtestRoot):
-    """One published run, named or found.
+    """The published runs a screen is narrowed to, as a tuple of `<root>/<run>` paths.
 
-    `--results` and `DASHBOARD_RESULTS` name the one run a screen is narrowed to. With
-    neither, the screens offer `config.dashboard_runs` and never call this. It is still
-    the reader for a root holding exactly one run, which is what the Space stages when
-    only one goes up. Several candidates raise, because picking one of two experiments
-    for the reader would show numbers from a run they did not ask for.
+    `--results` and `DASHBOARD_RESULTS` name them, one run or several, and the first one
+    named is the one the screens open on. With neither, the screens offer
+    `config.dashboard_runs` and never call this. It is still the reader for a root that
+    holds the staged runs and nothing else, which is what the Space uploads.
+
+    Every run named has to sit under one root, because `loadRun` reads a run as
+    `<root>/<run>_<region>.csv` and the two screens share that root.
     """
     if given is not None:
-        return Path(given)
+        named = [given] if isinstance(given, (str, Path)) else list(given)
+        found = tuple(Path(item) for item in named)
+        if not found:
+            raise FileNotFoundError("--results named no run")
+        roots = {path.parent for path in found}
+        if len(roots) > 1:
+            spread = ", ".join(sorted(str(item) for item in roots))
+            raise FileNotFoundError(
+                f"the runs named sit under {len(roots)} roots: {spread}. The screens "
+                f"read one root, so name runs of a single directory")
+        return found
     root = Path(root)
-    found = sorted({root / path.stem.rsplit("_", 1)[0] for path in root.glob("*_*.csv")}
-                   if root.is_dir() else [])
-    if len(found) == 1:
-        return found[0]
-    if not found:
-        raise FileNotFoundError(
-            f"no published backtest under {root}; run `cli rolling` and then "
-            "`python -m backtest.publish`, or pass --results")
-    names = ", ".join(str(item) for item in found)
-    raise FileNotFoundError(f"several runs under {root}: {names}. Pass --results to "
-                            "name one")
+    found = tuple(sorted({root / path.stem.rsplit("_", 1)[0]
+                          for path in root.glob("*_*.csv")}) if root.is_dir() else [])
+    if found:
+        return found
+    raise FileNotFoundError(
+        f"no published backtest under {root}; run `cli rolling` and then "
+        "`python -m backtest.publish`, or pass --results")
 
 
 def entryRows(frame, algo, trainMode, seed, priceSource=None):
