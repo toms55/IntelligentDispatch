@@ -32,7 +32,9 @@ from typing import NamedTuple, Optional
 
 import pandas as pd
 
+import config
 from backtest import actions, folds, records, runner
+from rl.ablation import addAblationArguments, ablationOf
 from data.forecasts import refreshMatrix
 from degradation.schade import SchadeDegradation
 from rl import policies
@@ -121,7 +123,7 @@ def _train(rollingCfg, foldIndex, trainMode, algo, seed, prices, scaler, warmFro
         rewardScale=rollingCfg.rewardScale, outDir=directory.parent, scaler=scaler,
         warmFrom=warmFrom, initialSoc=rollingCfg.initialSoc,
         cycleBudget=rollingCfg.cycleBudget, terminalPrice=rollingCfg.terminalPrice,
-        endEmpty=rollingCfg.endEmpty,
+        endEmpty=rollingCfg.endEmpty, ablation=rollingCfg.ablation,
     )
     return directory
 
@@ -218,6 +220,7 @@ def runPooled(cfg, onProgress=None):
                     bounds=[record["dualBound"] for record in testRecords],
                     initialSoc=regionCfg.initialSoc, cycleBudget=regionCfg.cycleBudget,
                     terminalPrice=regionCfg.terminalPrice, endEmpty=regionCfg.endEmpty,
+                    ablation=regionCfg.ablation,
                 )
                 steps, warmFrom = provenance[mode]
                 # _resultRows reads the warm/cold budget off the config, which says
@@ -248,6 +251,10 @@ def runPooled(cfg, onProgress=None):
 def publishFinal(cfg, fold):
     """Each region's last-fold agents into trainedPolicies/: its fine-tuned copy, and the
     shared agent under its own train mode, so the forecast screen can run either."""
+    # An ablation's agents read another observation or solve another problem, so they are
+    # not dashboard agents, and a default-named publish would overwrite a real one.
+    if not cfg.base.ablation.isDefault():
+        return []
     shared = pooledConfig(cfg)
     published = []
     for region in cfg.regions:
@@ -299,7 +306,8 @@ def _config(args):
         forecastEvery=every, horizon=args.horizon,
         cycleBudget=None if args.cycles == "none" else float(args.cycles),
         terminalPrice=args.terminal_price, endEmpty=args.end_empty,
-        calendar=False, discretePower=True, gap=args.gap, timeLimit=args.time_limit,
+        invalidPenalty=args.invalid_penalty, ablation=ablationOf(args),
+        calendar=args.degradation == "full", discretePower=True, gap=args.gap, timeLimit=args.time_limit,
         trajectorySeed=None,
         foldFilter=None if args.folds is None else frozenset(
             range(int(args.folds.split("-")[0]), int(args.folds.split("-")[-1]) + 1)),
@@ -335,6 +343,9 @@ def main(argv=None):
     parser.add_argument("--cycles", default="1.0", help="per episode, or none")
     parser.add_argument("--terminal-price", type=float, default=0.0)
     parser.add_argument("--end-empty", action="store_true")
+    parser.add_argument("--invalid-penalty", type=float,
+                        default=config.invalid_action_penalty, metavar="R")
+    addAblationArguments(parser)
     parser.add_argument("--forecast-refresh", type=int, default=5, metavar="MINUTES")
     parser.add_argument("--price-source", choices=["realised", "forecast", "both"],
                         default="both")

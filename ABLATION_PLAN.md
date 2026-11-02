@@ -79,3 +79,44 @@ Variant count (non-baseline): 1 degradation 3, 2 lookahead 4, 3 time encoding 3,
 24 variants x 2 algorithms x 5 seeds = 240 seed-jobs (each up to 48 h on medq), plus 48
 merge jobs. Code still to write: flags for 1, 2, 3, 4, 5, 9 (none exist today), and new
 oracle corpora for 1 and 5.
+
+## Implementation status (code done; nothing submitted)
+
+Built on this branch, with tests (`rl/test_ablation.py`, `rl/test_ablation_problem.py`):
+`rl/ablation.py` (the record and its CLI flags), the observation knobs in `rl/features.py`,
+the env knobs in `rl/env.py`, wear-cost and N-level support in `optimisation/dp.py`, key
+support in `rl/baseline.py`, and the plumbing through the runner, pooled driver and CLI.
+`scripts/ablation.sh` lists the 24 variants and prints their qsubs; `scripts/ablationOracle.pbs`
+builds the oracle records the problem-side variants need. Run `bash scripts/ablation.sh plan`
+to see all 294 commands (30 oracle, 220 seed, 44 merge). Submitting needs `SUBMIT=1`.
+
+Where the build differs from the table above:
+
+- **Degradation baseline is "cycling", not "full".** Every published backtest runs with
+  `calendar=False`, so the reference already omits the calendar term. The variants are
+  `full` (adds calendar), `flat` and `none`.
+- **Time encoding has two variants (sincos, none).** The weekday/season arm of the table is
+  dropped here: it needs extra slots and the earlier `day0` run exists. Say so in the thesis
+  rather than rerunning it under another setup.
+- **History is within-episode only.** A 24 hour history is empty when a day opens. This is
+  what keeps the pooled training set from reading across a region join.
+- **Penalty variants run DQN only, and `mask_hidden` runs PPO only.** A masked agent can
+  never incur the penalty, so a penalty sweep on masked PPO would be identically zero.
+- **The shaping bonus (0.05) and the flat wear rate are not tuned.** The rate is the Schade
+  price of a full discharge per MWh, so `flat` differs from the baseline in shape, not level.
+
+Oracle cost (NSW1 day, 1 EFC budget, end empty; 1001 test days x 5 regions = 5005 windows):
+
+| actions | per day | whole corpus |
+|---------|---------|--------------|
+| 3 | 1 s | about 1.4 h |
+| 5 | 5 s | about 7 h |
+| 9 | 22 s | about 30 h |
+| 17 | 103 s | about 143 h, plus a ~5 minute state-space build per worker |
+
+`lev_17` is the expensive variant. Dropping it, or solving only the 2025 test year, are the
+two cheap ways to cut it.
+
+Known unrelated failure: `rl/test_algos.py::TestRegistry::test_dqnnomask_loads_but_does_not_build`
+fails on main as well, because `rl/algos.py` registers `dqnnomask` as a builder (the pooled
+DQN commit) and the test expects a refusal. This branch does not touch either file.

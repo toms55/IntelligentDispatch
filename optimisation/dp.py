@@ -19,6 +19,8 @@ The transition rule here is `rl.env.BessEnv._applyAction`, written out again. Th
 deliberate: the oracle and the environment must be the same problem, and here they are
 the same arithmetic. `optimisation/test_dp.py` holds this module to the MILP.
 """
+import copy
+
 import numpy as np
 
 import config
@@ -39,18 +41,28 @@ quantum = 1e-9
 emptyTolerance = 1e-9
 
 
-def move(stored, action, model, dtHours):
+def fraction(action, levels):
+    """The signed share of rated power action `action` asks for: positive charges,
+    negative discharges. With one level it is +1, 0, -1 for CHARGE, IDLE, DISCHARGE, the
+    three actions every published run used. `rl.env.BessEnv` indexes its actions the
+    same way."""
+    return (levels - action) / levels
+
+
+def move(stored, action, model, dtHours, levels=1):
     """One interval. Returns (new stored, bought, sold), all meter-side but `stored`.
 
     The same arithmetic as `rl.env.BessEnv._applyAction`, including the clip at the SoC
     boundary that gives a partial top-up.
     """
     full = model.chargePower * dtHours
-    if action == CHARGE:
-        bought = min(full, max(0.0, (model.MWh - stored) / model.chargeEfficiency))
+    share = fraction(action, levels)
+    if share > 0:
+        bought = min(share * full,
+                     max(0.0, (model.MWh - stored) / model.chargeEfficiency))
         return min(stored + model.chargeEfficiency * bought, model.MWh), bought, 0.0
-    if action == DISCHARGE:
-        sold = min(full, max(0.0, stored * model.dischargeEfficiency))
+    if share < 0:
+        sold = min(-share * full, max(0.0, stored * model.dischargeEfficiency))
         return max(stored - sold / model.dischargeEfficiency, 0.0), 0.0, sold
     return stored, 0.0, 0.0
 
@@ -68,7 +80,8 @@ class _StateSpace:
     they are never used.
     """
 
-    def __init__(self, model, initialSoc, dtHours, horizon):
+    def __init__(self, model, initialSoc, dtHours, horizon, levels=1):
+        actions = range(2 * levels + 1)
         start = initialSoc * model.MWh
         index = {self._key(start): 0}
         energies = [start]
@@ -77,8 +90,8 @@ class _StateSpace:
         for _ in range(horizon):
             layer = set()
             for i in masks[-1]:
-                for action in _actions:
-                    new, _, _ = move(energies[i], action, model, dtHours)
+                for action in actions:
+                    new, _, _ = move(energies[i], action, model, dtHours, levels)
                     key = self._key(new)
                     if key not in index:
                         index[key] = len(energies)
@@ -88,15 +101,16 @@ class _StateSpace:
 
         count = len(energies)
         self.energy = np.array(energies, dtype=float)
-        self.successor = np.zeros((3, count), dtype=np.int64)
-        self.bought = np.zeros((3, count), dtype=float)
-        self.sold = np.zeros((3, count), dtype=float)
-        self.cycle = np.zeros((3, count), dtype=float)
-        self.calendar = np.zeros((3, count), dtype=float)
+        rows = len(actions)
+        self.successor = np.zeros((rows, count), dtype=np.int64)
+        self.bought = np.zeros((rows, count), dtype=float)
+        self.sold = np.zeros((rows, count), dtype=float)
+        self.cycle = np.zeros((rows, count), dtype=float)
+        self.calendar = np.zeros((rows, count), dtype=float)
 
-        for action in _actions:
+        for action in actions:
             for i, stored in enumerate(energies):
-                new, bought, sold = move(stored, action, model, dtHours)
+                new, bought, sold = move(stored, action, model, dtHours, levels)
                 qCd, qCal, _ = model.step(stored / model.MWh, new / model.MWh, dtHours)
                 # A successor is absent only for a state whose one reachable layer is the
                 # last, and the episode ends before any action is taken from there. Point
@@ -118,22 +132,39 @@ class _StateSpace:
         return int(round(energy / quantum))
 
 
+def costed(space, costing):
+    """A copy of `space` whose degradation follows an ablation's cost, or `space` itself.
+
+    `costing` is (mode, rate) from `rl.ablation.Ablation.costing`. "none" charges nothing
+    and "flat" charges `rate` dollars per MWh that leaves the cells, which is what
+    `rl.env.BessEnv._degradation` charges. Neither has a calendar term, and the arrays
+    of the shared, cached space are never written."""
+    if costing is None:
+        return space
+    mode, rate = costing
+    copied = copy.copy(space)
+    removed = np.maximum(space.energy[None, :] - space.energy[space.successor], 0.0)
+    copied.cycle = np.zeros_like(space.cycle) if mode == "none" else rate * removed
+    copied.calendar = np.zeros_like(space.calendar)
+    return copied
+
+
 _cache = {}
 
 
-def stateSpace(model, initialSoc, dtHours, horizon):
+def stateSpace(model, initialSoc, dtHours, horizon, levels=1):
     """The state space for these battery settings, built once per process."""
     key = (model.chargePower, model.MWh, model.replacementCost,
            model.chargeEfficiency, model.dischargeEfficiency, initialSoc, dtHours,
-           horizon)
+           horizon, levels)
     if key not in _cache:
-        _cache[key] = _StateSpace(model, initialSoc, dtHours, horizon)
+        _cache[key] = _StateSpace(model, initialSoc, dtHours, horizon, levels)
     return _cache[key]
 
 
 def valueFunction(prices, model, initialSoc=0.5, dtHours=nem_interval_hours,
                   calendar=True, space=None, cyclePrice=0.0, terminalPrice=0.0,
-                  endEmpty=False):
+                  endEmpty=False, levels=1):
     """The optimal value of every state at every interval, and the action that gets it.
 
     Returns (value, action, space). `value[t][i]` is the most profit obtainable over
@@ -148,7 +179,7 @@ def valueFunction(prices, model, initialSoc=0.5, dtHours=nem_interval_hours,
     `endEmpty` values every closing state but the empty one at minus infinity, which is
     `rl.env.BessEnv`'s forced sell-off stated as a terminal condition.
     """
-    space = space or stateSpace(model, initialSoc, dtHours, len(prices))
+    space = space or stateSpace(model, initialSoc, dtHours, len(prices), levels)
     horizon = len(prices)
     degradation = space.cycle + space.calendar if calendar else space.cycle
     if cyclePrice:
@@ -177,11 +208,12 @@ def _rollout(prices, model, action, space, initialSoc, calendar, terminalPrice):
     `cyclesUsed` is the equivalent full cycles the walk actually spent.
     """
     index = 0  # _StateSpace numbers the starting energy first.
-    soc, bought, sold = [], [], []
+    soc, bought, sold, taken = [], [], [], []
     revenuePerInterval, cyclePerInterval, calendarPerInterval = [], [], []
     removed = 0.0
     for t in range(len(prices)):
         chosen = int(action[t][index])
+        taken.append(chosen)
         bought.append(float(space.bought[chosen][index]))
         sold.append(float(space.sold[chosen][index]))
         revenuePerInterval.append(float(prices[t] * space.throughput[chosen][index]))
@@ -223,12 +255,13 @@ def _rollout(prices, model, action, space, initialSoc, calendar, terminalPrice):
         0.0,
         removed / model.MWh,
         terminal,
+        taken,
     )
 
 
 def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=True,
           cycles=None, terminalPrice=0.0, dualGap=config.cycle_dual_gap,
-          endEmpty=False):
+          endEmpty=False, costing=None, levels=1):
     """The exact discrete-power oracle, as a `Schedule`.
 
     Drop-in for `optimisation.lp.solve(..., discretePower=True)`. With no cycle budget
@@ -250,7 +283,7 @@ def solve(prices, model, initialSoc=0.5, dtHours=nem_interval_hours, calendar=Tr
     then never meets `rl.env.BessEnv`'s override, so the two stay one problem.
     """
     prices = np.asarray(prices, dtype=float)
-    space = stateSpace(model, initialSoc, dtHours, len(prices))
+    space = costed(stateSpace(model, initialSoc, dtHours, len(prices), levels), costing)
 
     def at(cyclePrice):
         value, action, _ = valueFunction(prices, model, initialSoc, dtHours, calendar,
