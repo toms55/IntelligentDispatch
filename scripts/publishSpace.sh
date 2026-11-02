@@ -17,15 +17,11 @@
 #   3. `trainedPolicies/`: the agents the forecast screen can load
 #   4. the Dockerfile, the requirements and the Space card
 #
-# The two screens stage differently. Stage 2 carries one seed per region, the one
-# `config.best_seed` names: the backtest screen draws one dispatch per region, not five
-# that differ only by seed, and the thesis reports the seed spread from the full set that
-# stays here, not from the Space. Stage 3 carries every agent `rl.policies.loadable`
-# accepts, every seed and every tag, because the forecast screen runs an agent live
-# rather than replaying a row, and its dropdown is the only way to compare seeds,
-# algorithms and observation variants against each other. The two stages are therefore
-# independent: a label on the forecast screen need not match any run staged in 2, and
-# the backtest screen's run list is unrelated to which agents happen to be loadable now.
+# Both screens stage the same models. Stage 2 carries one seed per train mode and
+# region, the one `config.best_seed_by_run` names, and stage 3 carries the agents of
+# those same models, through `experiments.runnable`. So a model on the forecast screen
+# has its numbers on the backtest screen at the same seed, and the thesis reports the
+# seed spread from the full set that stays here, not from the Space.
 #
 # Name a run once per run to stage several:
 #
@@ -44,25 +40,19 @@ set -euo pipefail
 # for a test Space. Every caller reads it from here, so the name is in one place.
 SPACE=${DASHBOARD_SPACE:-toms55/IntelligentDispatch}
 # The runs to stage, in order. The first is the one the Space opens. --results replaces
-# this default on its first use and appends on every use after it. Every entry here
-# states its initial SoC and its experimental setting in the name; a run that does not
-# (the pre-SoC-fix `rolling2023_profit*` family, scored at the old `initial_soc=0.5`)
-# stays off the Space so the two scoring conventions never sit side by side.
-RUNS=(
-  results/backtestResults/rolling2023_start_at_0_SoC_five_min_refresh
-  results/backtestResults/rolling2023_dqn_start_at_0_SoC_five_min_refresh
-  results/backtestResults/rolling2023_price_scale_start_at_0_SoC_five_min_refresh
-  results/backtestResults/rolling2023_price_history_start_at_0_SoC_five_min_refresh
-  results/backtestResults/rolling2023_weekday_season_start_at_0_SoC_five_min_refresh
-)
+# this default on its first use and appends on every use after it. The default is
+# `config.dashboard_runs`, which is the same list the local dashboard offers, so the two
+# cannot drift apart. A run stays off that list until its manifest states what it
+# tested: see the comment there.
+read -r -a RUNS <<< "$(bash "$(dirname "$0")/dashboardRuns.sh" | tr '\n' ' ')"
 runsGiven=no
 # The run's actions exports stay in results/actions/, which git tracks; see
 # backtest/publish.py.
 ACTIONS=results/actions
 # The agents come from the published layout, not from a training output directory, so the
-# Space runs the same bytes this machine's dashboard runs. Stage 3 stages every agent
-# `rl.policies.loadable` accepts, so there is nothing to name here: the set is read
-# straight off $POLICIES, filtered by whether it matches today's observation layout.
+# Space runs the same bytes this machine's dashboard runs. Stage 3 stages the agents the
+# forecast screen offers for the staged runs, so there is nothing to name here: the set
+# is read straight off $POLICIES through `experiments.runnable`.
 POLICIES=trainedPolicies
 REGION=NSW1
 STAGE=runs/space
@@ -178,13 +168,6 @@ checkToken() {
   esac
 }
 
-# The seed per region, from `config.best_seed`, for stage 2's backtest rows only. Stage
-# 3 stages every seed, so it does not read this map.
-declare -A BEST_SEED=()
-while read -r region seed; do
-  BEST_SEED["$region"]=$seed
-done < <(bash "$(dirname "$0")/bestSeeds.sh")
-
 if [[ "$PUSH" == yes && -n "$SPACE" ]]; then
   say "0/5 token"
   readToken
@@ -212,54 +195,56 @@ printf '*.zip filter=lfs diff=lfs merge=lfs -text\n' > "$STAGE/.gitattributes"
 printf '*.parquet filter=lfs diff=lfs merge=lfs -text\n' >> "$STAGE/.gitattributes"
 
 # ------------------------------------------------------------- 2. the results
-say "2/5 results from ${#RUNS[@]} run(s), one seed per region"
+say "2/5 results from ${#RUNS[@]} run(s), one seed per model"
 # The same layout every clone has, so the app finds a run without being told. A run is
 # one CSV per region, <run>_<region>.csv, and its actions export one Parquet,
 # <run>_<region>.parquet.
 #
-# Only the rows of `config.best_seed[region]` go up. Nothing on either screen pools
-# seeds: every figure comes from `data.modelRows` for one dropdown label, so dropping
-# the other seeds removes entries from the dropdown and changes no number in the ones
-# that stay. It also keeps the actions exports small enough to stage several runs.
+# Only the rows of the seed `config.best_seed_by_run` names go up, per train mode and
+# region. That is the seed the dashboard shows, through `experiments.bestSeed`, so
+# dropping the others removes nothing from the screen and changes no number on it. It
+# also keeps the actions exports small enough to stage several runs.
 mkdir -p "$STAGE/results/actions"
-
-# Keep the header, then the rows whose `seed` column equals $2. The column is found by
-# name. The CSV is plain, with no quoted field, and a quote would break a split on
-# commas, so one appearing stops the publish rather than writing a file with rows
-# silently dropped.
-seedRows() {
-  awk -F, -v want="$2" '
-    /"/ { bad = "quoted field, which this filter cannot split"; exit 1 }
-    NR == 1 {
-      for (i = 1; i <= NF; i++) if ($i == "seed") column = i
-      if (!column) { bad = "no seed column"; exit 1 }
-      print; next
-    }
-    $column == want { kept++; print }
-    END {
-      if (!bad && !kept) bad = "no seed " want " rows"
-      if (bad) { print bad " in " FILENAME > "/dev/stderr"; exit 1 }
-    }
-  ' "$1"
-}
 
 staged=0
 for RESULTS in "${RUNS[@]}"; do
   run=$(basename "$RESULTS")
   published=$(dirname "$RESULTS")
   mkdir -p "$STAGE/$published"
-  found=0
-  for path in "$published"/"$run"_*.csv; do
-    [[ -e "$path" ]] || continue
-    # Only this run, not a longer name that starts with it (rolling2023_profit_fc4h_...).
-    region=$(basename "$path" .csv); region=${region#"$run"_}
-    [[ "$region" == *_* ]] && continue
-    seed=${BEST_SEED[$region]:-}
-    if [[ -z "$seed" ]]; then
-      echo "  skip $region: config.best_seed names no seed for it"
-      continue
-    fi
-    seedRows "$path" "$seed" > "$STAGE/$published/$run"_"$region.csv"
+  # One interpreter per run, not per region: it reads the published rows, keeps the
+  # pinned seed of every train mode, and writes the CSV and the Parquet together, so
+  # the two cannot disagree about which seed the Space holds.
+  found=$($PYTHON - "$published" "$run" "$ACTIONS" "$STAGE" <<'PYTHON'
+import shutil
+import sys
+from pathlib import Path
+
+import pandas as pd
+
+from backtest import records
+from visualise.dashboard import data, experiments
+
+published, run, actionsRoot, stage = sys.argv[1:5]
+resultsDir = Path(published) / run
+kept = 0
+for region in data.availableRegions(resultsDir):
+    days = pd.read_csv(data.publishedFile(resultsDir, region))
+    # The seed of each train mode, which is what the dropdown offers for this run.
+    seeds = {mode: experiments.bestSeed(run, mode, region, days.seed.unique())
+             for mode in sorted(set(days.trainMode))}
+    # Vectorised, not `apply`: the actions export is half a million rows per region.
+    wanted = days.seed == days.trainMode.map(seeds)
+    if not wanted.any():
+        sys.exit(f"{resultsDir} {region} holds no row of {seeds}, so the Space would "
+                 f"draw an empty screen. Its seeds: "
+                 f"{sorted(days.seed.unique().tolist())}")
+    out = Path(stage) / published / f"{run}_{region}.csv"
+    days[wanted].to_csv(out, index=False)
+    # The manifest and the description travel with the rows. `experiments.catalogue`
+    # reads them to describe the run, so a staged run without its JSON is a run the
+    # screens cannot offer.
+    context = records.contextPath(published, run, region)
+    shutil.copy2(context, records.contextPath(Path(stage) / published, run, region))
     # The export holds the dispatch the day view draws, the forecast the agent acted on
     # and the refresh tile's check. It is Parquet, a few MB a seed.
     #
@@ -268,71 +253,97 @@ for RESULTS in "${RUNS[@]}"; do
     # seed stops the publish here. The day view must not fall back to seed 0 under
     # another seed's name, and a Space whose calendar draws but whose days are all
     # empty is worse than one that was never pushed.
-    actions="$ACTIONS/$run"_"$region.parquet"
-    if [[ -e "$actions" ]]; then
-      $PYTHON - "$actions" "$seed" "$STAGE/results/actions/$run"_"$region.parquet" <<'PYTHON'
-import sys
-
-import pandas as pd
-
-source, seed, out = sys.argv[1], int(sys.argv[2]), sys.argv[3]
-frame = pd.read_parquet(source)
-kept = frame[frame.seed == seed]
-if kept.empty:
-    sys.exit(f"{source} holds no seed {seed}, so the day view would be empty.\n"
-             f"Its seeds: {sorted(frame.seed.unique().tolist())}\n"
-             "Either set config.best_seed to a seed the export holds, or re-run the\n"
-             "backtest, which logs every seed as each fold finishes.")
-kept.to_parquet(out, index=False, compression="zstd", compression_level=9)
+    source = Path(actionsRoot) / f"{run}_{region}.parquet"
+    if source.exists():
+        frame = pd.read_parquet(source)
+        rows = frame[frame.seed == frame.trainMode.map(seeds)]
+        if rows.empty:
+            sys.exit(f"{source} holds no row of {seeds}, so every day view would be "
+                     f"empty. Its seeds: {sorted(frame.seed.unique().tolist())}\n"
+                     "Either pin a seed the export holds in config.best_seed_by_run, "
+                     "or re-run the\nbacktest, which logs every seed as each fold "
+                     "finishes.")
+        rows.to_parquet(Path(stage) / "results" / "actions" /
+                        f"{run}_{region}.parquet", index=False,
+                        compression="zstd", compression_level=9)
+    kept += 1
+print(kept)
 PYTHON
-    fi
-    found=$((found + 1))
-  done
-  [[ $found -gt 0 ]] || { echo "no published run at $RESULTS" >&2; exit 1; }
+)
+  [[ ${found:-0} -gt 0 ]] || { echo "no published run at $RESULTS" >&2; exit 1; }
   echo "  $run: $found regions"
   staged=$((staged + 1))
 done
-# The screen draws one run, and `data.findResults` refuses to choose between several, so
-# the first run named is pinned into the image. A Space variable of the same name picks
-# another staged run without a republish.
+# The screen draws one run, so the first run named is pinned into the image. A Space
+# variable of the same name picks another staged run without a republish.
 DEFAULT_RUN=${RUNS[0]}
 printf '\nENV DASHBOARD_RESULTS=%s\n' "$DEFAULT_RUN" >> "$STAGE/Dockerfile"
 echo "$staged run(s), $(du -sh "$STAGE/results" | cut -f1), opening on $(basename "$DEFAULT_RUN")"
 
 # -------------------------------------------------------------- 3. the agents
-# Every agent `rl.policies.loadable` says this build can actually run, for every
-# region. That check reads each agent's recorded `observationSize` against
-# `config.observation_size` and drops anything trained under another observation
-# layout, so a staged agent and the live screen's environment always agree. Staging a
+# The agents the forecast screen offers for the staged runs, and no others. That list
+# comes from `experiments.runnable`, which keeps an agent only when
+# `rl.policies.loadable` can run it and a staged experiment scored it, at the seed
+# `config.best_seed_by_run` pins. So every model on the Space has its numbers on the
+# backtest screen, at the same seed, and the weights that go up are a handful per region
+# rather than every seed of every experiment ever trained.
+#
+# `loadable` reads each agent's recorded `observationSize` against
+# `config.observation_size` and drops anything trained under another observation layout,
+# so a staged agent and the live screen's environment always agree. Staging a
 # hand-picked list here was the earlier bug: `policies.publish` stamps the *current*
 # `config.observation_size` onto whatever it copies, so re-publishing something
 # `loadable` had already excluded silently relabelled it as compatible and the live
-# screen crashed on the first rollout. Filtering through `loadable` first is what keeps
+# screen crashed on the first rollout. Filtering through `runnable` first is what keeps
 # that stamp honest.
-say "3/5 agents from $POLICIES, every agent this build can load"
-$PYTHON - "$POLICIES" "$STAGE/trainedPolicies" <<'PYTHON'
+say "3/5 agents from $POLICIES, the models the forecast screen offers"
+$PYTHON - "$POLICIES" "$STAGE/trainedPolicies" "${RUNS[@]}" <<'PYTHON'
+import functools
 import sys
+from pathlib import Path
 
 from rl import policies
+from visualise.dashboard import data, experiments
 
 source, root = sys.argv[1:3]
+runs = [Path(item).name for item in sys.argv[3:]]
+results = Path(sys.argv[3]).parent
+
+
+# One read per run and region. `runnable` loads every staged run to find the models of
+# one region, and each load checks that run's actions export, which is tens of
+# megabytes, so the uncached loop reads every export once per region.
+@functools.lru_cache(maxsize=64)
+def read(run, region):
+    return data.loadRun(region, results / run)
+
+
 staged = 0
 for region in policies.regions(source):
-    for label, directory in sorted(policies.loadable(region, source).items()):
-        facts = policies.describe(directory)
+    for item in experiments.runnable(region, results, source, loader=read,
+                                     runs=tuple(runs)):
+        facts = policies.describe(item.directory)
+        label = item.directory.name
         algo, trainMode, seed = facts["algo"], facts["trainMode"], int(facts["seed"])
         middle = label[len(algo) + 1:-len(f"-s{seed}")]
         tag = middle[len(trainMode) + 1:] if middle.startswith(f"{trainMode}-") else None
-        published = policies.publish(directory, region, algo, trainMode, seed,
-                                      root=root, tag=tag,
-                                      publishedBy="scripts/publishSpace.sh")
-        print(f"  {region}: {published.name}")
+        # `experiments.policyRun`, not the recorded field: an agent published before
+        # that field existed carries only its checkpoint path, and re-publishing
+        # replaces that path with this one. The resolved link has to be written out, or
+        # the staged agent loses the experiment it belongs to and the Space offers
+        # nothing.
+        published = policies.publish(item.directory, region, algo, trainMode, seed,
+                                     root=root, tag=tag,
+                                     rawRun=experiments.policyRun(item.directory),
+                                     publishedBy="scripts/publishSpace.sh")
+        print(f"  {region}: {published.name} for {item.entry.run}")
         staged += 1
 if staged == 0:
-    raise SystemExit(f"{source} holds no agent `policies.loadable` accepts under "
-                      "today's config.observation_size, so the forecast screen would "
-                      "offer nothing. Publish a freshly trained agent, or retrain one "
-                      "under the current observation layout.")
+    raise SystemExit(f"{source} holds no agent of a staged run that "
+                     "`policies.loadable` accepts under today's "
+                     "config.observation_size, so the forecast screen would offer "
+                     "nothing. Publish a freshly trained agent, or retrain one under "
+                     "the current observation layout.")
 PYTHON
 
 # --------------------------------------------------------------- 4. the check
@@ -372,21 +383,24 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 region = os.environ["DASHBOARD_REGION"]
-models = app.dashboard.liveModels(region, app.policyRoot)
-print(f"  regions on the backtest screen: {app.data.availableRegions(app.resultsDir)}")
-print(f"  models on the forecast screen: {models}")
-# The list holds one name per published agent and nothing else, so one agent per region
-# is a full list. It was longer when the screen still offered models it could not load.
+run = Path(os.environ["DASHBOARD_RESULTS"])
+models = app.dashboard.liveModels(region, app.policyRoot, runs=(run.name,),
+                                  root=run.parent)
+print(f"  regions on the backtest screen: {app.data.availableRegions(run)}")
+print(f"  models on the forecast screen: {[item.entry.label for item in models]}")
+# One name per model the staged run scored and the staged weights can run. It was
+# longer when the screen still offered models with no experiment behind them.
 if not models:
-    raise AssertionError(f"{app.policyRoot} published no agent for {region}")
+    raise AssertionError(f"{app.policyRoot} published no agent of {run.name} for "
+                         f"{region}")
 
 # A day of prices with one peak, so a working agent charges and discharges once.
 index = pd.date_range("2026-01-01 04:05", periods=288, freq="5min")
 prices = pd.Series(60 + 240 * np.sin(np.linspace(0, 2 * np.pi, 288)), index=index)
-for label in models:
-    frame = app.live.suggest(prices, label, region, root=app.policyRoot)
+for model in models:
+    frame = app.live.suggest(prices, model, region, root=app.policyRoot)
     taken = sorted(set(frame.action))
-    print(f"  {label}: {len(frame)} intervals, actions {taken}, "
+    print(f"  {model.entry.label}: {len(frame)} intervals, actions {taken}, "
           f"profit ${frame.profit.iloc[-1]:,.2f}")
 builtins.__import__ = realImport
 PYTHON

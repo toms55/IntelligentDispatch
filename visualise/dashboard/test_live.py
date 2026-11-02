@@ -1,19 +1,35 @@
 """Tests for visualise/dashboard/live.py. No network: every path is built here."""
-import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
-import config
 from rl import policies
 from rl.features import scalerFor
 from rl.heuristic import ThresholdPolicy
 from utils import nem_interval
-from visualise.dashboard import figures, live
+from visualise.dashboard import experiments, figures, live
 
 REGION = "NSW1"
-MODEL = "maskableppo-warm-s0"
+
+
+def model(algo="maskableppo", trainMode="warm", seed=0, run="rolling", **settings):
+    """One `experiments.Runnable`, as the catalogue hands it to the screen.
+
+    The screen takes the episode from the experiment's manifest, so a test that cares
+    about the budget or the closing rule states it here and nowhere else.
+    """
+    manifest = {"horizon": 288, "cycleBudget": None, "endEmpty": False,
+                "terminalPrice": 0.0, "initialSoc": 0.0, **settings}
+    experiment = experiments.Experiment(run, REGION, "a test run", manifest,
+                                        Path("results/backtestResults") / run)
+    return experiments.Runnable(
+        experiments.Entry(run, REGION, algo, trainMode, seed), experiment,
+        Path("trainedPolicies") / REGION / f"{algo}-{trainMode}-s{seed}")
+
+
+MODEL = model()
 
 
 def path(prices, start="2025-01-01 10:05"):
@@ -77,43 +93,14 @@ class TestSuggest:
         frame = live.suggest(path([10.0] * length), MODEL, REGION)
         assert frame.empty and list(frame.columns) == list(live.columns)
 
-    # A label with no checkpoint behind it names the directory it looked in.
-    def test_a_missing_checkpoint_names_the_directory(self, sawtooth, tmp_path):
-        with pytest.raises(FileNotFoundError, match=REGION):
-            live.suggest(sawtooth, MODEL, REGION, root=tmp_path)
-
-    # A machine that published no agent has no model to run, and says so.
+    # A machine with no agent of a published experiment has no model to run, and says
+    # so over the price path rather than drawing nothing.
     def test_no_model_names_the_directory(self, sawtooth, tmp_path):
-        with pytest.raises(FileNotFoundError, match="No agent is published"):
+        with pytest.raises(FileNotFoundError, match="No published agent"):
             live.suggest(sawtooth, None, REGION, root=tmp_path)
 
 
 class TestCheckpoints:
-    # The backtest label names the price source it was scored under; the agent is one.
-    def test_the_price_source_is_dropped(self):
-        assert live.checkpointKey("maskableppo-warm-s0-forecast") == "maskableppo-warm-s0"
-
-    # A tagged agent keeps its tag, and a forecast screen label has no source to drop.
-    @pytest.mark.parametrize("label", ["maskableppo-warm-start_at_0_SoC-s0",
-                                       "maskableppo-warm-s0"])
-    def test_a_published_name_is_kept_whole(self, label):
-        assert live.checkpointKey(label) == label
-
-    # The screen reads trainedPolicies/, which is what training publishes.
-    def test_it_reads_what_training_published(self, tmp_path):
-        source = tmp_path / "fold51"
-        source.mkdir()
-        (source / policies.agentFile).write_bytes(b"")
-        (source / policies.scalerFile).write_text("{}")
-        policies.publish(source, REGION, "maskableppo", "warm", 0, root=tmp_path / "out")
-        found = live.findCheckpoints(REGION, tmp_path / "out")
-        assert list(found) == ["maskableppo-warm-s0"]
-
-    # A directory the copy never finished is not offered.
-    def test_a_checkpoint_without_its_zip_is_skipped(self, tmp_path):
-        (tmp_path / REGION / "a2c-cold-s1").mkdir(parents=True)
-        assert live.findCheckpoints(REGION, tmp_path) == {}
-
     # The default root is the one the convention names, not a run directory.
     def test_the_default_root_is_trainedpolicies(self):
         assert live.defaultCheckpoints == policies.defaultRoot
@@ -189,31 +176,24 @@ class TestRefreshSlot:
 
 
 class TestCycleBudget:
-    """The screen plans one trading day, so it gets one day's share of the week's
-    budget. The whole week's would let a Monday spend the lot."""
+    """The screen opens its episode at the run time, so the path is part of an episode
+    and it gets that part of the experiment's budget. The whole budget would let a
+    late-afternoon board spend what a whole day is allowed."""
 
-    def test_a_day_gets_a_seventh_of_the_week(self, monkeypatch):
-        monkeypatch.setattr(config, "cycle_budget", 7.0)
-        assert live.dailyBudget() == pytest.approx(1.0)
+    def test_a_part_episode_gets_that_part_of_the_budget(self):
+        settings = {"cycleBudget": 1.0, "horizon": 288}
+        assert live.budgetFor(settings, 144) == pytest.approx(0.5)
+        assert live.budgetFor(settings, 288) == pytest.approx(1.0)
 
-    def test_no_budget_stays_no_budget(self, monkeypatch):
-        monkeypatch.setattr(config, "cycle_budget", None)
-        assert live.dailyBudget() is None
+    # A path longer than the episode is still one episode's budget.
+    def test_the_share_never_exceeds_the_budget(self):
+        assert live.budgetFor({"cycleBudget": 1.0, "horizon": 288}, 600) == 1.0
 
+    def test_no_budget_stays_no_budget(self):
+        assert live.budgetFor({"cycleBudget": None, "horizon": 288}, 144) is None
 
-class TestOnlyLoadableAgents:
-    def test_the_dropdown_omits_an_agent_of_another_layout(self, tmp_path):
-        """Offering it would offer a model the screen is certain to fail on."""
-        checkpoint = tmp_path / "fold00"
-        checkpoint.mkdir(parents=True)
-        (checkpoint / policies.agentFile).write_bytes(b"weights")
-        (checkpoint / policies.scalerFile).write_text(
-            json.dumps({"cap": 23200.0, "floor": -1000.0, "knee": 300.0}))
-        directory = policies.publish(checkpoint, "NSW1", "maskableppo", "warm", 0,
-                                     root=tmp_path / "out")
-        assert list(live.findCheckpoints("NSW1", tmp_path / "out")) == [directory.name]
-
-        facts = policies.describe(directory)
-        facts["observationSize"] = config.observation_size + 1
-        (directory / policies.metadataFile).write_text(json.dumps(facts))
-        assert live.findCheckpoints("NSW1", tmp_path / "out") == {}
+    # The experiment's budget, not config's: the agents were trained elsewhere.
+    def test_it_reads_the_experiment_not_config(self, monkeypatch):
+        import config as settings
+        monkeypatch.setattr(settings, "cycle_budget", 7.0)
+        assert live.budgetFor({"cycleBudget": 1.0, "horizon": 288}, 288) == 1.0

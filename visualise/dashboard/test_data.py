@@ -2,12 +2,13 @@
 
 Everything here is a pure function of a frame, so no Dash import and no server.
 """
+import json
 from datetime import datetime, timedelta
 
 import pandas as pd
 import pytest
 
-from backtest import actions
+from backtest import actions, records
 from visualise.dashboard import data
 
 REGION = "NSW1"
@@ -32,15 +33,37 @@ def dayRows(count=14, folds=2):
     return rows
 
 
-def publishRun(root, rows, name="rolling", region=REGION, every=None):
+# The manifest a published run carries beside its CSV. Every dashboard experiment has
+# one: `visualise.dashboard.experiments` reads it to describe the run, and the forecast
+# screen builds its environment from it.
+manifest = {
+    "horizon": 288, "cycleBudget": 1.0, "endEmpty": True, "terminalPrice": 0.0,
+    "initialSoc": 0.0, "forecastEvery": 288, "warmTimesteps": 30000,
+    "coldTimesteps": 300000, "trainWeeks": 52, "testWeeks": 1, "stepWeeks": 1,
+    "algos": ["maskableppo"], "trainModes": ["warm"], "seeds": [0],
+    "priceSources": ["realised"], "discretePower": True, "gap": 0.02,
+    "start": "2023-01-01 04:00:00", "end": "2026-09-27 04:00:00",
+}
+
+
+def publishRun(root, rows, name="rolling", region=REGION, every=None, context=True,
+               description="a test run", settings=None):
     """One published region, as `backtest.publish` writes it: root/backtestResults/
-    <name>_<region>.csv. Returns the run, root/backtestResults/<name>."""
+    <name>_<region>.csv, with its manifest in the JSON beside it. Returns the run,
+    root/backtestResults/<name>."""
     frame = pd.DataFrame(rows)
     if every is not None:
         frame["forecastEvery"] = every
     run = root / "backtestResults" / name
     run.parent.mkdir(parents=True, exist_ok=True)
     frame.to_csv(data.publishedFile(run, region), index=False)
+    if context:
+        records.contextPath(run.parent, name, region).write_text(json.dumps({
+            "run": name, "region": region, "description": description,
+            "rawResults": f"results/{name}_{region}",
+            "manifest": {**manifest, **(settings or {}),
+                         "actionsFile": f"results/actions/{name}_{region}.csv"},
+        }))
     return run
 
 

@@ -158,6 +158,17 @@ def completedUnits(frame):
     return set(map(tuple, frame[list(unitColumns)].drop_duplicates().to_numpy().tolist()))
 
 
+def contextPath(root, run, region):
+    """The JSON beside a published region's CSV: its manifest and its description.
+
+    `backtest.publish` writes it and `visualise.dashboard.experiments` reads it, so the
+    name lives here, where neither has to import the other. The dashboard must not
+    import `backtest.publish`: that one reads the oracle corpus and so pulls in the
+    solver, which the hosted dashboard does not install.
+    """
+    return Path(root) / f"{run}_{region}.json"
+
+
 def manifestPath(resultsDir, region):
     return regionDir(resultsDir, region) / "manifest.json"
 

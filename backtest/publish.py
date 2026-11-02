@@ -98,11 +98,6 @@ def requireWithinBudget(days, region):
         )
 
 
-def contextPath(root, run, region):
-    """The JSON beside a published region's CSV."""
-    return Path(root) / f"{run}_{region}.json"
-
-
 def writeContext(runDir, root=data.backtestRoot, name=None, description=None,
                  regions=None):
     """Each region's manifest and description beside its published CSV, then the index.
@@ -121,7 +116,7 @@ def writeContext(runDir, root=data.backtestRoot, name=None, description=None,
         if not (Path(root) / exportName(run, region)).exists():
             raise ValueError(f"{run} has no published {region} CSV under {root}; "
                              f"publish it before writing its context")
-        target = contextPath(root, run, region)
+        target = records.contextPath(root, run, region)
         old = json.loads(target.read_text()) if target.exists() else {}
         manifest = records.manifestPath(source.parent, region)
         context = {
@@ -147,7 +142,7 @@ def writeIndex(root=data.backtestRoot):
         run, region = csv.stem.rsplit("_", 1)
         runs.setdefault(run, {"regions": [], "description": None})
         runs[run]["regions"].append(region)
-        context = contextPath(root, run, region)
+        context = records.contextPath(root, run, region)
         if context.exists():
             described = json.loads(context.read_text()).get("description")
             runs[run]["description"] = runs[run]["description"] or described

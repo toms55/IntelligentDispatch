@@ -115,19 +115,69 @@ high_vol_intensity = 1.20
 # is what makes the forecast horizon available.
 seeds = (0, 1, 2, 3, 4)
 
-# The seed the hosted dashboard shows, per region. Every seed stays in trainedPolicies/
-# and in the published results, because the thesis reports the spread over seeds. The
-# Space shows one of them, so a reader sees one dispatch per region rather than five
-# that differ only by seed. scripts/publishSpace.sh reads this to pick which rows and
-# which agent to stage, and nothing else reads it: a local dashboard offers every seed.
+# The experiments the dashboard offers, in the order it lists them. One name per
+# published run under results/backtestResults/, and the only list either screen reads:
+# the backtest screen offers these runs and nothing else, and the current forecast screen
+# offers the agents these runs trained. So every agent a reader can run has a scored
+# experiment behind it.
+#
+# A run reaches this list when it tests something the thesis reports and its manifest
+# states what that was. Three groups of published runs stay out:
+#
+# 1. The runs from before the manifest, which record no description and were scored from
+#    a 0.5 state of charge. `initial_soc` is 0.0 now, so their oracle bound answers
+#    another problem.
+# 2. The weekly 7-cycle runs. An episode is one trading day here, and a weekly episode
+#    carries the state of charge across the days inside it, so the two cannot share a
+#    screen without the bound meaning two things.
+# 3. The two masked-DQN runs. Their agents were trained by a `MaskableDQN` that is not
+#    on this branch, and bringing it over would make the algorithm name `dqn` mean two
+#    things: the pooled DQN run above and the daily one were both scored unmasked under
+#    that name. See rl/algos.py on `dqnnomask`, which is the unmasked arm and is here.
+dashboard_runs = (
+    "rolling2023_ppo_daily_1_cycle_end_empty_5min_forecast",
+    "rolling2023_dqn_daily_1_cycle_end_empty_5min_forecast",
+    "rolling2023_ppo_pooled_regions_daily_1_cycle_end_empty_5min_forecast",
+    "rolling2023_dqn_pooled_regions_daily_1_cycle_end_empty_5min_forecast",
+    "rolling2023_ppo_daily_no_cycle_limit_start_empty_5min_forecast_rerun",
+)
+
+# The seed each dashboard run shows, per run, train mode and region. Every seed stays in
+# trainedPolicies/ and in the published results, because the thesis reports the spread
+# over seeds. Each screen shows one of them, so a reader sees one dispatch per region
+# rather than five that differ only by seed.
+#
+# The winner is specific to the run: no region keeps its seed across all four. A pooled
+# run holds two train modes, and the shared agent and the regional fine-tune are two
+# agents, so each is ranked on its own.
 #
 # Each entry is the seed with the highest total agentProfit on forecast prices, over the
-# test days of the run the Space opens on, which is rolling2023_profit_fc5m.
-# `scripts/rankSeeds.py` derives it and prints this line. The winner is specific to the
-# run: only QLD1 keeps its seed across the three profit runs, so re-derive this whenever
-# the Space opens on another run. Measured gain over seed 0 runs from nothing in QLD1 to
-# $1293 of $19685 in SA1, against a spread over seeds of up to $2929.
-best_seed = {"NSW1": 1, "QLD1": 0, "SA1": 4, "TAS1": 2, "VIC1": 1}
+# test days of that run in that region. `scripts/rankSeeds.py` derives the map and prints
+# it. Pinned rather than ranked when the screen draws, so the thesis quotes this file and
+# a reader of the dashboard sees the same seed every time.
+#
+# Picking the top of five seeds on the days the dashboard then draws is selection on the
+# test window. It is presentational: the screen says which seed of how many it shows, and
+# the thesis quotes the spread over seeds, never one of these numbers.
+best_seed_by_run = {
+    "rolling2023_ppo_daily_1_cycle_end_empty_5min_forecast": {
+        "warm": {"NSW1": 1, "QLD1": 4, "SA1": 0, "TAS1": 3, "VIC1": 4},
+    },
+    "rolling2023_dqn_daily_1_cycle_end_empty_5min_forecast": {
+        "warm": {"NSW1": 2, "QLD1": 0, "SA1": 1, "TAS1": 2, "VIC1": 0},
+    },
+    "rolling2023_ppo_pooled_regions_daily_1_cycle_end_empty_5min_forecast": {
+        "finetune": {"NSW1": 2, "QLD1": 4, "SA1": 0, "TAS1": 0, "VIC1": 4},
+        "pooled": {"NSW1": 3, "QLD1": 2, "SA1": 2, "TAS1": 4, "VIC1": 2},
+    },
+    "rolling2023_dqn_pooled_regions_daily_1_cycle_end_empty_5min_forecast": {
+        "finetune": {"NSW1": 4, "QLD1": 4, "SA1": 4, "TAS1": 1, "VIC1": 4},
+        "pooled": {"NSW1": 4, "QLD1": 4, "SA1": 4, "TAS1": 1, "VIC1": 4},
+    },
+    "rolling2023_ppo_daily_no_cycle_limit_start_empty_5min_forecast_rerun": {
+        "warm": {"NSW1": 2, "QLD1": 4, "SA1": 0, "TAS1": 1, "VIC1": 1},
+    },
+}
 
 # How often the agent's forecast is replaced by AEMO's latest run inside an episode, in
 # dispatch intervals. 48 is every four hours: 04:00, 08:00, 12:00, 16:00, 20:00 and
@@ -136,8 +186,9 @@ best_seed = {"NSW1": 1, "QLD1": 0, "SA1": 4, "TAS1": 2, "VIC1": 1}
 # back the single 04:00 run per day. Must divide episode_intervals.
 forecast_refresh_intervals = 48
 
-# rl/algos.py asserts its registry matches this tuple.
-algorithms = ("maskableppo", "dqn", "a2c")
+# rl/algos.py asserts its registry matches this tuple. `dqnnomask` is a second name for
+# the unmasked DQN, which a published run records as its algorithm; see rl/algos.py.
+algorithms = ("maskableppo", "dqn", "dqnnomask", "a2c")
 
 # DQN's replay buffer, in whole episodes. The only SB3 default that rl/algos.py overrides
 # for DQN, and it is overridden because the buffer now travels between folds on disk

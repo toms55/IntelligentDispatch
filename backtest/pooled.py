@@ -257,6 +257,9 @@ def publishFinal(cfg, fold):
             published.append(policies.publish(
                 checkpoint, region, cfg.algo, mode, cfg.seed,
                 root=cfg.base.policyRoot, tag=cfg.base.policyTag, command="pooled",
+                # The regional run directory, not the pooled one, so both train modes
+                # of a fold name the one experiment that scored them.
+                rawRun=Path(regionConfig(cfg, region).outDir).name,
                 fold=fold.index, pooledRegions=list(cfg.regions),
                 trainWindow=[fold.trainStart.isoformat(), fold.trainEnd.isoformat()],
                 testWindow=[fold.testStart.isoformat(), fold.testEnd.isoformat()],

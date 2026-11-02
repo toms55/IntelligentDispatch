@@ -6,17 +6,23 @@ the policy itself. It asks AEMO for the forward price path at this minute, then 
 one episode of `rl.env.BessEnv` over that path, so the action set, the degradation terms
 and the state of charge rule are the same ones the backtest scored.
 
+Every other setting of the episode comes from the experiment the agent was trained and
+scored under, through `experiments.envSettings`: the cycle budget, whether the pack must
+close empty, what closing stock is worth. Not from `config`, which has moved since the
+agents were trained, and not from `policy.json`, which records the training machine's
+`config` at publish time.
+
 Two things differ from a backtest day, and both are stated on the screen.
 
 1. The episode starts at the run time, not at 04:00, so it is as long as the forecast
-   reaches. PREDISPATCH stops at the end of the trading day.
+   reaches. PREDISPATCH stops at the end of the trading day. The cycle budget is cut to
+   the share of the episode that is left: see `budgetFor`.
 2. The state of charge starts where the reader sets it, and at `defaultSoc` until they
    do, because the live state of a real battery is not in this repository. The screen
    states the number the board was drawn for. That default is not `config.initial_soc`:
    the episode reset the oracle and the agent share is zero, and this screen reports a
    real battery part way through a day.
 """
-import re
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +36,7 @@ from rl.env import BessEnv
 from rl.evaluate import rolloutWindow
 from rl.train import loadScaler
 from utils import nem_interval
+from visualise.dashboard import experiments
 
 defaultCheckpoints = policies.defaultRoot
 
@@ -39,28 +46,20 @@ defaultSoc = 0.5
 columns = ("settlementdate", "price", "action", "soc", "revenue", "profit")
 
 
-def dailyBudget():
-    """One trading day's pro-rata share of the weekly cycle budget.
+def budgetFor(settings, intervals):
+    """The cycle budget a path of `intervals` is due, out of the experiment's own budget.
 
-    The screen plans one day, not one week, so the week's whole budget would let it spend
-    the lot on a Monday. A seventh of it is the share a day is due. No input box: the
-    screen already states a start state of charge it did not measure either.
+    The screen starts its episode at the run time, so the path is a part of one episode,
+    and the whole budget would let a late-afternoon board spend what a whole day is
+    allowed. The share of the episode that is left gets the same share of the budget.
+    No input box: the screen already states a start state of charge it did not measure
+    either.
     """
-    return None if config.cycle_budget is None else config.cycle_budget / 7
-
-
-def findCheckpoints(region, root=defaultCheckpoints):
-    """Every agent published for `region`, as {label: directory}.
-
-    `rl/policies.py` owns the layout. Training publishes its final agent there, and
-    this screen reads it, so a machine that only runs the dashboard needs that one
-    directory copied across and nothing else.
-
-    `loadable`, not `available`: this screen builds its environment from `config`, so an
-    agent trained under another observation layout cannot be run here, and the dropdown
-    must not offer one.
-    """
-    return policies.loadable(region, root)
+    budget = settings.get("cycleBudget")
+    horizon = settings.get("horizon") or config.episode_intervals
+    if budget is None:
+        return None
+    return float(budget) * min(1.0, intervals / horizon)
 
 
 # The live screen reruns the agent on every NEM dispatch interval, at minutes ending in 0
@@ -89,52 +88,45 @@ def forecastPath(region, runTime=None, horizon=config.episode_intervals):
     return path.iloc[:cut]
 
 
-def checkpointKey(label):
-    """The checkpoint behind a dashboard model label.
+def _policy(model, region, root=defaultCheckpoints):
+    """The agent and its price transform for one `experiments.Runnable`.
 
-    The backtest screen names a model `algo-trainMode-sN-priceSource`, because the same
-    agent is scored twice there. One agent trained it, and live there is only the
-    forecast, so the price source is dropped. It is cut after the seed rather than
-    after a fixed count of parts, because a tagged agent's name has one part more.
+    Every model on this screen is a published agent of a published experiment, so a
+    screen with no model to run raises. The board then draws the price path alone and
+    writes the reason over it.
     """
-    return re.sub(r"(-s\d+)-[^-]+$", r"\1", label)
+    if model is None:
+        where = Path(root) / region
+        raise FileNotFoundError(
+            f"No published agent under {where} belongs to an experiment in "
+            f"config.dashboard_runs, so the dispatch blocks are not drawn. Training "
+            f"writes the final agent there: copy that directory from the machine that "
+            f"trained it, and publish the backtest it came from.")
+    algo = model.entry.algo
+    agent = algos.load(algo, str(model.directory / "agent"), env=None)
+    return agent, loadScaler(model.directory), algos.supportsMasking(algo)
 
 
-def _policy(label, root, region):
-    """The agent and its price transform for one dropdown label.
-
-    Every model on this screen is a published agent, so a label with no checkpoint
-    behind it raises. The board then draws the price path alone and writes the reason
-    over it.
-    """
-    where = Path(root) / region
-    fix = ("Training writes the final agent there. Copy that directory from the "
-           "machine that trained it.")
-    if label is None:
-        raise FileNotFoundError(f"No agent is published under {where}, so the "
-                                f"dispatch blocks are not drawn. {fix}")
-    directory = findCheckpoints(region, root).get(checkpointKey(label))
-    if directory is None:
-        raise FileNotFoundError(f"{label} is not published under {where}, so the "
-                                f"dispatch blocks are not drawn. {fix}")
-    algo = label.split("-")[0]
-    agent = algos.load(algo, str(directory / "agent"), env=None)
-    return agent, loadScaler(directory), algos.supportsMasking(algo)
-
-
-def suggest(path, label, region, root=defaultCheckpoints,
+def suggest(path, model, region, root=defaultCheckpoints,
             battery=(config.battery_mw, config.battery_mwh,
                      config.battery_replacement_cost),
             initialSoc=defaultSoc, calendar=False):
     """One row per forecast interval: the price, the action, the state of charge after
     it, and the running revenue and profit. An empty or one-interval path returns an
-    empty frame."""
+    empty frame.
+
+    `model` is an `experiments.Runnable`: the agent, and the experiment whose settings
+    the episode runs under.
+    """
     if len(path) < 2:
         return pd.DataFrame(columns=list(columns))
-    agent, scaler, masking = _policy(label, root, region)
+    agent, scaler, masking = _policy(model, region, root)
+    settings = experiments.envSettings(model.experiment)
     env = BessEnv(path, SchadeDegradation(*battery), horizon=len(path),
                   initialSoc=initialSoc, calendar=calendar, scaler=scaler,
-                  cycleBudget=dailyBudget())
+                  cycleBudget=budgetFor(settings, len(path)),
+                  endEmpty=settings["endEmpty"],
+                  terminalPrice=settings["terminalPrice"])
     steps = rolloutWindow(agent, env, 0, masking=masking)["trajectory"]
     bought = np.array([step["bought"] for step in steps])
     sold = np.array([step["sold"] for step in steps])

@@ -22,9 +22,6 @@ resultsRoot = Path("results")
 backtestRoot = resultsRoot / "backtestResults"
 weekDays = 7
 
-# A dashboard entry is one trained model scored one way.
-modelFields = ("algo", "trainMode", "seed", "priceSource")
-
 # Every episode starts at 04:00, the NEM trading day boundary, so a calendar date must
 # be offset by this before it matches a testDay stamp.
 dayStartHour = 4
@@ -190,7 +187,10 @@ actionColumns = ("forecastRunTime", "intervalTime", "action", "soc", "forecastPr
                  "realisedPrice", "seed", "algo", "trainMode", "priceSource")
 
 
-@functools.lru_cache(maxsize=4)
+# One entry per staged run and region. The screens offer every experiment
+# `config.dashboard_runs` names, and each one's refresh check reads its own export, so a
+# cache of four would thrash on the first region change.
+@functools.lru_cache(maxsize=12)
 def _readActions(path, modified):
     # `modified` is only in the key, so a re-export is read again rather than served
     # from the cache.
@@ -225,12 +225,13 @@ def forecastPath(resultsDir, region, day, algo=None, trainMode=None, seed=None):
 
 
 def findResults(given=None, root=backtestRoot):
-    """The run to read, when the command line does not name one.
+    """One published run, named or found.
 
-    The dashboard draws the runs published under `backtestRoot`, so it looks there for
-    the runs its CSVs belong to. One candidate is used. Several candidates raise,
-    because picking one of two experiments for the reader would show numbers from a
-    run they did not ask for.
+    `--results` and `DASHBOARD_RESULTS` name the one run a screen is narrowed to. With
+    neither, the screens offer `config.dashboard_runs` and never call this. It is still
+    the reader for a root holding exactly one run, which is what the Space stages when
+    only one goes up. Several candidates raise, because picking one of two experiments
+    for the reader would show numbers from a run they did not ask for.
     """
     if given is not None:
         return Path(given)
@@ -248,27 +249,20 @@ def findResults(given=None, root=backtestRoot):
                             "name one")
 
 
-def modelLabel(algo, trainMode, seed, priceSource):
-    return f"{algo}-{trainMode}-s{int(seed)}-{priceSource}"
+def entryRows(frame, algo, trainMode, seed, priceSource=None):
+    """The rows of one model, which is one `experiments.Entry` of one run.
 
-
-def models(frame):
-    """One entry per trained model scored one way.
-
-    Seed and price source belong in the name because each is a separate run on disk,
-    not a separate view of one run.
+    The seed and the price source are part of the match. Seed, because each is a separate
+    training run on disk and the dashboard shows one of them. Price source, because the
+    same agent is scored twice and the two are different numbers.
     """
-    unique = (frame[list(modelFields)].drop_duplicates()
-              .sort_values(list(modelFields)))
-    return [modelLabel(*row) for row in unique.to_numpy().tolist()]
-
-
-def modelRows(frame, label):
-    """The rows of one model entry, found by the label `models` built."""
     if frame.empty:
         return frame
-    keys = frame[list(modelFields)].to_numpy().tolist()
-    return frame[[modelLabel(*key) == label for key in keys]]
+    keep = ((frame.algo == algo) & (frame.trainMode == trainMode)
+            & (frame.seed == int(seed)))
+    if priceSource is not None:
+        keep = keep & (frame.priceSource == priceSource)
+    return frame[keep]
 
 
 def monthScope(frame, month):
