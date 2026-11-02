@@ -18,7 +18,9 @@ import math
 
 import pytest
 
+import config
 from degradation.schade import SchadeDegradation
+from utils import nem_interval_hours
 
 
 # Table 2 case study: 60 kW / 100 kWh at 150 EUR/kWh, in MW / MWh / per-MWh.
@@ -546,8 +548,11 @@ class TestDegradationCost:
         assert bess.degradationCost(2e-4) == pytest.approx(2 * bess.degradationCost(1e-4))
 
     def test_replacement_cost_is_per_mwh(self, paper):
+        # 150000 $/MWh * 0.100 MWh * 0.0004519 = $6.7785, which is also what
+        # TestWhatACycleCosts pins on the implemented `cost`. The figure read
+        # $0.678 here until 2026-11-02, a factor of ten the xfail hid.
         assert paper.replacementCost == 150000.0
-        assert paper.degradationCost(paper.cycleDegradation(1.0)) == pytest.approx(0.678, abs=0.001)
+        assert paper.degradationCost(paper.cycleDegradation(1.0)) == pytest.approx(6.7785, abs=0.001)
 
     def test_cost_per_mwh_discharged_scales_slightly_superlinearly(self, paper):
         # §4: ~EUR 68/MWh at 100% depth, 33 at 50%, 6 at 10%, i.e. CD^1.03.
@@ -645,3 +650,227 @@ class TestValidityBounds:
         # fails without ever raising AttributeError -- hence @notYetBehaviour.
         with pytest.warns(UserWarning, match="C-rate"):
             SchadeDegradation(200.0, 100.0, 200000.0)
+
+
+# --------------------------------------------------------------------------
+# Implemented and called by rl/env.py and optimisation/dp.py, so these three
+# run on every training step and every oracle solve.
+# --------------------------------------------------------------------------
+
+class TestCalendarAging:
+    """`calendarAging(soc)` is `calendarDegradation(soc, 5 minutes)`."""
+
+    def test_is_the_five_minute_case(self, paper):
+        for soc in (0.0, 0.3, 0.45, 0.6, 0.7, 1.0):
+            assert paper.calendarAging(soc) == pytest.approx(
+                paper.calendarDegradation(soc, nem_interval_hours)
+            )
+
+    def test_twelve_intervals_make_one_hour(self, paper):
+        assert 12 * paper.calendarAging(0.55) == pytest.approx(
+            paper.calendarDegradation(0.55, 1.0)
+        )
+
+    def test_a_whole_day_idle_at_half_costs_a_twentieth_of_a_cycle(self, paper):
+        day = paper.cost(paper.calendarDegradation(0.5, 24.0))
+        cycle = paper.cost(paper.cycleDegradation(1.0))
+        assert day == pytest.approx(0.345, abs=0.005)
+        assert day / cycle == pytest.approx(0.051, abs=0.002)
+
+
+class TestStep:
+    """`step(socPrev, socNew, dt_hours) -> (qCd, qCal, dollars)`, the form
+    `rl/env.py:_degradation` and the oracle both read. Not `stepDegradation`,
+    which is the proposal above and does not exist."""
+
+    def test_returns_the_two_fractions_and_their_cost(self, paper):
+        qCd, qCal, dollars = paper.step(0.9, 0.4, nem_interval_hours)
+        assert qCd == pytest.approx(paper.totalCycleDegradation(0.9, 0.4))
+        assert qCal == pytest.approx(paper.calendarDegradation(0.4, nem_interval_hours))
+        assert dollars == pytest.approx(paper.cost(qCd + qCal))
+
+    def test_omits_q_soc(self, paper):
+        # Q^SOC is not implemented, so a step prices two mechanisms, not three.
+        qCd, qCal, dollars = paper.step(1.0, 0.9, nem_interval_hours)
+        assert dollars == pytest.approx(paper.cost(qCd) + paper.cost(qCal))
+
+    def test_a_charging_step_pays_calendar_aging_only(self, paper):
+        qCd, qCal, dollars = paper.step(0.2, 0.6, nem_interval_hours)
+        assert qCd == 0.0
+        assert dollars == pytest.approx(paper.cost(qCal))
+        assert dollars > 0
+
+    def test_an_idle_step_still_pays(self, paper):
+        qCd, qCal, dollars = paper.step(0.7, 0.7, nem_interval_hours)
+        assert qCd == 0.0
+        assert dollars == pytest.approx(paper.cost(paper.calendarAging(0.7)))
+
+    def test_calendar_is_charged_on_the_closing_soc(self, paper):
+        # The pack ends the step at socNew, so that is the level it sits at.
+        _, qCal, _ = paper.step(1.0, 0.0, nem_interval_hours)
+        assert qCal == pytest.approx(paper.calendarDegradation(0.0, nem_interval_hours))
+
+    def test_only_the_calendar_term_scales_with_dt(self, paper):
+        qCdHour, qCalHour, _ = paper.step(0.8, 0.5, 1.0)
+        qCdFive, qCalFive, _ = paper.step(0.8, 0.5, nem_interval_hours)
+        assert qCdFive == pytest.approx(qCdHour)
+        assert qCalFive == pytest.approx(qCalHour / 12)
+
+    def test_telescopes_over_a_discharge_run(self, paper):
+        # One hour of discharge as 1 step or as 12 costs the same, up to the
+        # curvature of the calendar interpolant.
+        whole = paper.step(0.9, 0.3, 1.0)[2]
+        socs = [0.9 + (0.3 - 0.9) * i / 12 for i in range(13)]
+        parts = sum(
+            paper.step(a, b, nem_interval_hours)[2] for a, b in zip(socs, socs[1:])
+        )
+        assert parts == pytest.approx(whole, rel=0.02)
+
+    def test_cycling_dominates_a_discharging_step(self, paper):
+        # 5.5 orders the mechanisms CD > CAL. A five-minute step at rated power
+        # moves a twentieth of the pack, which is the smallest real case.
+        qCd, qCal, _ = paper.step(0.55, 0.50, nem_interval_hours)
+        assert qCd > 20 * qCal
+
+
+class TestTerminalValue:
+    """What the closing stock is worth, in dollars. Not from the paper: it is
+    the episode-close term `config.terminal_energy_price` prices."""
+
+    def test_an_empty_pack_is_worth_nothing(self, paper):
+        assert paper.terminalValue(0.0, 86.0) == 0.0
+
+    def test_is_the_sale_proceeds_less_the_cost_of_releasing_them(self, paper):
+        stored = 0.08
+        expected = (86.0 * stored * paper.dischargeEfficiency
+                    - paper.cost(paper.totalCycleDegradation(stored / paper.MWh, 0.0)))
+        assert paper.terminalValue(stored, 86.0) == pytest.approx(expected)
+
+    def test_takes_cell_side_energy(self, paper):
+        # `stored` is cell side everywhere in this module, and only nu_D turns
+        # it into energy delivered.
+        assert paper.terminalValue(paper.MWh, 100.0) == pytest.approx(
+            100.0 * paper.MWh * paper.dischargeEfficiency
+            - paper.cost(paper.cycleDegradation(1.0))
+        )
+
+    def test_rises_with_the_price(self, paper):
+        values = [paper.terminalValue(0.05, p) for p in (0.0, 50.0, 100.0)]
+        assert all(b > a for a, b in zip(values, values[1:]))
+
+    def test_at_zero_price_it_is_the_cost_of_the_discharge(self, paper):
+        assert paper.terminalValue(0.06, 0.0) == pytest.approx(
+            -paper.cost(paper.totalCycleDegradation(0.6, 0.0))
+        )
+
+    def test_never_exceeds_the_sale_proceeds(self, paper):
+        for stored in (0.01, 0.05, 0.1):
+            assert paper.terminalValue(stored, 86.0) < 86.0 * stored * paper.dischargeEfficiency
+
+    def test_agrees_with_selling_the_stock_interval_by_interval(self, paper):
+        # The term stands in for a sale, so it must equal what that sale pays.
+        # Cycling cost telescopes, and the calendar term is in neither.
+        socs = [1.0 - i / 20 for i in range(21)]
+        sold = sum(
+            70.0 * (a - b) * paper.MWh * paper.dischargeEfficiency
+            - paper.cost(paper.totalCycleDegradation(a, b))
+            for a, b in zip(socs, socs[1:])
+        )
+        assert sold == pytest.approx(paper.terminalValue(paper.MWh, 70.0))
+
+    def test_breaks_even_at_seventy_one_dollars(self, paper):
+        # Below this the closing stock is a liability: releasing it costs more
+        # than it earns. The figure is the cost of one full cycle over the
+        # energy that cycle delivers.
+        breakEven = (paper.cost(paper.cycleDegradation(1.0))
+                     / (paper.MWh * paper.dischargeEfficiency))
+        assert breakEven == pytest.approx(71.35, abs=0.05)
+        assert paper.terminalValue(paper.MWh, breakEven) == pytest.approx(0.0, abs=1e-9)
+        assert paper.terminalValue(paper.MWh, breakEven - 10) < 0
+        assert paper.terminalValue(paper.MWh, breakEven + 10) > 0
+
+    def test_three_of_the_five_pinned_terminal_prices_value_a_full_pack_below_zero(self, paper):
+        # config.terminal_energy_price is a 2023 median RRP per region, and SA1,
+        # TAS1 and VIC1 sit under the $71.35 break-even. A full pack is then
+        # worth less than nothing at the close, which is the degradation charge
+        # showing through, not a bug in the terminal term.
+        full = {region: paper.terminalValue(paper.MWh, price)
+                for region, price in config.terminal_energy_price.items()}
+        assert [r for r, v in full.items() if v < 0] == ["SA1", "TAS1", "VIC1"]
+        assert full["NSW1"] > 0 and full["QLD1"] > 0
+
+    def test_a_partial_pack_breaks_even_lower(self, paper):
+        # The top segments carry most of the cost, so a half-full pack is worth
+        # more per MWh than a full one.
+        assert paper.terminalValue(0.05, 40.0) > 0
+        assert paper.terminalValue(0.10, 40.0) < 0
+
+
+class TestWhatACycleCosts:
+    """The scale of the charge, in the units the dashboard reports. These pin
+    the paper's own case study, so a number that moves here means a parameter
+    moved, not that the market did."""
+
+    def test_one_full_cycle_costs_six_dollars_seventy_eight(self, paper):
+        # 0.04519% of 100 kWh at 150 EUR/kWh. This is the whole of the
+        # degradation column on a one-cycle day.
+        assert paper.cost(paper.cycleDegradation(1.0)) == pytest.approx(6.7785, abs=1e-4)
+
+    def test_is_seventy_one_dollars_for_every_mwh_sold(self, paper):
+        # Meter side, which is the side the revenue column is on.
+        perMwhSold = (paper.cost(paper.cycleDegradation(1.0))
+                      / (paper.MWh * paper.dischargeEfficiency))
+        assert perMwhSold == pytest.approx(71.35, abs=0.05)
+
+    def test_the_round_trip_needs_a_seventy_five_dollar_spread(self, paper):
+        # Buy at low, sell at high, one full cycle. At a buy price of zero the
+        # sell price alone must clear $71.35, and every dollar paid to charge
+        # raises the bar by 1 / (nu_C nu_D).
+        cycle = paper.cost(paper.cycleDegradation(1.0))
+        bought = paper.MWh / paper.chargeEfficiency
+        sold = paper.MWh * paper.dischargeEfficiency
+
+        def profit(low, high):
+            return high * sold - low * bought - cycle
+
+        assert profit(0.0, 71.35) == pytest.approx(0.0, abs=0.01)
+        assert profit(40.0, 40.0 + 75.0) == pytest.approx(0.0, abs=0.6)
+        assert profit(40.0, 100.0) < 0  # a $60 spread does not pay for itself
+
+    def test_implies_four_hundred_cycles_to_end_of_life(self, paper):
+        # 1 / a cycles to lose the whole pack, a fifth of that to lose the 20%
+        # that normally ends a warranty. The paper charges only the fraction
+        # lost, so the pack pays a fifth of its replacement cost over that life.
+        toFullFade = 1.0 / paper.maxCapacityLoss
+        assert toFullFade == pytest.approx(2213, abs=1)
+        assert 0.2 * toFullFade == pytest.approx(443, abs=1)
+        paid = 0.2 * toFullFade * paper.cost(paper.cycleDegradation(1.0))
+        assert paid == pytest.approx(0.2 * paper.MWh * paper.replacementCost, rel=1e-9)
+
+    def test_a_shallow_cycle_is_far_cheaper_per_mwh(self, paper):
+        # Eq. 1 is convex, so the charge is not a flat rate per MWh. Ten 10%
+        # cycles cost a tenth of one 100% cycle, which is the arbitrage the
+        # convexity offers and the reason the LP needs segments.
+        deep = paper.cost(paper.totalCycleDegradation(1.0, 0.0))
+        shallow = 10 * paper.cost(paper.totalCycleDegradation(0.1, 0.0))
+        assert shallow < deep / 9
+        assert shallow / deep == pytest.approx(0.09, abs=0.02)
+
+    def test_the_charge_is_linear_in_the_replacement_cost(self, paper):
+        # The one parameter that moves the scale. A $40 spread pays for a full
+        # cycle only once the replacement cost falls to about 84 EUR/kWh.
+        cheap = SchadeDegradation(PAPER_MW, PAPER_MWH, 84000.0)
+        cycle = cheap.cost(cheap.cycleDegradation(1.0))
+        earned = 40.0 * cheap.MWh * cheap.dischargeEfficiency
+        assert cycle == pytest.approx(earned, abs=0.05)
+        assert cycle == pytest.approx(
+            paper.cost(paper.cycleDegradation(1.0)) * 84000.0 / 150000.0
+        )
+
+    def test_a_day_of_calendar_aging_is_small_beside_one_cycle(self, paper):
+        # So the degradation column of a trading day is the cycling, not the
+        # sitting. The worst case is a day held full.
+        cycle = paper.cost(paper.cycleDegradation(1.0))
+        worstDay = paper.cost(paper.calendarDegradation(1.0, 24.0))
+        assert worstDay == pytest.approx(0.804, abs=0.005)
+        assert worstDay < 0.12 * cycle
