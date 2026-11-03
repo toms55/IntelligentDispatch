@@ -14,8 +14,8 @@
 # 22 s at 9 and 100 s at 17, plus a state-space build per worker (about 5 minutes at 17).
 
 #PBS -q workq
-#PBS -l ncpus=12
-#PBS -l mem=48GB
+#PBS -l ncpus=4
+#PBS -l mem=16GB
 #PBS -l walltime=24:00:00
 #PBS -j oe
 
@@ -30,4 +30,4 @@ case " ${EXTRA:-} " in *" --degradation full "*) CALENDAR= ;; esac
   --split "test=${START:-2023-12-31T04:00}..${END:-2026-09-27T04:00}" \
   --region "${REGION:?pass -v REGION=NSW1 etc.}" $CALENDAR --horizon 288 --cycles 1.0 \
   --end-empty --initial-soc 0 --terminal-price 0 --gap 0.02 \
-  --workers "${WORKERS:-12}" --verbose ${EXTRA:-}
+  --workers "${WORKERS:-4}" --verbose ${EXTRA:-}

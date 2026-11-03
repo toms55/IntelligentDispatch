@@ -100,8 +100,16 @@ for v in "${VARIANTS[@]}"; do
   if [ ${#WANT[@]} -gt 0 ] && [[ ! " ${WANT[*]} " =~ " $name " ]]; then continue; fi
   echo "# ---- $name ($kind): $(field "$v" 5)"
 
+  # An agent variant reads the baseline corpus. BASE_AFTER holds the ids of the jobs that
+  # solve it (scripts/ablationOracle.pbs with no EXTRA), colon separated, when it is not
+  # already in data_cache/lp_baseline.
   dependency=""
-  if [ "$kind" = problem ]; then
+  if [ "$kind" = agent ] && [ -n "${BASE_AFTER:-}" ]; then
+    dependency="-W depend=afterok:$BASE_AFTER"
+  fi
+  # SKIP_ORACLE names variants whose oracle is already in data_cache/lp_baseline: their
+  # seeds are submitted with no oracle job in front of them.
+  if [ "$kind" = problem ] && [[ " ${SKIP_ORACLE:-} " != *" $name "* ]]; then
     ids=()
     for region in $REGIONS; do
       ids+=("$(submit "qsub -N ab-or-$name-$region -v REGION=$region,EXTRA=\"$flags\" scripts/ablationOracle.pbs")")
