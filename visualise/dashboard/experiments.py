@@ -273,7 +273,7 @@ def _span(manifest):
     return f"{str(start)[:10]} to {str(end)[:10]}{rolls}"
 
 
-def _oracle(manifest, days=None):
+def _oracle(manifest):
     """Which perfect-foresight bound the rows carry.
 
     The bound is in the rows, one per episode, so an experiment and its oracle are
@@ -285,9 +285,6 @@ def _oracle(manifest, days=None):
     out = [mode]
     if manifest.get("cycleBudget") is not None:
         out.append("budget priced, not capped")
-    if days is not None and "oracleGap" in days and days.oracleGap.notna().any():
-        worst = float(days.oracleGap.max())
-        out.append(f"widest gap {worst * 100:.2f}%" if worst else "no gap")
     return "; ".join(out)
 
 
@@ -328,7 +325,7 @@ def settings(experiment, entry=None, days=None):
         ("Forecast refresh", _refresh(manifest.get("forecastEvery"))),
         ("Training", _training(manifest)),
         ("Test span", _span(manifest)),
-        ("Oracle", _oracle(manifest, days)),
+        ("Oracle", _oracle(manifest)),
     ]
     return lines
 

@@ -145,7 +145,7 @@ class TestSettings:
     # its oracle, so the box names the problem that oracle solved.
     def test_it_names_the_oracle(self, published, pinned):
         got = self.lines(published)["Oracle"]
-        assert "value iteration" in got and "widest gap 1.00%" in got
+        assert "value iteration" in got
 
     # An experiment with no budget says so rather than printing a zero.
     def test_no_budget_reads_as_none(self, tmp_path, pinned):
