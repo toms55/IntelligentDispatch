@@ -11,7 +11,7 @@ import json
 from datetime import datetime
 
 import config
-from backtest.score import score
+from backtest.score import defaultCycleBudget, score
 
 
 def main():
@@ -23,8 +23,8 @@ def main():
     parser.add_argument("end", help="last day, ISO date; the window closes at 04:00")
     parser.add_argument("source", choices=("realised", "forecast"),
                         help="what fills the price slots of the observation")
-    parser.add_argument("--cycle-budget", type=float, default=config.cycle_budget,
-                        help="equivalent full cycles per episode")
+    parser.add_argument("--cycle-budget", type=float, default=defaultCycleBudget,
+                        help="most equivalent full cycles each day (default: %(default)s)")
     parser.add_argument("--no-cycle-budget", action="store_true",
                         help="no cycle limit")
     parser.add_argument("--terminal-price", type=float, default=0.0,

@@ -107,12 +107,20 @@ The settings list every value that the score depends on. Quote them with the sco
 
 ### Change the constraints
 
-By default the battery has no cycle limit and starts each day empty. The oracle solves again for each new setting, so the bound always matches your policy. A new setting takes a few seconds on the first run.
+By default the battery spends at most 1 equivalent full cycle each day and starts each day empty. The oracle solves again for each new setting, so the bound always matches your policy. A new setting takes a few seconds on the first run.
 
 ```bash
-# Limit the battery to 1 equivalent full cycle each day. End each day empty.
+# Make the battery end each day empty. The limit of 1 cycle each day still applies.
 uv run python -m examples.run my_policy:MyPolicy NSW1 2025-03-03 2025-03-10 forecast \
-    --cycle-budget 1 --end-empty
+    --end-empty
+
+# Allow 2 cycles each day.
+uv run python -m examples.run my_policy:MyPolicy NSW1 2025-03-03 2025-03-10 forecast \
+    --cycle-budget 2
+
+# Remove the cycle limit.
+uv run python -m examples.run my_policy:MyPolicy NSW1 2025-03-03 2025-03-10 forecast \
+    --no-cycle-budget
 
 # Start each day at half charge. Value the energy left at the close at 40 $/MWh.
 uv run python -m examples.run my_policy:MyPolicy NSW1 2025-03-03 2025-03-10 forecast \
@@ -137,13 +145,13 @@ from backtest.score import score
 from my_policy import MyPolicy
 
 start, end = datetime(2025, 3, 3, 4), datetime(2025, 3, 10, 4)
-result = score(MyPolicy(), "NSW1", start, end, "forecast", cycleBudget=1.0, endEmpty=True)
+result = score(MyPolicy(), "NSW1", start, end, "forecast", endEmpty=True)
 result["summary"]    # agentProfit, lpProfit, regret, captured
 result["records"]    # one entry for each episode
 result["settings"]   # the values that the score depends on
 ```
 
-The `score` function also takes `terminalPrice`, `initialSoc`, `battery` and `forecastEvery`.
+The `score` function also takes `cycleBudget`, `terminalPrice`, `initialSoc`, `battery` and `forecastEvery`. The `cycleBudget` value is the limit for one episode, and an episode is one day by default. Set `cycleBudget=None` to remove the limit.
 
 ### Limits
 
