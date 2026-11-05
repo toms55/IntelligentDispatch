@@ -127,7 +127,7 @@ uv run python -m examples.run my_policy:MyPolicy NSW1 2025-03-03 2025-03-10 fore
 
 Run `uv run python -m examples.run --help` to see every flag.
 
-### Use Python instead
+### Use Python instead of the CLI
 
 Call `score` from your own code to get the full result. The `records` list has one entry for each episode, with every interval of the trajectory.
 
