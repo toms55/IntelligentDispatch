@@ -1,0 +1,70 @@
+{
+  "run": "rolling2023_ablate_look_12h",
+  "region": "NSW1",
+  "description": "MDP ablation look_12h: twelve hours ahead. Pooled-regions maskableppo; daily; 1 EFC; end empty; otherwise the reference run.",
+  "rawResults": "results/rolling2023_ablate_look_12h_NSW1",
+  "contextWrittenAt": "2026-11-04T08:18:21+00:00",
+  "manifest": {
+    "ablation": {
+      "lookahead": 144
+    },
+    "actionsFile": "results/actions/rolling2023_ablate_look_12h_NSW1.csv",
+    "algos": [
+      "maskableppo"
+    ],
+    "battery": [
+      0.06,
+      0.1,
+      150000.0
+    ],
+    "calendar": false,
+    "capDate": "2026-10-01 04:00:00",
+    "coldTimesteps": 1500000,
+    "cycleBudget": 1.0,
+    "discretePower": true,
+    "end": "2026-09-27 04:00:00",
+    "endEmpty": true,
+    "forecastEvery": 1,
+    "gap": 0.02,
+    "horizon": 288,
+    "initialSoc": 0.0,
+    "invalidPenalty": 1.0,
+    "policyRoot": "trainedPolicies",
+    "pooled": {
+      "fineTune": 30000,
+      "pooledCold": 1500000,
+      "pooledWarm": 150000,
+      "regions": [
+        "NSW1",
+        "QLD1",
+        "SA1",
+        "TAS1",
+        "VIC1"
+      ]
+    },
+    "priceSources": [
+      "realised",
+      "forecast"
+    ],
+    "region": "NSW1",
+    "reward": "profit",
+    "rewardScale": 20.0,
+    "seeds": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "start": "2023-01-01 04:00:00",
+    "stepWeeks": 1,
+    "testWeeks": 1,
+    "trainModes": [
+      "pooled",
+      "finetune"
+    ],
+    "trainWeeks": 52,
+    "trajectorySeed": null,
+    "warmTimesteps": 30000
+  }
+}

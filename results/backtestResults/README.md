@@ -7,6 +7,49 @@ raw results live.
 
 | run | regions | what it tested |
 |---|---|---|
+| `rolling2023_ablate_deg_flat` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation deg_flat: flat per-MWh wear at the Schade full-discharge rate. Pooled-regions maskableppo; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_deg_flat_dqn` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation deg_flat: flat per-MWh wear at the Schade full-discharge rate. Pooled-regions dqn; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_deg_full` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation deg_full: Schade cycling plus calendar wear. Pooled-regions maskableppo; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_deg_full_dqn` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation deg_full: Schade cycling plus calendar wear. Pooled-regions dqn; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_deg_none` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation deg_none: no wear cost at all. Pooled-regions maskableppo; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_deg_none_dqn` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation deg_none: no wear cost at all. Pooled-regions dqn; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_hist_1h` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation hist_1h: one hour of settled prices. Pooled-regions maskableppo; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_hist_1h_dqn` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation hist_1h: one hour of settled prices. Pooled-regions dqn; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_hist_24h` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation hist_24h: a day of settled prices (zero before the episode). Pooled-regions maskableppo; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_hist_24h_dqn` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation hist_24h: a day of settled prices (zero before the episode). Pooled-regions dqn; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_hist_4h` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation hist_4h: four hours of settled prices. Pooled-regions maskableppo; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_hist_4h_dqn` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation hist_4h: four hours of settled prices. Pooled-regions dqn; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_lev_17` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation lev_17: seventeen power levels. Pooled-regions maskableppo; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_lev_17_dqn` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation lev_17: seventeen power levels. Pooled-regions dqn; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_lev_5` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation lev_5: five power levels. Pooled-regions maskableppo; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_lev_5_dqn` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation lev_5: five power levels. Pooled-regions dqn; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_lev_9` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation lev_9: nine power levels. Pooled-regions maskableppo; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_lev_9_dqn` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation lev_9: nine power levels. Pooled-regions dqn; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_look_12h` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation look_12h: twelve hours ahead. Pooled-regions maskableppo; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_look_12h_dqn` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation look_12h: twelve hours ahead. Pooled-regions dqn; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_look_1h` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation look_1h: one hour ahead. Pooled-regions maskableppo; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_look_1h_dqn` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation look_1h: one hour ahead. Pooled-regions dqn; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_look_4h` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation look_4h: four hours ahead. Pooled-regions maskableppo; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_look_4h_dqn` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation look_4h: four hours ahead. Pooled-regions dqn; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_look_spot` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation look_spot: spot price only. Pooled-regions maskableppo; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_look_spot_dqn` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation look_spot: spot price only. Pooled-regions dqn; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_mask_hidden` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation mask_hidden: MaskablePPO without the action mask. Pooled-regions maskableppo; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_pen_0.1_dqn` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation pen_0.1: a tenth of the pinned penalty. Pooled-regions dqn; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_pen_0_dqn` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation pen_0: no out-of-bounds penalty. Pooled-regions dqn; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_pen_10_dqn` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation pen_10: ten times the pinned penalty. Pooled-regions dqn; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_px_clip` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation px_clip: 10th to 90th percentile band then asinh. Pooled-regions maskableppo; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_px_clip_dqn` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation px_clip: 10th to 90th percentile band then asinh. Pooled-regions dqn; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_px_knee1000_dqn` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation px_knee1000: asinh knee at 1000. Pooled-regions dqn; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_px_knee100` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation px_knee100: asinh knee at 100. Pooled-regions maskableppo; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_px_knee100_dqn` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation px_knee100: asinh knee at 100. Pooled-regions dqn; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_px_linear` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation px_linear: price over the cap. Pooled-regions maskableppo; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_px_linear_dqn` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation px_linear: price over the cap. Pooled-regions dqn; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_shaping` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation shaping: buy-low/sell-high bonus; reward only. Pooled-regions maskableppo; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_shaping_dqn` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation shaping: buy-low/sell-high bonus; reward only. Pooled-regions dqn; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_time_none` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation time_none: no time of day. Pooled-regions maskableppo; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_time_none_dqn` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation time_none: no time of day. Pooled-regions dqn; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_time_sincos` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation time_sincos: sine and cosine of the time of day. Pooled-regions maskableppo; daily; 1 EFC; end empty; otherwise the reference run. |
+| `rolling2023_ablate_time_sincos_dqn` | NSW1 QLD1 SA1 TAS1 VIC1 | MDP ablation time_sincos: sine and cosine of the time of day. Pooled-regions dqn; daily; 1 EFC; end empty; otherwise the reference run. |
 | `rolling2023_dqn_daily_1_cycle_end_empty_5min_forecast` | NSW1 QLD1 SA1 TAS1 VIC1 | DQN (unmasked) on the daily 1-cycle end-empty setup of rolling2023_ppo_daily_1_cycle_end_empty_5min_forecast. |
 | `rolling2023_dqn_pooled_regions_daily_1_cycle_end_empty_5min_forecast` | NSW1 QLD1 SA1 TAS1 VIC1 | The pooled setup of rolling2023_ppo_pooled_regions_daily_1_cycle_end_empty_5min_forecast with plain DQN and no action mask (algo dqnnomask), so the mask is the only change against rolling2023_masked_dqn_pooled_regions_daily_1_cycle_end_empty_5min_forecast. |
 | `rolling2023_dqn_start_at_0_SoC_five_min_refresh` | NSW1 QLD1 SA1 TAS1 VIC1 | no description recorded |
