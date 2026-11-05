@@ -22,7 +22,7 @@ Without Nix: [install uv](https://docs.astral.sh/uv/getting-started/installation
 uv sync
 ```
 
-`uv` fetches its own CPython, so no system Python is needed. Requires Python >= 3.12.
+`uv` fetches its own CPython, so no system Python is needed. The project uses Python 3.11.
 
 To add a dependency, put it in `pyproject.toml` and run `uv lock`.
 
@@ -43,51 +43,113 @@ uv run pytest
 
 ## Score your own policy
 
+You can test your own dispatch policy against the exact oracle. The oracle is the most profit that any policy can earn on the same prices. The score shows the share of that profit that your policy earns. The score uses the same battery model and rules as the published backtests.
+
+### Write the policy
+
+A policy is a Python class. It needs a `predict` method and a `reads_mask` attribute. The `predict` method gets the observation and returns an action and `None`. Set `reads_mask` to `True` if `predict` uses the `action_masks` argument. A `reset` method is optional. The runner calls `reset` before each episode.
+
+The observation has 62 values. The file `rl/features.py` names the position of each value. The price values are divided by the market price cap. Each action runs at the full rated power for one 5-minute interval.
+
+Save this class in a file named `my_policy.py` in the repository root:
+
 ```python
-# my_policy.py: any object with predict() and reads_mask is a policy.
-from rl.env import CHARGE, IDLE, DISCHARGE   # the three actions
+from rl.env import CHARGE, IDLE, DISCHARGE
+from rl.features import priceSlice, socIndex
+
 
 class MyPolicy:
-    reads_mask = False                        # True if predict() takes action_masks
+    reads_mask = False
 
-    def reset(self):                          # optional: called before every episode
+    def reset(self):
         pass
 
     def predict(self, observation, deterministic=True, action_masks=None):
-        return IDLE, None                     # (action, None)
+        soc = observation[socIndex]
+        prices = observation[priceSlice]   # now, then each later interval
+        if prices[0] <= prices.min() and soc < 1.0:
+            return CHARGE, None
+        if prices[0] >= prices.max() and soc > 0.0:
+            return DISCHARGE, None
+        return IDLE, None
 ```
+
+### Run an experiment
+
+1. Make sure you finished the Setup steps above.
+2. Save your policy in `my_policy.py`.
+3. If you want forecast prices, download the AEMO forecasts for your window first.
+
+   ```bash
+   uv run python -m cli prefetch 2025-03-03T04:00 2025-03-10T04:00 --region NSW1
+   ```
+
+4. Run the policy over the window.
+
+   ```bash
+   uv run python -m examples.run my_policy:MyPolicy NSW1 2025-03-03 2025-03-10 forecast
+   ```
+
+5. Run the same command with `realised` to fill the price slots with the real prices.
+
+The first run also downloads the price data from AEMO. Without step 3, the run reads each forecast from AEMO. This is slow and can fail.
+
+### Read the result
+
+The command prints a summary and the settings.
+
+- `agentProfit` is the profit of your policy in dollars.
+- `lpProfit` is the profit of the oracle on the same window.
+- `regret` is `lpProfit` minus `agentProfit`.
+- `captured` is `agentProfit` divided by `lpProfit`.
+
+The settings list every value that the score depends on. Quote them with the score. Two scores compare only if the settings match.
+
+### Change the constraints
+
+By default the battery has no cycle limit and starts each day empty. The oracle solves again for each new setting, so the bound always matches your policy. A new setting takes a few seconds on the first run.
 
 ```bash
-# fetch AEMO's forecasts for your window once (needed for priceSource="forecast")
-uv run python -m cli prefetch 2025-03-03T04:00 2025-03-10T04:00 --region NSW1
+# Limit the battery to 1 equivalent full cycle each day. End each day empty.
+uv run python -m examples.run my_policy:MyPolicy NSW1 2025-03-03 2025-03-10 forecast \
+    --cycle-budget 1 --end-empty
 
-# score the bundled threshold rule over one week on the AEMO forecast
-uv run python -m examples.threshold NSW1 2025-03-03 2025-03-10 forecast
+# Start each day at half charge. Value the energy left at the close at 40 $/MWh.
+uv run python -m examples.run my_policy:MyPolicy NSW1 2025-03-03 2025-03-10 forecast \
+    --initial-soc 0.5 --terminal-price 40
 
-# the same week with the observation filled by realised prices
-uv run python -m examples.threshold NSW1 2025-03-03 2025-03-10 realised
+# Replace the forecast every 5 minutes. Use the same value for the download.
+uv run python -m cli prefetch 2025-03-03T04:00 2025-03-10T04:00 --region NSW1 \
+    --forecast-refresh 5
+uv run python -m examples.run my_policy:MyPolicy NSW1 2025-03-03 2025-03-10 forecast \
+    --forecast-refresh 5
 ```
+
+Run `uv run python -m examples.run --help` to see every flag.
+
+### Use Python instead
+
+Call `score` from your own code to get the full result. The `records` list has one entry for each episode, with every interval of the trajectory.
 
 ```python
 from datetime import datetime
 from backtest.score import score
+from my_policy import MyPolicy
 
-# start and end are 04:00 trading-day boundaries; the window is whole days
 start, end = datetime(2025, 3, 3, 4), datetime(2025, 3, 10, 4)
-
-result = score(MyPolicy(), "NSW1", start, end, "forecast")
-result["summary"]    # agentProfit, lpProfit (the oracle's bound), regret, captured
-result["records"]    # one entry per episode, with the full trajectory
-result["settings"]   # everything the score depended on, to quote beside it
-
-# your constraints: the oracle is re-solved for them, in seconds, and cached
-score(MyPolicy(), "NSW1", start, end, "forecast",
-      cycleBudget=1.0,            # equivalent full cycles per episode, None for no cap
-      terminalPrice=0.0,          # $/MWh the pack is worth at the close
-      initialSoc=0.5,             # state of charge at the start of each episode
-      endEmpty=True,              # the pack must be empty at the close
-      battery=(0.1, 0.2, 150000.0))   # MW, MWh, replacement cost
+result = score(MyPolicy(), "NSW1", start, end, "forecast", cycleBudget=1.0, endEmpty=True)
+result["summary"]    # agentProfit, lpProfit, regret, captured
+result["records"]    # one entry for each episode
+result["settings"]   # the values that the score depends on
 ```
+
+The `score` function also takes `terminalPrice`, `initialSoc`, `battery` and `forecastEvery`.
+
+### Limits
+
+- The policy picks one of three actions in each interval.
+- The window starts and ends at 04:00, the NEM trading day boundary.
+- The window holds whole days.
 
 ## Trained agents
 
