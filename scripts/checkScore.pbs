@@ -1,0 +1,25 @@
+#!/bin/bash
+# Check that backtest.score reproduces a published run. One agent, one week, both price
+# sources: the oracle is re-solved by the DP and the 5-minute forecast matrix is built
+# from the prefetched cache, so it needs data_cache/ (forecast_paths and the nemosis
+# price files) in the checkout it runs from.
+#
+#     qsub scripts/checkScore.pbs
+#     qsub -v RUN=results/backtestResults/<run>_<R>,AGENT=trainedPolicies/<R>/<agent> scripts/checkScore.pbs
+
+#PBS -N check-score
+#PBS -q smallq
+#PBS -l ncpus=1
+#PBS -l mem=8GB
+#PBS -l walltime=01:00:00
+#PBS -j oe
+
+set -euo pipefail
+cd "${PBS_O_WORKDIR:-$PWD}"
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONWARNINGS=ignore PYTHONPATH=.
+PY=${PY:-/shared/homes/u168687/IntelligentDispatch/.venv/bin/python}
+
+RUN=${RUN:-results/backtestResults/rolling2023_ppo_daily_1_cycle_end_empty_5min_forecast_NSW1}
+AGENT=${AGENT:-trainedPolicies/NSW1/maskableppo-warm-daily_empty_efc1-s1}
+
+$PY scripts/checkScore.py "$RUN" "$AGENT"

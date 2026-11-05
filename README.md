@@ -41,6 +41,54 @@ Tests:
 uv run pytest
 ```
 
+## Score your own policy
+
+```python
+# my_policy.py: any object with predict() and reads_mask is a policy.
+from rl.env import CHARGE, IDLE, DISCHARGE   # the three actions
+
+class MyPolicy:
+    reads_mask = False                        # True if predict() takes action_masks
+
+    def reset(self):                          # optional: called before every episode
+        pass
+
+    def predict(self, observation, deterministic=True, action_masks=None):
+        return IDLE, None                     # (action, None)
+```
+
+```bash
+# fetch AEMO's forecasts for your window once (needed for priceSource="forecast")
+uv run python -m cli prefetch 2025-03-03T04:00 2025-03-10T04:00 --region NSW1
+
+# score the bundled threshold rule over one week on the AEMO forecast
+uv run python -m examples.threshold NSW1 2025-03-03 2025-03-10 forecast
+
+# the same week with the observation filled by realised prices
+uv run python -m examples.threshold NSW1 2025-03-03 2025-03-10 realised
+```
+
+```python
+from datetime import datetime
+from backtest.score import score
+
+# start and end are 04:00 trading-day boundaries; the window is whole days
+start, end = datetime(2025, 3, 3, 4), datetime(2025, 3, 10, 4)
+
+result = score(MyPolicy(), "NSW1", start, end, "forecast")
+result["summary"]    # agentProfit, lpProfit (the oracle's bound), regret, captured
+result["records"]    # one entry per episode, with the full trajectory
+result["settings"]   # everything the score depended on, to quote beside it
+
+# your constraints: the oracle is re-solved for them, in seconds, and cached
+score(MyPolicy(), "NSW1", start, end, "forecast",
+      cycleBudget=1.0,            # equivalent full cycles per episode, None for no cap
+      terminalPrice=0.0,          # $/MWh the pack is worth at the close
+      initialSoc=0.5,             # state of charge at the start of each episode
+      endEmpty=True,              # the pack must be empty at the close
+      battery=(0.1, 0.2, 150000.0))   # MW, MWh, replacement cost
+```
+
 ## Trained agents
 
 A finished agent lives under `trainedPolicies/`. There is one layout:

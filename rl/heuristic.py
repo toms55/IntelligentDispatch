@@ -18,6 +18,9 @@ class ThresholdPolicy:
     collapses when one outlier sits among otherwise equal prices.
     """
 
+    # predict() takes the action mask and never picks a move it forbids.
+    reads_mask = True
+
     def __init__(self, lowQuantile=0.25, highQuantile=0.75, minSpread=1e-6):
         self.lowQuantile = lowQuantile
         self.highQuantile = highQuantile

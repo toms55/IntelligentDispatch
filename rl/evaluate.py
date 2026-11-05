@@ -17,6 +17,10 @@ from rl.train import loadScaler
 
 def rolloutWindow(agent, env, windowIndex, masking=False, bound=None):
     """One deterministic episode on one window."""
+    # A stateful policy (an MPC controller, say) starts every window clean. SB3 agents
+    # have no reset(), so this is a no-op for every trained agent.
+    if hasattr(agent, "reset"):
+        agent.reset()
     obs, _ = env.reset(options={"window": windowIndex})
     trajectory = []
     info = {}
@@ -86,10 +90,14 @@ def evaluatePolicy(agent, env, algoName=None, masking=None, bounds=None):
     one, and nothing in the numbers would show it: the run would simply report a worse
     agent. The out-of-bounds count in each record is what reveals the mistake afterwards.
     """
+    # A policy that is not an SB3 agent states it itself: `reads_mask = True/False`.
+    if masking is None and algoName is None:
+        masking = getattr(agent, "reads_mask", None)
     if algoName is None and masking is None:
         raise ValueError(
-            "evaluatePolicy needs algoName or masking: whether predict reads the action "
-            "mask is part of what the agent is, and guessing it mis-scores the agent"
+            "evaluatePolicy needs algoName or masking (or a policy with a reads_mask "
+            "attribute): whether predict reads the action mask is part of what the "
+            "agent is, and guessing it mis-scores the agent"
         )
     if masking is None:
         masking = algos.supportsMasking(algoName)
