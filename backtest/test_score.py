@@ -66,7 +66,8 @@ class TestScore:
         assert result["summary"]["windows"] == 2
         assert result["summary"]["agentProfit"] <= result["summary"]["lpProfit"] + 1e-9
         assert result["settings"]["priceSource"] == "realised"
-        assert result["settings"]["cycleBudget"] == scoring.config.cycle_budget
+        assert result["settings"]["cycleBudget"] == scoring.defaultCycleBudget == 1.0
+        assert all(record["agentCycles"] <= 1.0 + 1e-9 for record in result["records"])
 
     # A policy that never moves earns nothing, so its regret is the whole bound, and the
     # optional reset() runs once per episode.

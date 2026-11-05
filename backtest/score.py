@@ -26,9 +26,14 @@ from rl.evaluate import evaluatePolicy, summarise
 
 priceSources = ("realised", "forecast")
 
+# At most this many equivalent full cycles in one episode. An episode is one trading day at
+# the default horizon, so this is one cycle a day. It is per episode, not per day:
+# shortcut: a longer `horizon` needs a bigger budget passed in, until a caller needs it scaled.
+defaultCycleBudget = 1.0
+
 
 def score(policy, region, start, end, priceSource="forecast", *,
-          horizon=config.episode_intervals, cycleBudget=config.cycle_budget,
+          horizon=config.episode_intervals, cycleBudget=defaultCycleBudget,
           terminalPrice=0.0, initialSoc=config.initial_soc, endEmpty=False,
           calendar=False,
           battery=(config.battery_mw, config.battery_mwh, config.battery_replacement_cost),
@@ -42,8 +47,9 @@ def score(policy, region, start, end, priceSource="forecast", *,
 
     `scaler` is the price transform the observation uses. It defaults to the market cap in
     force at `end`; pass the one a trained agent's `scaler.json` holds to score that agent.
-    The defaults match `RollingConfig`, so a policy scored here faces the problem the
-    published runs did.
+    `cycleBudget` is the most equivalent full cycles one episode may spend, and the default
+    is one a day. Pass `None` for no limit. The other defaults are the project battery, an
+    empty start and no calendar term, as in the rolling backtest.
 
     Returns {"summary", "records", "settings"}. `summary` is profit, the oracle's bound,
     regret and the captured fraction; `records` is one entry per episode, with its
