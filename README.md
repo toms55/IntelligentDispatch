@@ -61,7 +61,7 @@ from rl.features import priceSlice, socIndex
 class MyPolicy:
     reads_mask = False
 
-    def reset(self):
+    def reset(self):uv run python -m visualise.dashboard --results results/backtestResults/rolling2023_profit
         pass
 
     def predict(self, observation, deterministic=True, action_masks=None):
@@ -210,7 +210,7 @@ agent that is not published there cannot run live.
 If you would like to run it locally, the command is:
 
 ```bash
-uv run python -m visualise.dashboard --results results/backtestResults/rolling2023_profit
+uv run python -m visualise.dashboard --results results/backtestResults/pathToYourBacktest
 ```
 
 `results/backtestResults/` holds the backtests the dashboard draws, one CSV per run per
