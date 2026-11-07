@@ -35,6 +35,9 @@ uv run python -m cli lp 2024-01-10 2024-01-11 --no-calendar
 uv run python -m cli lp --help
 ```
 
+The first run for any date range downloads AEMO archive files, so it is network-bound
+and slower than later runs over the same range. See [Data](#data).
+
 Tests:
 
 ```bash
@@ -43,36 +46,39 @@ uv run pytest
 
 ## Score your own policy
 
-You can test your own dispatch policy against the exact oracle. The oracle is the most profit that any policy can earn on the same prices. The score shows the share of that profit that your policy earns. The score uses the same battery model and rules as the published backtests.
+Already have a trained policy? Wrap it in a small class and backtest it against the
+exact oracle on this framework, using the same battery model and rules as the
+published backtests, so the score means the same thing.
 
-### Write the policy
+The oracle is the most profit that any policy can earn on the same prices. The score
+shows the share of that profit your policy earns.
 
-A policy is a Python class. It needs a `predict` method and a `reads_mask` attribute. The `predict` method gets the observation and returns an action and `None`. Set `reads_mask` to `True` if `predict` uses the `action_masks` argument. A `reset` method is optional. The runner calls `reset` before each episode.
+### Wrap your policy
 
-The observation has 62 values. The file `rl/features.py` names the position of each value. The price values are divided by the market price cap. Each action runs at the full rated power for one 5-minute interval.
-
-Save this class in a file named `my_policy.py` in the repository root:
+Save this in a file named `my_policy.py` in the repository root. Point `load` at your
+own checkpoint, and use the algorithm name you trained under (`maskableppo`, `dqn` or
+`a2c`):
 
 ```python
-from rl.env import CHARGE, IDLE, DISCHARGE
-from rl.features import priceSlice, socIndex
+from rl.algos import load
 
 
 class MyPolicy:
-    reads_mask = False
+    reads_mask = True  # False if your policy does not use the action mask
 
-    def reset(self):uv run python -m visualise.dashboard --results results/backtestResults/rolling2023_profit
-        pass
+    def __init__(self):
+        self.agent = load("maskableppo", "path/to/agent.zip")
 
     def predict(self, observation, deterministic=True, action_masks=None):
-        soc = observation[socIndex]
-        prices = observation[priceSlice]   # now, then each later interval
-        if prices[0] <= prices.min() and soc < 1.0:
-            return CHARGE, None
-        if prices[0] >= prices.max() and soc > 0.0:
-            return DISCHARGE, None
-        return IDLE, None
+        return self.agent.predict(observation, deterministic=deterministic,
+                                   action_masks=action_masks)
 ```
+
+This works directly for a stable-baselines3 agent (MaskablePPO, DQN, A2C), since it
+already has a matching `predict` method. For anything else, call your own policy
+inside `predict` instead and return `(action, None)`, where `action` is `0` (charge),
+`1` (idle) or `2` (discharge) — see `rl.env.CHARGE`/`IDLE`/`DISCHARGE`. The
+observation is 62 values; `rl/features.py` names the position of each one.
 
 ### Run an experiment
 
@@ -176,17 +182,23 @@ Hugging Face dataset
 alongside `results/` and `oracleResults/`. See [Experiment data](#experiment-data)
 below for how to fetch it.
 
-`cli train` and `cli rolling` publish their own agents at the end of a run. Use
-`cli publish` for an agent trained before that rule, or for one that arrived from
-another machine.
+`cli train` and `cli rolling` publish their own agents at the end of a run, straight
+into `trainedPolicies/`, so most of the time you do not need the steps below at all.
+`cli train` publishes under `--train-mode cold` by default (a fresh start); `cli
+rolling` publishes the last fold, which is `warm` (continued from an earlier
+checkpoint). Use `cli publish` below only for an agent trained before this rule, or
+for a checkpoint that arrived from another machine without going through either
+command.
 
-To add an agent:
+To add such an agent:
 
-1. Find the checkpoint directory. It holds `agent.zip` and `scaler.json`.
+1. Find the checkpoint directory. It holds `agent.zip` and `scaler.json`. This is a
+   directory `cli train`/`cli rolling` wrote under their own `--out` (default
+   `runs/`), such as `runs/maskableppo_seed0`, not a path you create yourself.
 2. Publish it. Name the region and the seed the checkpoint was trained on.
 
 ```bash
-uv run python -m cli publish models/rolling2023_profit_fc4h/NSW1/seed4 \
+uv run python -m cli publish runs/maskableppo_seed4 \
     --region NSW1 --seeds 4
 ```
 
@@ -195,8 +207,8 @@ To add several seeds in one call, give one directory per seed, in the order of
 
 ```bash
 uv run python -m cli publish \
-    models/rolling2023_profit_fc4h/NSW1/seed0 \
-    models/rolling2023_profit_fc4h/NSW1/seed4 \
+    runs/maskableppo_seed0 \
+    runs/maskableppo_seed4 \
     --region NSW1 --seeds 0 4
 ```
 
@@ -221,12 +233,15 @@ agent that is not published there cannot run live.
 If you would like to run it locally, the command is:
 
 ```bash
-uv run python -m visualise.dashboard --results results/backtestResults/pathToYourBacktest
+uv run python -m visualise.dashboard --results results/backtestResults/<run>
 ```
 
-`results/backtestResults/` holds the backtests the dashboard draws, one CSV per run per
-region. The dispatch each day draws comes from the matching Parquet file in
-`results/actions/`. A finished backtest gets there through `uv run python -m
+`<run>` is a result name without a region suffix, e.g. `rolling2023_profit`, not a
+file name: `results/backtestResults/` holds one CSV, one JSON manifest and a matching
+Parquet file in `results/actions/` per run per region, named
+`<run>_<region>.{csv,json}` and `<run>_<region>.parquet`. The dashboard needs all
+three, for at least one region, or it refuses to start with a `FileNotFoundError`
+naming the missing one. A finished backtest gets there through `uv run python -m
 backtest.publish results/<run>`, which the folds job runs for you.
 
 I host it with some models I've trained here: https://huggingface.co/spaces/toms55/IntelligentDispatch
@@ -236,7 +251,14 @@ I host it with some models I've trained here: https://huggingface.co/spaces/toms
 `results/`, `trainedPolicies/` and `oracleResults/` are not tracked by git. They live in
 the Hugging Face dataset
 [`toms55/IntelligentDispatchExperiments`](https://huggingface.co/datasets/toms55/IntelligentDispatchExperiments).
-Fetch them with the [Hugging Face CLI](https://huggingface.co/docs/huggingface_hub/guides/cli):
+Fetch them with the [Hugging Face CLI](https://huggingface.co/docs/huggingface_hub/guides/cli),
+which is not one of this project's own dependencies and needs its own install:
+
+```bash
+uv tool install huggingface_hub[cli]
+```
+
+Then:
 
 ```bash
 hf download toms55/IntelligentDispatchExperiments --repo-type=dataset --local-dir .
