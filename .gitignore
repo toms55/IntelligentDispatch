@@ -10,15 +10,15 @@ data_cache/
 model/
 runs/
 
-# --- experiment outputs: only the published runs (one CSV) and their actions exports
-# --- (one Parquet) per run per region. The live actions CSV a backtest appends to stays out ---
-results/**
-!results/actions/
-!results/actions/*.parquet
-!results/backtestResults/
-!results/backtestResults/*.csv
-!results/backtestResults/*.json
-!results/backtestResults/README.md
+# --- experiment data: results, trained agents and the oracle archives live in the HF
+# --- dataset toms55/IntelligentDispatchExperiments (see README.md). `hf download`
+# --- restores them here. ---
+results/*
+!results/.gitkeep
+trainedPolicies/*
+!trainedPolicies/.gitkeep
+oracleResults/*
+!oracleResults/.gitkeep
 
 # --- CLI outputs: <module>_<region>_<date>.csv/.png land in the cwd ---
 lp_*.csv
@@ -32,8 +32,6 @@ lp_*.csv
 *.xls
 *.xlsx
 *.zip
-# ...but a published agent's weights travel by git (see trainedPolicies/ in CLAUDE.md)
-!trainedPolicies/*/*/agent.zip
 *.o*
 
 # --- local helper and PBS job logs ---

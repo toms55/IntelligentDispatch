@@ -170,8 +170,11 @@ trainedPolicies/<region>/<algo>-<trainMode>-s<seed>/
     policy.json    which command wrote it, from which window, and when
 ```
 
-The directory name is the label the dashboard shows. `trainedPolicies/` is tracked by
-git, so an agent travels with a commit.
+The directory name is the label the dashboard shows. `trainedPolicies/` lives in the
+Hugging Face dataset
+[`toms55/IntelligentDispatchExperiments`](https://huggingface.co/datasets/toms55/IntelligentDispatchExperiments),
+alongside `results/` and `oracleResults/`. See [Experiment data](#experiment-data)
+below for how to fetch it.
 
 `cli train` and `cli rolling` publish their own agents at the end of a run. Use
 `cli publish` for an agent trained before that rule, or for one that arrived from
@@ -207,8 +210,8 @@ different cap mean something else.
 
 To remove an agent, delete its directory.
 
-`trainedPolicies/` is tracked by git. Commit a finished agent to move it to the
-dashboard machine.
+Publish a finished agent to the dataset with `hf upload` (see
+[Experiment data](#experiment-data)) to move it to the dashboard machine.
 
 The current forecast screen lists the agents in `trainedPolicies/` and nothing else. An
 agent that is not published there cannot run live.
@@ -222,11 +225,30 @@ uv run python -m visualise.dashboard --results results/backtestResults/pathToYou
 ```
 
 `results/backtestResults/` holds the backtests the dashboard draws, one CSV per run per
-region, and git tracks it. The dispatch each day draws comes from the matching Parquet
-file in `results/actions/`. A finished backtest gets there through `uv run python -m
+region. The dispatch each day draws comes from the matching Parquet file in
+`results/actions/`. A finished backtest gets there through `uv run python -m
 backtest.publish results/<run>`, which the folds job runs for you.
 
 I host it with some models I've trained here: https://huggingface.co/spaces/toms55/IntelligentDispatch
+
+## Experiment data
+
+`results/`, `trainedPolicies/` and `oracleResults/` are not tracked by git. They live in
+the Hugging Face dataset
+[`toms55/IntelligentDispatchExperiments`](https://huggingface.co/datasets/toms55/IntelligentDispatchExperiments).
+Fetch them with the [Hugging Face CLI](https://huggingface.co/docs/huggingface_hub/guides/cli):
+
+```bash
+hf download toms55/IntelligentDispatchExperiments --repo-type=dataset --local-dir .
+```
+
+Push new or changed results back up the same way:
+
+```bash
+hf upload toms55/IntelligentDispatchExperiments results results --repo-type=dataset
+hf upload toms55/IntelligentDispatchExperiments trainedPolicies trainedPolicies --repo-type=dataset
+hf upload toms55/IntelligentDispatchExperiments oracleResults oracleResults --repo-type=dataset
+```
 
 ## Data
 

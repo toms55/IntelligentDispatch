@@ -152,14 +152,18 @@ Rules:
 5. Working state stays out. The rolling backtest keeps one checkpoint per fold under
    `--out` (`runs/rolling`), because it warm starts the next fold from the last one.
    Those are not published, and nothing reads them across machines.
-6. `trainedPolicies/` is tracked by git. Commit a finished agent to move it to the
-   dashboard machine.
+6. `trainedPolicies/` is not tracked by git. It lives in the Hugging Face dataset
+   `toms55/IntelligentDispatchExperiments`, alongside `results/` and `oracleResults/`.
+   `hf upload toms55/IntelligentDispatchExperiments trainedPolicies trainedPolicies
+   --repo-type=dataset` moves a finished agent to the dashboard machine; `hf download`
+   with the same repo pulls the current set down.
 
 ### A dashboard backtest lives in `results/backtestResults/`
 
-`results/` is working output and git ignores it, apart from the published runs and
-their actions exports. Those are tracked, so every clone can draw them. Each is one file
-per run per region, named the same way:
+`results/` is working output and git ignores it. The published runs and their actions
+exports live in the Hugging Face dataset `toms55/IntelligentDispatchExperiments`
+instead, so every machine can draw them with `hf download`. Each is one file per run
+per region, named the same way:
 
 ```
 results/backtestResults/<run>_<region>.csv   one row per seed, price source and test
@@ -171,10 +175,10 @@ results/backtestResults/<run>_<region>.json  the run's manifest and a one-line
 results/backtestResults/README.md            the index: every published run, one line
 ```
 
-The actions export is Parquet because GitHub refuses a file over 100 MB, and every seed
-under both price sources is about 270 MB of CSV per region (30 to 40 MB as Parquet).
-The CSV beside it, `results/actions/<run>_<region>.csv`, is the live file a backtest
-appends to as it runs. Git ignores it and the dashboard never reads it.
+The actions export is Parquet because every seed under both price sources is about
+270 MB of CSV per region (30 to 40 MB as Parquet). The CSV beside it,
+`results/actions/<run>_<region>.csv`, is the live file a backtest appends to as it
+runs. It stays off the dataset, and the dashboard never reads it.
 
 Rules:
 
@@ -198,8 +202,9 @@ Rules:
    first publish. A republish without one keeps the old description, and
    `--context-only` adds context to a run already published. The fold trajectories
    stay with the raw results.
-5. Publishing commits nothing. Commit `results/backtestResults/` and `results/actions/`
-   after a backtest.
+5. Publishing writes nothing to the dataset. Run
+   `hf upload toms55/IntelligentDispatchExperiments results results --repo-type=dataset`
+   after a backtest to push `results/backtestResults/` and `results/actions/`.
 6. A day row carries `episodeStart` and `cycleBudget` beside `testDay`, and
    `agentCycles` and `oracleCycles` beside the profit columns. `episodeStart` names the
    episode the day sat in. The oracle columns `oracleDualBound`, `oracleGap` and
@@ -695,8 +700,8 @@ cover.
   `results/backtestResults/<run>_<region>.csv` exists, and `--resume` (`RESUME=1` in the
   folds job) continues one without appending a fold twice. `python -m backtest.actions`
   is only for runs from before this. The CSV is working state: `backtest.publish`
-  writes it out as `results/actions/<run>_<region>.parquet`, which is what git tracks
-  and the dashboard reads.
+  writes it out as `results/actions/<run>_<region>.parquet`, which is what lives in
+  the HF dataset `toms55/IntelligentDispatchExperiments` and the dashboard reads.
 - `nemosis` downloads AEMO archive files into `data_cache/` on first use, so the first
   call for a date range is slow and network-bound while later calls are local. The
   directory is gitignored and safe to delete.
