@@ -38,11 +38,15 @@ uv run python -m cli lp --help
 The first run for any date range downloads AEMO archive files, so it is network-bound
 and slower than later runs over the same range. See [Data](#data).
 
-Tests:
+Tests and lint:
 
 ```bash
 uv run pytest
+ruff check .
 ```
+
+The suite needs no network. `ruff` comes from the Nix dev shell, because the PyPI
+binary does not start on NixOS. GitHub Actions runs both on every push to main.
 
 ## Score your own policy
 
@@ -261,8 +265,14 @@ uv tool install huggingface_hub[cli]
 Then:
 
 ```bash
-hf download toms55/IntelligentDispatchExperiments --repo-type=dataset --local-dir .
+hf download toms55/IntelligentDispatchExperiments --repo-type=dataset --local-dir . \
+    --include 'results/*' 'trainedPolicies/*' 'oracleResults/*'
 ```
+
+Name the three directories. The dataset also holds its own `README.md` and
+`.gitattributes` at the top level, and a download without `--include` writes both into
+the repo root. That overwrites this file and adds LFS rules for `*.zip` and `*.parquet`
+that this repository does not use.
 
 Push new or changed results back up the same way:
 
@@ -277,6 +287,16 @@ hf upload toms55/IntelligentDispatchExperiments oracleResults oracleResults --re
 `nemosis` downloads AEMO archive files into `data_cache/` on first use, so the first run
 for a date range is slow and network-bound; later runs are local. The directory is
 gitignored and safe to delete.
+
+## Documentation
+
+| Document | What it holds |
+| --- | --- |
+| [docs/methodology.md](docs/methodology.md) | The experiment design |
+| [docs/architecture.md](docs/architecture.md) | The package tour, module by module |
+| [docs/conventions.md](docs/conventions.md) | The rules a change has to keep |
+| [docs/gotchas.md](docs/gotchas.md) | The traps, each one measured |
+| [docs/ablation.md](docs/ablation.md) | Results of the 44 published ablation runs |
 
 ## Licence
 
