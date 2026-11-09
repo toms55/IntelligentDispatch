@@ -13,7 +13,6 @@ The checkpoint on disk is the training record and the fold CSV is the completion
 so resume needs no separate log.
 """
 import gc
-import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -510,7 +509,6 @@ def runRolling(cfg, onProgress=None):
         testRecords = _foldRecords(cfg, plan, fold.testStart, len(episodes))
         testBaselines = [record["profitPerInterval"] for record in testRecords]
         bounds = [record["dualBound"] for record in testRecords]
-        gaps = [record["mipGap"] for record in testRecords]
 
         for algo in cfg.algos:
             for trainMode in cfg.trainModes:

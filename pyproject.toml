@@ -25,3 +25,37 @@ dependencies = [
 
 [tool.uv]
 package = false
+
+[tool.pytest.ini_options]
+# Tests sit beside the code they cover, so collection starts at the root. Setting this
+# key REPLACES pytest's default list, so the default entries are repeated here. Dropping
+# `.*` lets collection walk into `.claude/worktrees/`, where every test module has the
+# same basename as one here, and pytest then fails all of them on an import mismatch.
+# `runs/space` is the publishSpace.sh staging copy and holds the same modules again.
+norecursedirs = [
+    "*.egg", ".*", "_darcs", "build", "CVS", "dist", "node_modules", "venv", "{arch}",
+    "runs", "data_cache", "models", "trainedPolicies", "results",
+]
+# One test group needs the nemosis price cache and skips itself without it
+# (optimisation/test_dp.py:needsPrices), so the suite runs with no network.
+addopts = "-q"
+
+[tool.ruff]
+# The house style wraps near 90, not at ruff's default 88. This sets the width
+# `ruff format` would use. The lint rules below do not include E501, so an over-long
+# line is not an error: 192 lines already exceed 90 and reflowing them would bury
+# every real finding.
+line-length = 90
+# Not a test tree, not this project's code.
+extend-exclude = ["runs", "data_cache", ".venv"]
+
+[tool.ruff.lint]
+# Ruff's default set: pycodestyle errors, pyflakes. It catches undefined names,
+# unused imports and syntax faults, which is what a refactor of this size breaks.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# Importing a pytest fixture is how a test module reuses one, and the test function
+# then takes it as a parameter. Ruff reads that parameter as redefining the import,
+# so F811 fires 34 times on test_app.py alone and means nothing in a test module.
+"**/test_*.py" = ["F811"]

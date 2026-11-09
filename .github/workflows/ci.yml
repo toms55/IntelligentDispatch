@@ -1,0 +1,29 @@
+# The suite runs with no network. One test group needs the nemosis price cache and
+# skips itself without it, so a clean runner collects 1231 tests and skips that group.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # uv installs the versions uv.lock pins. The Nix flake additionally pins the
+      # interpreter and the system libraries, which a runner does not need.
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Lint
+        run: uvx ruff check .
+
+      - name: Test
+        run: uv run pytest

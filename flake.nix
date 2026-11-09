@@ -18,7 +18,9 @@
         # git-lfs is for `scripts/publishSpace.sh`. A Hugging Face Space refuses a
         # binary file that git tracks directly, and the upload carries the agent
         # weights and the per-fold parquet.
-        packages = [ pkgs.python311 pkgs.uv pkgs.git-lfs ];
+        # ruff comes from nixpkgs, not from `uvx ruff`. The PyPI binary is
+        # dynamically linked against an FHS layout and will not start on NixOS.
+        packages = [ pkgs.python311 pkgs.uv pkgs.git-lfs pkgs.ruff ];
 
         shellHook = ''
           export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath wheelLibs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"

@@ -2,7 +2,7 @@
 
 Each function returns numbers or a Plotly figure, so none of this needs a server.
 """
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import numpy as np
 import pandas as pd

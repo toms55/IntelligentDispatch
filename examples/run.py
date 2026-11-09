@@ -41,7 +41,10 @@ def main():
 
     module, _, name = args.policy.partition(":")
     policy = getattr(importlib.import_module(module), name)()
-    at4 = lambda day: datetime.fromisoformat(day).replace(hour=4)
+
+    def at4(day):
+        return datetime.fromisoformat(day).replace(hour=4)
+
     result = score(
         policy, args.region, at4(args.start), at4(args.end), args.source,
         cycleBudget=None if args.no_cycle_budget else args.cycle_budget,

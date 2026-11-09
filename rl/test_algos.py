@@ -8,7 +8,7 @@ import pytest
 
 import config
 from degradation.schade import SchadeDegradation
-from rl import algos, evaluate, features
+from rl import algos, evaluate
 from rl.env import CHARGE, DISCHARGE, IDLE, BessEnv
 from rl.train import trainOne
 
