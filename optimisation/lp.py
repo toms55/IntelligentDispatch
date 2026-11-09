@@ -1,5 +1,5 @@
 """
-Perfect-foresight oracle over a known price series (TODO.txt Step 1).
+Perfect-foresight oracle over a known price series.
 
 The battery is 16 stacked segments; emptying a high segment costs more than a low one,
 and those per-segment costs are constants out of schade.py.
@@ -26,7 +26,7 @@ class Schedule:
     revenue: float
     degradationCost: float
     profit: float
-    # Appended with defaults: test_cli.py builds a Schedule from seven positional args.
+    # Appended with defaults: cli/test_cli.py builds a Schedule from seven positional args.
     revenuePerInterval: list = None
     cyclePerInterval: list = None
     calendarPerInterval: list = None

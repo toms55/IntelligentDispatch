@@ -1,4 +1,4 @@
-"""A rule-based threshold policy, as the control the agent has to beat (TODO.txt step 2).
+"""A rule-based threshold policy, as the control the agent has to beat.
 
 Charge near the bottom of the forward window, discharge near the top, otherwise idle.
 Reads the same observation vector the agent gets, so it is scored by the same path and

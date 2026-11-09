@@ -1,5 +1,5 @@
 """
-Tests for optimisation/lp.py, the perfect-foresight oracle (TODO.txt Step 1).
+Tests for optimisation/lp.py, the perfect-foresight oracle.
 
 Run with:   nix develop -c pytest optimisation/ -q
 

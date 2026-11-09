@@ -1,4 +1,9 @@
-"""Per-window oracle solutions, solved once and cached (TODO.txt step 1 chunking)."""
+"""Per-window oracle solutions, solved once and cached.
+
+One window is one episode. Every window starts from the same fixed state of charge
+and none of them sees past its own last interval, so the windows are independent,
+cacheable and solvable in parallel.
+"""
 import hashlib
 import json
 import multiprocessing

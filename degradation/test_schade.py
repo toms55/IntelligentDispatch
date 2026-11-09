@@ -364,7 +364,7 @@ class TestLpEmbedding:
             assert booked == pytest.approx(eq11)
 
     def test_top_segment_costs_far_more_to_sell_than_the_bottom_one(self, paper):
-        # Why TODO.txt's S[j][h] <= S[j-1][h] ordering constraint is mandatory:
+        # Why the S[j][h] <= S[j-1][h] segment ordering constraint is mandatory:
         # the row is cheapest at the bottom, so an unordered LP books every
         # discharge against segment 0 and under-reports degradation wildly.
         coeffs = paper.lpObjectiveCoefficients()

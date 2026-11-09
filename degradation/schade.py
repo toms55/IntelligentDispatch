@@ -8,9 +8,9 @@ Every item below names the paper section and equation to implement from.
 Section numbers are the paper's own (§3.2 = "Cycle degradation", etc).
 
 The paper is an hourly MILP economic-dispatch model. I need two things out of
-it: (A) an LP-embeddable degradation cost for the perfect-foresight oracle
-(TODO.txt Step 1), and (B) a causal per-step cost usable as an RL reward
-(Step 2).
+it: (A) an LP-embeddable degradation cost for the perfect-foresight oracle in
+optimisation/lp.py, and (B) a causal per-step cost usable as an RL reward in
+rl/env.py.
 """
 import numpy as np
 from utils import nem_interval_hours

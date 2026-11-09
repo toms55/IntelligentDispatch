@@ -1,4 +1,4 @@
-"""The battery dispatch environment (TODO.txt step 2).
+"""The battery dispatch environment.
 
 Three actions: charge at full rate, discharge at full rate, idle. The rate is a power
 throughput, `chargePower * dtHours` meter-side, and does not depend on SoC.
