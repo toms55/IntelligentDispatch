@@ -4,8 +4,8 @@
 # from the prefetched cache, so it needs data_cache/ (forecast_paths and the nemosis
 # price files) in the checkout it runs from.
 #
-#     qsub scripts/checkScore.pbs
-#     qsub -v RUN=results/backtestResults/<run>_<R>,AGENT=trainedPolicies/<R>/<agent> scripts/checkScore.pbs
+#     qsub scripts/hpc/checkScore.pbs
+#     qsub -v RUN=results/backtestResults/<run>_<R>,AGENT=trainedPolicies/<R>/<agent> scripts/hpc/checkScore.pbs
 
 #PBS -N check-score
 #PBS -q smallq

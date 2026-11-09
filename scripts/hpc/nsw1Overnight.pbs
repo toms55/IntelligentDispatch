@@ -2,7 +2,7 @@
 # NSW1: train MaskablePPO on 2024, score on 2025. scripts/overnight.sh restated as one
 # PBS job for the UTS HPC, submitted from the repo root:
 #
-#     qsub -v DEADLINE="2026-10-09 06:45" scripts/nsw1_overnight.pbs
+#     qsub -v DEADLINE="2026-10-09 06:45" scripts/hpc/nsw1Overnight.pbs
 #
 # Differences from overnight.sh:
 #   - every seed trains in its own process, in parallel, and the validation and test

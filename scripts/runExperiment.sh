@@ -2,14 +2,14 @@
 # One-region experiment: train on 2024, score on 2025. Leaner than overnight.sh -- no
 # validation split, just the train/test pair.
 #
-#     bash scripts/run_experiment.sh NSW1 2>&1 | tee runs/NSW1/run.log
+#     bash scripts/runExperiment.sh NSW1 2>&1 | tee runs/NSW1/run.log
 #
 # Resumable: the oracle cache is keyed on its own parameters. Writes/overwrites
 # results/<REGION>.md on success and pushes it, so that file always holds the most
 # recent experiment for that region, never a history of past ones.
 set -euo pipefail
 
-REGION="${1:?usage: run_experiment.sh REGION, e.g. NSW1}"
+REGION="${1:?usage: runExperiment.sh REGION, e.g. NSW1}"
 
 WORKERS=6
 TIMESTEPS=300000

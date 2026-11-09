@@ -1,8 +1,8 @@
 #!/bin/bash
 # scripts/rolling.sh as a PBS job, one region per job.
 #
-#     qsub -N efc7-SA1 -v REGION=SA1 scripts/rolling.pbs
-#     qsub -v REGION=SA1,STAGE=oracle scripts/rolling.pbs     # then folds per ALGO, afterok
+#     qsub -N efc7-SA1 -v REGION=SA1 scripts/hpc/rolling.pbs
+#     qsub -v REGION=SA1,STAGE=oracle scripts/hpc/rolling.pbs     # then folds per ALGO, afterok
 #
 # One process: training is serial over seeds and the discrete oracle is single-threaded.
 #

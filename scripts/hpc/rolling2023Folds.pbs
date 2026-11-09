@@ -2,19 +2,19 @@
 # Stage 2 of the 2023 rolling backtest: 143 one-week folds, 52-week warm-chained
 # training on raw profit, each scored on realised prices and on the AEMO 04:00 forecast.
 # Needs the oracle cache over the test days (2023-12-31 on) from
-# scripts/rolling2023_oracle.pbs and the forecast prefetch in
+# scripts/hpc/rolling2023Oracle.pbs and the forecast prefetch in
 # data_cache/forecast_paths/NSW1.parquet. Training days need no oracle.
 #
-#     qsub -W depend=afterok:<oracle job ids> scripts/rolling2023_folds.pbs
-#     qsub scripts/rolling2023_folds.pbs        # the cache is already complete
-#     qsub -v OUT=/abs/runs/x,RESULTS=/abs/results/x scripts/rolling2023_folds.pbs
-#     qsub -v TRAIN_MODES=cold,OUT=...,RESULTS=... scripts/rolling2023_folds.pbs
+#     qsub -W depend=afterok:<oracle job ids> scripts/hpc/rolling2023Folds.pbs
+#     qsub scripts/hpc/rolling2023Folds.pbs        # the cache is already complete
+#     qsub -v OUT=/abs/runs/x,RESULTS=/abs/results/x scripts/hpc/rolling2023Folds.pbs
+#     qsub -v TRAIN_MODES=cold,OUT=...,RESULTS=... scripts/hpc/rolling2023Folds.pbs
 #     qsub -v OUT=<trained runs>,LOGS=...,RESULTS=...,PRICE_SOURCE=forecast,REFRESH=5,PREFETCH=1 \
-#          scripts/rolling2023_folds.pbs      # rescore existing checkpoints, no training
+#          scripts/hpc/rolling2023Folds.pbs      # rescore existing checkpoints, no training
 #     qsub -v TRAIN_SOURCE=forecast,REFRESH=5,PREFETCH=1,PREFETCH_SPAN=2023-01-01T04:00..2023-12-31T04:00,OUT=...,RESULTS=... \
-#          scripts/rolling2023_folds.pbs      # train on the AEMO forecast as well
+#          scripts/hpc/rolling2023Folds.pbs      # train on the AEMO forecast as well
 #
-#     qsub -v ALGO=dqn scripts/rolling2023_folds.pbs
+#     qsub -v ALGO=dqn scripts/hpc/rolling2023Folds.pbs
 #          # the DQN half of the thesis comparison, at the config defaults
 #
 # TRAIN_MODES=cold fits every fold fresh at the cold budget instead of continuing the
@@ -77,7 +77,7 @@ TRAIN_SOURCE=${TRAIN_SOURCE:-realised}   # realised or forecast; settlement is r
 # hashes it, so a value matching an existing cache solves nothing and any other value
 # misses every entry. This job passes no --allow-solve, so a miss stops it at the cache
 # audit rather than starting hours of solving on one core per seed. Build the cache first
-# with scripts/rolling2023_oracle.pbs under the same SoC.
+# with scripts/hpc/rolling2023Oracle.pbs under the same SoC.
 INITIAL_SOC=${INITIAL_SOC:-}
 INVALID_PENALTY=${INVALID_PENALTY:-}
 # Seed logs go here. Set it when OUT holds another run's checkpoints, or its logs are lost.

@@ -5,14 +5,14 @@
 #
 #     for span in 2023-01-01T04:00..2023-12-01T04:00 2023-12-01T04:00..2024-11-01T04:00 \
 #                 2024-11-01T04:00..2025-10-01T04:00 2025-10-01T04:00..2026-09-27T04:00; do
-#       qsub -v SPAN="$span" scripts/rolling2023_oracle.pbs
+#       qsub -v SPAN="$span" scripts/hpc/rolling2023Oracle.pbs
 #     done
 #
 # Pass REGION=SA1 (etc.) alongside SPAN for another region; NSW1 by default.
 # LIMIT overrides the 1800s solve limit; cached days are not re-solved, so move the
 # limit-hit records out of data_cache/lp_baseline first.
 #
-# Stage 2, scripts/rolling2023_folds.pbs, needs the test days from this cache, so it
+# Stage 2, scripts/hpc/rolling2023Folds.pbs, needs the test days from this cache, so it
 # is queued with -W depend=afterok on all four. Its training days need no oracle.
 # Prices must already be in data_cache/: compute nodes are not assumed to reach AEMO.
 # Resumable: a rerun skips every day already cached.

@@ -6,8 +6,8 @@
 # One job per seed, because the shared agent needs every region, then one merge job per
 # algorithm that waits on its five seeds and publishes the five regions:
 #
-#     qsub -N pool-s0 -v SEED=0,ALGO=maskableppo scripts/pooled.pbs
-#     qsub -N pool-merge -v MERGE=1,ALGO=maskableppo -W depend=afterok:<full ids> scripts/pooled.pbs
+#     qsub -N pool-s0 -v SEED=0,ALGO=maskableppo scripts/hpc/pooled.pbs
+#     qsub -N pool-merge -v MERGE=1,ALGO=maskableppo -W depend=afterok:<full ids> scripts/hpc/pooled.pbs
 #
 # Every seed passes --resume, because a later seed finds the actions CSV an earlier one
 # began. Check the name is free once, before submitting:

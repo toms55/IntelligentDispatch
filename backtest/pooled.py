@@ -15,7 +15,7 @@ clock, so the regions join end to end. Every region's window is whole trading da
 The price transform is pinned to the market price cap, which is NEM-wide, so one scaler
 serves every region.
 
-One process per seed, as scripts/rolling2023_folds.pbs runs them. Each seed writes its own
+One process per seed, as scripts/hpc/rolling2023Folds.pbs runs them. Each seed writes its own
 results/<run>_<region>/seed<N>/ for every region, and appends its decisions to the
 region's one actions CSV under the lock in backtest/actions.py. `merge` joins the seeds
 into results/<run>_<region>/all/, which is where backtest.publish reads them.
@@ -28,7 +28,7 @@ import gc
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import NamedTuple, Optional
+from typing import NamedTuple
 
 import pandas as pd
 
