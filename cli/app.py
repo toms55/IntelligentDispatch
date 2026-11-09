@@ -26,7 +26,7 @@ import config
 from data.prices import price_series
 from utils import nem_interval
 from degradation.schade import SchadeDegradation
-from optimisation.lp import defaultSolver, solve
+from optimisation.lp import solve
 from rl import policies
 
 
@@ -174,8 +174,16 @@ def _prices(args):
 
 
 def _outputPath(args, suffix):
+    """Where a --csv or --plot with no PATH writes.
+
+    Under `results/cli/`, not the working directory. The repo root is the working
+    directory for every documented invocation, and these files collected there.
+    `results/` is gitignored, so the output stays out of git either way.
+    """
     label = args.splitName or args.start.date()
-    return f"{args.module}_{args.region}_{label}.{suffix}"
+    directory = Path("results") / "cli"
+    directory.mkdir(parents=True, exist_ok=True)
+    return str(directory / f"{args.module}_{args.region}_{label}.{suffix}")
 
 
 def _frame(prices, schedule):
@@ -907,6 +915,3 @@ def main(argv=None):
     args = parser.parse_args(argv)
     return args.run(args)
 
-
-if __name__ == "__main__":
-    sys.exit(main())

@@ -1,13 +1,12 @@
-"""Tests for cli.py. No network: price_series is monkeypatched."""
+"""Tests for cli/app.py. No network: price_series is monkeypatched."""
 import json
 from datetime import datetime
-from pathlib import Path
 
 import pandas as pd
 import pytest
 
-import cli
 import config
+from cli import app as cli
 from optimisation.lp import Schedule
 
 
@@ -128,22 +127,22 @@ class TestOutput:
     def test_bare_csv_uses_a_derived_default_path(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         cli.main(["lp", "2024-01-10", "2024-01-11", "--csv"])
-        assert (tmp_path / "lp_SA1_2024-01-10.csv").exists()
+        assert (tmp_path / "results" / "cli" / "lp_SA1_2024-01-10.csv").exists()
 
     def test_bare_plot_uses_a_derived_default_path(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         cli.main(["lp", "2024-01-10", "2024-01-11", "--plot"])
-        assert (tmp_path / "lp_SA1_2024-01-10.png").exists()
+        assert (tmp_path / "results" / "cli" / "lp_SA1_2024-01-10.png").exists()
 
     def test_default_path_follows_region_and_start(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         cli.main(["lp", "2024-03-05T06:00", "2024-03-06", "--region", "VIC1", "--csv"])
-        assert (tmp_path / "lp_VIC1_2024-03-05.csv").exists()
+        assert (tmp_path / "results" / "cli" / "lp_VIC1_2024-03-05.csv").exists()
 
     def test_a_split_name_labels_the_default_path(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         cli.main(["lp", "--split", "probe=2024-01-10..2024-01-11", "--csv"])
-        assert (tmp_path / "lp_SA1_probe.csv").exists()
+        assert (tmp_path / "results" / "cli" / "lp_SA1_probe.csv").exists()
 
     def test_show_displays_instead_of_saving(self, tmp_path, monkeypatch):
         """--show must not leave a file behind, and must not need a PATH."""
