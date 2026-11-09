@@ -12,9 +12,10 @@
 #   2. the results and the agent weights, as the name, the size and the modification
 #      time of every file that goes up
 #
-# The second kind is why a git diff cannot drive this. `models/` is gitignored, so a
-# new training run changes the Space without changing one tracked file, and a new
-# backtest changes `results/backtestResults/` before anyone commits it.
+# The second kind is why a git diff cannot drive this. `trainedPolicies/` is
+# gitignored, so a new training run changes the Space without changing one tracked
+# file, and a new backtest changes `results/backtestResults/` before anyone commits
+# it.
 #
 # Neither input is named here. The runs come from `config.dashboard_runs`, through
 # `scripts/dashboardRuns.sh`, and the agents from `experiments.runnable`, so this script

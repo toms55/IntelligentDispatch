@@ -7,7 +7,8 @@ __pycache__/
 # --- local tooling / caches ---
 .claude/
 data_cache/
-model/
+.cache/
+models/
 runs/
 
 # --- experiment data: results, trained agents and the oracle archives live in the HF
@@ -20,9 +21,10 @@ trainedPolicies/*
 oracleResults/*
 !oracleResults/.gitkeep
 
-# --- CLI outputs: <module>_<region>_<date>.csv/.png land in the cwd ---
+# --- CLI outputs now land in results/cli/, which results/* already covers. These
+# --- two patterns stay as a safety net for an older invocation run from the root. ---
 lp_*.csv
-*png
+*.png
 
 # --- papers, drafts, forms: copyright / PII, never commit ---
 *.pdf
@@ -41,3 +43,6 @@ id-*.o[0-9]*
 # ad hoc price exports
 /forecast_*.csv
 /real_prices_*.csv
+
+# --- the one tracked diagram, kept despite the *.png rule above ---
+!docs/System_Design_High_Level.png
