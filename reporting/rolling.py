@@ -13,10 +13,10 @@ import json
 from statistics import mean, pstdev
 
 from backtest import records
-from visualise.parse import Section, SeedResult
+from reporting.parse import Section, SeedResult
 
 # The rolling rows name a price source; the results file names a section. One name per
-# thing, so the headings here are the headings cli.py writes.
+# thing, so the headings here are the headings cli/app.py writes.
 sourceHeadings = {"realised": "Realised prices", "forecast": "AEMO forecast"}
 
 

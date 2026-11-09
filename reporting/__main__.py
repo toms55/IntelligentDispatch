@@ -1,23 +1,23 @@
 """Plot a results/<REGION>.md file.
 
-    uv run python -m visualise results/NSW1.md
-    uv run python -m visualise results/NSW1.md --out NSW1.png
-    uv run python -m visualise results/NSW1.md --show
+    uv run python -m reporting results/NSW1.md
+    uv run python -m reporting results/NSW1.md --out NSW1.png
+    uv run python -m reporting results/NSW1.md --show
 
-    uv run python -m visualise results/NSW1.md --best-vs-oracle \\
+    uv run python -m reporting results/NSW1.md --best-vs-oracle \\
         --train-start 2024-01-01T04:00 --train-end 2025-01-01T04:00
 
-    uv run python -m visualise results/NSW1.md --compare-sources \\
+    uv run python -m reporting results/NSW1.md --compare-sources \\
         --train-start 2024-01-01T04:00 --train-end 2025-01-01T04:00
 
-    uv run python -m visualise results/rolling2023_profit_all --region VIC1 \\
+    uv run python -m reporting results/rolling2023_profit_all --region VIC1 \\
         --compare-sources --out VIC1.png
 """
 import argparse
 from pathlib import Path
 
-from visualise.parse import loadResultsFile
-from visualise.plots import (buildBestSeedFigure, buildFigure, buildSourceComparisonFigure,
+from reporting.parse import loadResultsFile
+from reporting.plots import (buildBestSeedFigure, buildFigure, buildSourceComparisonFigure,
                             saveBestSeedFigure, saveFigure, saveSourceComparisonFigure)
 
 
@@ -64,7 +64,7 @@ def main(argv=None):
     if args.path.is_dir():
         if not args.region:
             raise SystemExit("--region is needed with a rolling results directory")
-        from visualise.rolling import sectionsFromRolling, trainNote
+        from reporting.rolling import sectionsFromRolling, trainNote
         sections = sectionsFromRolling(args.path, args.region, algo=args.algo,
                                         trainMode=args.train_mode)
         # A rolling run retrains before every test week, so it has no one train window.

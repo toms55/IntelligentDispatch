@@ -8,7 +8,7 @@ import json
 import pytest
 
 from backtest import records
-from visualise.rolling import sectionsFromRolling, trainNote
+from reporting.rolling import sectionsFromRolling, trainNote
 
 day1 = "2024-01-01 04:00:00"
 day2 = "2024-01-02 04:00:00"

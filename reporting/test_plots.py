@@ -6,8 +6,8 @@ produces a file", not pixel content -- matplotlib's own test suite covers that.
 """
 import pytest
 
-from visualise.parse import parseSections
-from visualise.plots import (
+from reporting.parse import parseSections
+from reporting.plots import (
     _bestAcrossSections, _shortTimestamp, buildBestSeedFigure, buildSourceComparisonFigure,
     saveBestSeedFigure, saveSourceComparisonFigure,
 )

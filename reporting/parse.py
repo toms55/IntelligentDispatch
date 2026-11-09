@@ -1,6 +1,6 @@
 """Parse a results/<REGION>.md file into structured data for plotting.
 
-The file format is owned by cli.py's `_resultSection`/`_spliceSection`: one
+The file format is owned by cli/app.py's `_resultSection`/`_spliceSection`: one
 `## heading` section per price source (e.g. "Realised prices", "AEMO forecast"),
 each holding a few `- key: value` lines, a one-row-per-metric summary table, and a
 per-seed table. This module only reads that format; it never runs an eval itself.

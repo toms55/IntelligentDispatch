@@ -6,8 +6,8 @@ test and not just the plotting functions below it.
 import pytest
 
 from backtest import records
-from visualise.__main__ import main
-from visualise.test_rolling import _row, day1, day2
+from reporting.__main__ import main
+from reporting.test_rolling import _row, day1, day2
 
 realisedFile = """## Realised prices
 - region: NSW1

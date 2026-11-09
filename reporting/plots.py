@@ -3,7 +3,7 @@
 Three views, one figure: per-seed agent profit against the oracle, per-seed captured
 share, and a mean +/- SD summary across sections (e.g. realised prices vs the AEMO
 forecast). Matplotlib is imported lazily and switched to Agg before any pyplot use
-when `destination` is set, matching cli.py's own `_plot`.
+when `destination` is set, matching cli/app.py's own `_plot`.
 """
 
 
@@ -84,7 +84,7 @@ def buildFigure(sections, region, algo):
 
 def saveFigure(sections, region, algo, destination):
     """Render buildFigure to PATH. Switches to the Agg backend first, matching
-    cli.py's _plot, since the default backend needs a display that may not exist."""
+    cli/app.py's _plot, since the default backend needs a display that may not exist."""
     import matplotlib
     matplotlib.use("Agg")
 

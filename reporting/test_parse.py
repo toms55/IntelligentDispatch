@@ -1,7 +1,7 @@
 """Tests for visualise/parse.py. Run with: uv run pytest visualise/ -q"""
 import pytest
 
-from visualise.parse import loadResultsFile, parseSections
+from reporting.parse import loadResultsFile, parseSections
 
 REALISED = """## Realised prices
 - region: NSW1
