@@ -3,7 +3,7 @@ from datetime import datetime
 
 import pandas as pd
 
-from data.NEMOSIS import fetch_price_data
+from data.nemosis import fetch_price_data
 
 
 def price_series(start: datetime, end: datetime, region: str = "SA1") -> pd.Series:
