@@ -47,12 +47,9 @@ class TestRegistry:
         with pytest.raises(ValueError, match="unknown algorithm"):
             algos.build("ppo2", makeEnv(paper, series), seed=0)
 
-    # `dqnnomask` is the name the pooled-regions agents carry. It loads, so the
-    # dashboard can run them, and it does not build, so no new run starts under a
-    # second name for this build's one plain DQN.
-    def test_dqnnomask_loads_but_does_not_build(self, paper, series, tmp_path):
-        with pytest.raises(ValueError, match="unknown algorithm"):
-            algos.build("dqnnomask", makeEnv(paper, series), seed=0)
+    # `dqnnomask` is the name the pooled-regions agents carry, so the dashboard loads
+    # their weights by it. `load` has to return the same plain DQN that `dqn` returns.
+    def test_dqnnomask_loads_the_same_agent_as_dqn(self, paper, series, tmp_path):
         path = tmp_path / "agent"
         algos.build("dqn", makeEnv(paper, series), seed=0).save(str(path))
         assert type(algos.load("dqnnomask", str(path))) is \

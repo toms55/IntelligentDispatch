@@ -102,11 +102,11 @@ cover.
     the Parquet and writes nothing. `python -m rl.oracleArchive pack <json folder>
     oracleResults/<set>` merges solves into a set, a new record replacing an old one of
     the same key, and `unpack` writes byte-identical cache JSONs back out.
-  - `algos.py` — the `--algo` registry: MaskablePPO, DQN, A2C. `algos.load` reads a
-    fourth name, `dqnnomask`, which `build` refuses. Agents of the pooled-regions
-    experiment family carry it, because the branch that trained them had a second DQN
-    that read the mask. Here DQN reads none, so the two names are one plain DQN and
-    only `dqn` can start a run.
+  - `algos.py` — the `--algo` registry: MaskablePPO, DQN, A2C. A fourth name,
+    `dqnnomask`, builds and loads the same plain DQN that `dqn` does. Agents of the
+    pooled-regions experiment family carry it, because the branch that trained them
+    had a second DQN that read the mask. Here DQN reads none, so one builder serves
+    both names.
   - `train.py`, `evaluate.py` — one run per seed, and regret against the oracle.
   - `policies.py` — `trainedPolicies/`: the layout of a finished agent, and the only
     code that writes or lists one. See
